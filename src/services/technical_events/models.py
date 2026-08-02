@@ -69,6 +69,9 @@ class TechnicalEventDiagnostics:
     processing_time_ms: int = 0
     controlled_movement_rejection_breakdown: dict[str, int] | None = None
     controlled_movement_thresholds: dict[str, float] | None = None
+    controlled_movement_segment_statistics: tuple[dict[str, float | int | None], ...] = ()
+    controlled_movement_displacement_summary: dict[str, float] | None = None
+    controlled_movement_displacement_histogram: dict[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

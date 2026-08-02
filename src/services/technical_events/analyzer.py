@@ -86,7 +86,7 @@ class TechnicalEventAnalyzer:
             raise TechnicalEventInputError(
                 "Duplicate technical-event observation frames are not allowed."
             )
-        controlled, cs, cr_short, cr_conf, breakdown = self._controlled(
+        controlled, cs, cr_short, cr_conf, breakdown, statistics = self._controlled(
             interactions, player, ball, quality
         )
         dribbles, ds, dr_move, dr_conf = self._dribbles(controlled, player, ball, movement, quality)
@@ -108,6 +108,9 @@ class TechnicalEventAnalyzer:
             round((perf_counter() - started) * 1000),
             breakdown,
             self._controlled_thresholds(),
+            tuple(statistics),
+            self._displacement_summary(statistics),
+            self._displacement_histogram(statistics),
         )
         warnings = [
             warning,
@@ -128,9 +131,17 @@ class TechnicalEventAnalyzer:
         p: dict[int, PlayerObservation],
         b: dict[int, BallObservation],
         quality: float,
-    ) -> tuple[list[ControlledMovementCandidate], int, int, int, dict[str, int]]:
+    ) -> tuple[
+        list[ControlledMovementCandidate],
+        int,
+        int,
+        int,
+        dict[str, int],
+        list[dict[str, float | int | None]],
+    ]:
         accepted: list[ControlledMovementCandidate] = []
         short = low = 0
+        statistics: list[dict[str, float | int | None]] = []
         breakdown = {
             "duration": 0,
             "displacement": 0,
@@ -156,6 +167,20 @@ class TechnicalEventAnalyzer:
                     0.0,
                     "coverage",
                 )
+                statistics.append(
+                    self._segment_statistics(
+                        segment.segment_id,
+                        segment.duration_seconds,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        None,
+                        0.0,
+                    )
+                )
                 continue
             pp = [self._position(p[f]) for f in frames]
             bp = [b[f].center_point for f in frames]
@@ -180,6 +205,23 @@ class TechnicalEventAnalyzer:
                 + 0.15 * coverage
                 + 0.15 * quality
             )
+            path_length = sum(
+                self._distance(first, second) for first, second in zip(pp, pp[1:], strict=False)
+            )
+            statistic = self._segment_statistics(
+                segment.segment_id,
+                segment.duration_seconds,
+                pd,
+                height,
+                norm,
+                path_length,
+                bd,
+                proximity,
+                sim,
+                confidence,
+            )
+            statistics.append(statistic)
+            self._log_segment(statistic)
             reason = self._controlled_rejection_reason(
                 segment.duration_seconds, norm, proximity, sim, coverage, confidence
             )
@@ -233,7 +275,103 @@ class TechnicalEventAnalyzer:
             short,
             low,
             breakdown,
+            statistics,
         )
+
+    @staticmethod
+    def _segment_statistics(
+        segment_id: int,
+        duration: float,
+        displacement: float,
+        height: float,
+        normalized_displacement: float,
+        path_length: float,
+        ball_displacement: float,
+        proximity: float,
+        direction: float | None,
+        confidence: float,
+    ) -> dict[str, float | int | None]:
+        return {
+            "segment_id": segment_id,
+            "duration_seconds": duration,
+            "player_displacement_pixels": displacement,
+            "mean_player_height_pixels": height,
+            "normalized_player_displacement": normalized_displacement,
+            "player_path_length_pixels": path_length,
+            "ball_displacement_pixels": ball_displacement,
+            "proximity_frame_ratio": proximity,
+            "direction_similarity": direction,
+            "confidence": confidence,
+        }
+
+    @staticmethod
+    def _log_segment(statistic: dict[str, float | int | None]) -> None:
+        _LOGGER.warning(
+            "controlled_movement_segment_statistics segment_id=%s duration_seconds=%s "
+            "player_displacement_pixels=%s mean_player_height_pixels=%s "
+            "normalized_player_displacement=%s player_path_length_pixels=%s "
+            "ball_displacement_pixels=%s proximity_frame_ratio=%s direction_similarity=%s confidence=%s",
+            statistic["segment_id"],
+            statistic["duration_seconds"],
+            statistic["player_displacement_pixels"],
+            statistic["mean_player_height_pixels"],
+            statistic["normalized_player_displacement"],
+            statistic["player_path_length_pixels"],
+            statistic["ball_displacement_pixels"],
+            statistic["proximity_frame_ratio"],
+            statistic["direction_similarity"],
+            statistic["confidence"],
+        )
+
+    @staticmethod
+    def _displacement_summary(
+        statistics: list[dict[str, float | int | None]],
+    ) -> dict[str, float]:
+        values = sorted(float(item["normalized_player_displacement"] or 0.0) for item in statistics)
+        if not values:
+            return {
+                "minimum": 0.0,
+                "maximum": 0.0,
+                "mean": 0.0,
+                "median": 0.0,
+                "p75": 0.0,
+                "p90": 0.0,
+            }
+        return {
+            "minimum": values[0],
+            "maximum": values[-1],
+            "mean": sum(values) / len(values),
+            "median": TechnicalEventAnalyzer._percentile(values, 0.5),
+            "p75": TechnicalEventAnalyzer._percentile(values, 0.75),
+            "p90": TechnicalEventAnalyzer._percentile(values, 0.9),
+        }
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        position = (len(values) - 1) * percentile
+        lower, upper = int(position), min(int(position) + 1, len(values) - 1)
+        return values[lower] + (values[upper] - values[lower]) * (position - lower)
+
+    @staticmethod
+    def _displacement_histogram(
+        statistics: list[dict[str, float | int | None]],
+    ) -> dict[str, int]:
+        histogram = {"0.00-0.05": 0, "0.05-0.10": 0, "0.10-0.15": 0, "0.15-0.20": 0, "0.20+": 0}
+        for statistic in statistics:
+            value = float(statistic["normalized_player_displacement"] or 0.0)
+            key = (
+                "0.00-0.05"
+                if value < 0.05
+                else "0.05-0.10"
+                if value < 0.10
+                else "0.10-0.15"
+                if value < 0.15
+                else "0.15-0.20"
+                if value < 0.20
+                else "0.20+"
+            )
+            histogram[key] += 1
+        return histogram
 
     def _controlled_rejection_reason(
         self,
