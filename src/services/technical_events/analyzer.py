@@ -1,5 +1,6 @@
 """O(n), deterministic candidate detection using existing tracking evidence only."""
 
+import logging
 from math import hypot
 from time import perf_counter
 
@@ -22,6 +23,7 @@ from services.technical_events.models import (
 CONTROLLED_VERSION = "controlled_movement_confidence_v0.1"
 DRIBBLE_VERSION = "dribble_candidate_confidence_v0.1"
 BALL_LOSS_VERSION = "ball_loss_candidate_confidence_v0.1"
+_LOGGER = logging.getLogger(__name__)
 
 
 class TechnicalEventAnalyzer:
@@ -62,6 +64,15 @@ class TechnicalEventAnalyzer:
                 TechnicalEventDiagnostics(
                     technical_event_analysis_quality=quality,
                     processing_time_ms=round((perf_counter() - started) * 1000),
+                    controlled_movement_rejection_breakdown={
+                        "duration": 0,
+                        "displacement": 0,
+                        "proximity": 0,
+                        "direction": 0,
+                        "coverage": 0,
+                        "confidence": 0,
+                    },
+                    controlled_movement_thresholds=self._controlled_thresholds(),
                 ),
                 (
                     warning,
@@ -75,7 +86,9 @@ class TechnicalEventAnalyzer:
             raise TechnicalEventInputError(
                 "Duplicate technical-event observation frames are not allowed."
             )
-        controlled, cs, cr_short, cr_conf = self._controlled(interactions, player, ball, quality)
+        controlled, cs, cr_short, cr_conf, breakdown = self._controlled(
+            interactions, player, ball, quality
+        )
         dribbles, ds, dr_move, dr_conf = self._dribbles(controlled, player, ball, movement, quality)
         losses, ls, lr_missing, lr_recovery = self._losses(interactions, player, ball, quality, fps)
         diagnostics = TechnicalEventDiagnostics(
@@ -93,6 +106,8 @@ class TechnicalEventAnalyzer:
             lr_recovery,
             quality,
             round((perf_counter() - started) * 1000),
+            breakdown,
+            self._controlled_thresholds(),
         )
         warnings = [
             warning,
@@ -113,15 +128,34 @@ class TechnicalEventAnalyzer:
         p: dict[int, PlayerObservation],
         b: dict[int, BallObservation],
         quality: float,
-    ) -> tuple[list[ControlledMovementCandidate], int, int, int]:
+    ) -> tuple[list[ControlledMovementCandidate], int, int, int, dict[str, int]]:
         accepted: list[ControlledMovementCandidate] = []
         short = low = 0
+        breakdown = {
+            "duration": 0,
+            "displacement": 0,
+            "proximity": 0,
+            "direction": 0,
+            "coverage": 0,
+            "confidence": 0,
+        }
         for segment in interactions.segments:
             frames = [
                 f for f in range(segment.start_frame, segment.end_frame + 1) if f in p and f in b
             ]
             if not frames:
                 short += 1
+                breakdown["coverage"] += 1
+                self._log_rejection(
+                    segment.segment_id,
+                    segment.duration_seconds,
+                    0.0,
+                    0.0,
+                    None,
+                    0.0,
+                    0.0,
+                    "coverage",
+                )
                 continue
             pp = [self._position(p[f]) for f in frames]
             bp = [b[f].center_point for f in frames]
@@ -146,17 +180,35 @@ class TechnicalEventAnalyzer:
                 + 0.15 * coverage
                 + 0.15 * quality
             )
-            if (
-                segment.duration_seconds < self._settings.controlled_min_duration_seconds
-                or norm < self._settings.controlled_min_player_displacement_ratio
-                or proximity < self._settings.controlled_min_ball_proximity_ratio
-                or coverage < self._settings.controlled_min_evidence_coverage
-                or sim is None
-                or sim < self._settings.controlled_min_direction_similarity
-            ):
+            reason = self._controlled_rejection_reason(
+                segment.duration_seconds, norm, proximity, sim, coverage, confidence
+            )
+            if reason is not None and reason != "confidence":
                 short += 1
-            elif confidence < self._settings.controlled_min_confidence:
+                breakdown[reason] += 1
+                self._log_rejection(
+                    segment.segment_id,
+                    segment.duration_seconds,
+                    norm,
+                    proximity,
+                    sim,
+                    coverage,
+                    confidence,
+                    reason,
+                )
+            elif reason == "confidence":
                 low += 1
+                breakdown["confidence"] += 1
+                self._log_rejection(
+                    segment.segment_id,
+                    segment.duration_seconds,
+                    norm,
+                    proximity,
+                    sim,
+                    coverage,
+                    confidence,
+                    reason,
+                )
             else:
                 accepted.append(
                     ControlledMovementCandidate(
@@ -180,7 +232,64 @@ class TechnicalEventAnalyzer:
             len(interactions.segments),
             short,
             low,
+            breakdown,
         )
+
+    def _controlled_rejection_reason(
+        self,
+        duration: float,
+        displacement: float,
+        proximity: float,
+        direction: float | None,
+        coverage: float,
+        confidence: float,
+    ) -> str | None:
+        if duration < self._settings.controlled_min_duration_seconds:
+            return "duration"
+        if displacement < self._settings.controlled_min_player_displacement_ratio:
+            return "displacement"
+        if proximity < self._settings.controlled_min_ball_proximity_ratio:
+            return "proximity"
+        if coverage < self._settings.controlled_min_evidence_coverage:
+            return "coverage"
+        if direction is None or direction < self._settings.controlled_min_direction_similarity:
+            return "direction"
+        if confidence < self._settings.controlled_min_confidence:
+            return "confidence"
+        return None
+
+    @staticmethod
+    def _log_rejection(
+        segment_id: int,
+        duration: float,
+        displacement: float,
+        proximity: float,
+        direction: float | None,
+        coverage: float,
+        confidence: float,
+        reason: str,
+    ) -> None:
+        _LOGGER.warning(
+            "controlled_movement_candidate_rejected segment_id=%s duration_seconds=%.3f "
+            "normalized_player_displacement=%.3f proximity_frame_ratio=%.3f "
+            "direction_similarity=%s evidence_coverage_ratio=%.3f confidence=%.3f "
+            "rejection_reason=%s",
+            segment_id,
+            duration,
+            displacement,
+            proximity,
+            direction,
+            coverage,
+            confidence,
+            reason,
+        )
+
+    def _controlled_thresholds(self) -> dict[str, float]:
+        return {
+            "min_duration": self._settings.controlled_min_duration_seconds,
+            "min_displacement": self._settings.controlled_min_player_displacement_ratio,
+            "min_direction_similarity": self._settings.controlled_min_direction_similarity,
+        }
 
     def _dribbles(
         self,

@@ -297,6 +297,8 @@ class Diagnostics(BaseModel):
     ball_loss_rejected_recovery: int = 0
     technical_event_analysis_quality: float | None = None
     technical_event_processing_time_ms: int = 0
+    controlled_movement_rejection_breakdown: dict[str, int] | None = None
+    controlled_movement_thresholds: dict[str, float] | None = None
     physical_score_version: str | None = None
     physical_confidence_version: str | None = None
     physical_score_raw: float | None = None

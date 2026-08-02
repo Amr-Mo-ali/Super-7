@@ -545,6 +545,12 @@ def _completed(
             technical_event_processing_time_ms=technical_events.diagnostics.processing_time_ms
             if technical_events
             else 0,
+            controlled_movement_rejection_breakdown=technical_events.diagnostics.controlled_movement_rejection_breakdown
+            if technical_events
+            else None,
+            controlled_movement_thresholds=technical_events.diagnostics.controlled_movement_thresholds
+            if technical_events
+            else None,
             physical_score_version=physical.version if physical else None,
             physical_confidence_version="physical_activity_confidence_v0.1" if physical else None,
             physical_score_raw=physical.raw_score if physical else None,

@@ -1,0 +1,15 @@
+INFO:     Started server process [26000]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8013 (Press CTRL+C to quit)
+interaction_analysis_started analysis_id=fcadd137-3e30-41d6-875e-2a65c7436075 track_id=1
+interaction_analysis_finished analysis_id=fcadd137-3e30-41d6-875e-2a65c7436075 track_id=1 processing_time_ms=6
+interaction_segment_count analysis_id=fcadd137-3e30-41d6-875e-2a65c7436075 track_id=1 count=8
+controlled_movement_candidate_rejected segment_id=1 duration_seconds=1.945 normalized_player_displacement=0.059 proximity_frame_ratio=1.000 direction_similarity=0.6245610391843682 evidence_coverage_ratio=1.000 confidence=0.681 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=2 duration_seconds=1.092 normalized_player_displacement=0.108 proximity_frame_ratio=1.000 direction_similarity=0.605620137251633 evidence_coverage_ratio=0.969 confidence=0.687 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=3 duration_seconds=1.092 normalized_player_displacement=0.019 proximity_frame_ratio=1.000 direction_similarity=0.9388648586351883 evidence_coverage_ratio=1.000 confidence=0.702 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=4 duration_seconds=1.536 normalized_player_displacement=0.101 proximity_frame_ratio=1.000 direction_similarity=0.9538575772554432 evidence_coverage_ratio=1.000 confidence=0.725 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=5 duration_seconds=0.444 normalized_player_displacement=0.062 proximity_frame_ratio=1.000 direction_similarity=0.8100307958406764 evidence_coverage_ratio=1.000 confidence=0.700 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=6 duration_seconds=0.444 normalized_player_displacement=0.058 proximity_frame_ratio=1.000 direction_similarity=-0.9581841483855859 evidence_coverage_ratio=1.000 confidence=0.523 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=7 duration_seconds=0.648 normalized_player_displacement=0.044 proximity_frame_ratio=1.000 direction_similarity=0.7611723507750305 evidence_coverage_ratio=1.000 confidence=0.691 rejection_reason=displacement
+controlled_movement_candidate_rejected segment_id=8 duration_seconds=0.273 normalized_player_displacement=0.019 proximity_frame_ratio=1.000 direction_similarity=0.13606684407213615 evidence_coverage_ratio=1.000 confidence=0.622 rejection_reason=displacement

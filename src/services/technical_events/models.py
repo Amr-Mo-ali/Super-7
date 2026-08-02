@@ -67,6 +67,8 @@ class TechnicalEventDiagnostics:
     ball_loss_rejected_recovery: int = 0
     technical_event_analysis_quality: float = 0.0
     processing_time_ms: int = 0
+    controlled_movement_rejection_breakdown: dict[str, int] | None = None
+    controlled_movement_thresholds: dict[str, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

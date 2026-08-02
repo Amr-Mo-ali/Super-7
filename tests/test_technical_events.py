@@ -50,6 +50,19 @@ def test_stationary_player_is_not_a_controlled_candidate() -> None:
         players, balls, _interaction(), _movement(), 10, (64, 64), 0.9, 0.9, 0.9
     )
     assert result.controlled_movement_candidates == ()
+    assert result.diagnostics.controlled_movement_rejection_breakdown == {
+        "duration": 0,
+        "displacement": 1,
+        "proximity": 0,
+        "direction": 0,
+        "coverage": 0,
+        "confidence": 0,
+    }
+    assert result.diagnostics.controlled_movement_thresholds == {
+        "min_duration": 0.25,
+        "min_displacement": 0.15,
+        "min_direction_similarity": 0.35,
+    }
 
 
 def test_low_quality_returns_reason_without_candidates() -> None:

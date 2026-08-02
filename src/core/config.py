@@ -81,10 +81,10 @@ class Settings:
     technical_event_min_ball_analysis_quality: float = 0.50
     technical_event_min_interaction_quality: float = 0.50
     technical_event_min_evidence_coverage: float = 0.60
-    controlled_min_duration_seconds: float = 0.40
-    controlled_min_player_displacement_ratio: float = 0.30
+    controlled_min_duration_seconds: float = 0.25
+    controlled_min_player_displacement_ratio: float = 0.15
     controlled_min_ball_proximity_ratio: float = 0.70
-    controlled_min_direction_similarity: float = 0.50
+    controlled_min_direction_similarity: float = 0.35
     controlled_min_evidence_coverage: float = 0.70
     controlled_min_confidence: float = 0.50
     dribble_min_duration_seconds: float = 0.60
