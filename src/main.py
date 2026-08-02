@@ -14,6 +14,7 @@ from services.movement.analyzer import BottomCenterMovementAnalyzer
 from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.scoring.physical_activity import RuleBasedPhysicalActivityScorer
 from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelector
+from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.tracker import ByteTrackTracker
 from services.video_validator import VideoValidator
 
@@ -48,6 +49,7 @@ def create_app(
             NormalizedBallProximityAnalyzer(resolved_settings),
             BottomCenterMovementAnalyzer(resolved_settings),
             BallInteractionAnalyzer(resolved_settings),
+            TechnicalEventAnalyzer(resolved_settings),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
         )

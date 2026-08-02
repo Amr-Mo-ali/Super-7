@@ -118,6 +118,73 @@ class InteractionAnalysisResponse(BaseModel):
     confidence_version: str = "interaction_confidence_v0.1"
 
 
+class ControlledMovementCandidateResponse(BaseModel):
+    event_id: str
+    source_interaction_segment_id: int
+    start_frame: int
+    end_frame: int
+    start_time_seconds: float
+    end_time_seconds: float
+    duration_seconds: float
+    player_displacement_pixels: float
+    normalized_player_displacement: float
+    ball_displacement_pixels: float
+    proximity_frame_ratio: float
+    direction_similarity: float | None
+    confidence: float = Field(ge=0, le=1)
+    status: Literal["controlled_movement_candidate"]
+
+
+class DribbleCandidateResponse(BaseModel):
+    event_id: str
+    source_controlled_movement_id: str
+    start_frame: int
+    end_frame: int
+    duration_seconds: float
+    direction_changes: int
+    normalized_player_displacement: float
+    proximity_persistence: float
+    path_straightness: float
+    confidence: float = Field(ge=0, le=1)
+    status: Literal["dribble_candidate"]
+
+
+class BallLossCandidateResponse(BaseModel):
+    event_id: str
+    source_interaction_segment_id: int
+    event_frame: int
+    event_time_seconds: float
+    pre_interaction_duration_seconds: float
+    maximum_separation_ratio: float
+    post_evidence_frames: int
+    recovered_within_window: bool
+    confidence: float = Field(ge=0, le=1)
+    status: Literal["ball_loss_candidate"]
+
+
+class TechnicalEventAnalysisResponse(BaseModel):
+    controlled_movement_candidate_count: FeatureMetric = Field(default_factory=FeatureMetric)
+    controlled_movement_candidate_time_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
+    mean_controlled_movement_confidence: FeatureMetric = Field(default_factory=FeatureMetric)
+    dribble_candidate_count: FeatureMetric = Field(default_factory=FeatureMetric)
+    dribble_candidate_time_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
+    mean_dribble_candidate_confidence: FeatureMetric = Field(default_factory=FeatureMetric)
+    ball_loss_candidate_count: FeatureMetric = Field(default_factory=FeatureMetric)
+    mean_ball_loss_candidate_confidence: FeatureMetric = Field(default_factory=FeatureMetric)
+    controlled_movement_candidates: list[ControlledMovementCandidateResponse] = Field(
+        default_factory=list
+    )
+    dribble_candidates: list[DribbleCandidateResponse] = Field(default_factory=list)
+    ball_loss_candidates: list[BallLossCandidateResponse] = Field(default_factory=list)
+    versions: dict[str, str] = Field(
+        default_factory=lambda: {
+            "controlled_movement": "controlled_movement_confidence_v0.1",
+            "dribble": "dribble_candidate_confidence_v0.1",
+            "ball_loss": "ball_loss_candidate_confidence_v0.1",
+        }
+    )
+
+
 class ScoresResponse(BaseModel):
     technical: UnsupportedMetric
     physical: PhysicalScoreResponse | UnsupportedMetric
@@ -137,6 +204,9 @@ class CompletedResponse(BaseModel):
     features: FeaturesResponse
     interaction_analysis: InteractionAnalysisResponse = Field(
         default_factory=InteractionAnalysisResponse
+    )
+    technical_event_analysis: TechnicalEventAnalysisResponse = Field(
+        default_factory=TechnicalEventAnalysisResponse
     )
     scores: ScoresResponse
     diagnostics: "Diagnostics"
@@ -213,6 +283,20 @@ class Diagnostics(BaseModel):
     interaction_confidence_version: str | None = None
     interaction_analysis_quality: float | None = None
     interaction_processing_time_ms: int = 0
+    controlled_movement_raw_candidates: int = 0
+    controlled_movement_accepted_candidates: int = 0
+    controlled_movement_rejected_short: int = 0
+    controlled_movement_rejected_low_confidence: int = 0
+    dribble_raw_candidates: int = 0
+    dribble_accepted_candidates: int = 0
+    dribble_rejected_low_movement: int = 0
+    dribble_rejected_low_confidence: int = 0
+    ball_loss_raw_candidates: int = 0
+    ball_loss_accepted_candidates: int = 0
+    ball_loss_rejected_missing_post_evidence: int = 0
+    ball_loss_rejected_recovery: int = 0
+    technical_event_analysis_quality: float | None = None
+    technical_event_processing_time_ms: int = 0
     physical_score_version: str | None = None
     physical_confidence_version: str | None = None
     physical_score_raw: float | None = None

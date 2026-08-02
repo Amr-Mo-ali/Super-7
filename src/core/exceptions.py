@@ -69,6 +69,26 @@ class InternalInteractionDiagnosticsError(AnalysisError):
     """Raised when interaction results violate their response invariants."""
 
 
+class TechnicalEventInputError(AnalysisError):
+    """Raised when technical-event inputs are incomplete or contradictory."""
+
+
+class ControlledMovementAnalysisError(AnalysisError):
+    """Raised when controlled-movement candidate analysis fails."""
+
+
+class DribbleAnalysisError(AnalysisError):
+    """Raised when dribble candidate analysis fails."""
+
+
+class BallLossAnalysisError(AnalysisError):
+    """Raised when ball-loss candidate analysis fails."""
+
+
+class InternalTechnicalEventDiagnosticsError(AnalysisError):
+    """Raised when technical-event results violate their invariants."""
+
+
 class PhysicalScoreConfigurationError(AnalysisError):
     """Raised when physical scoring settings are invalid."""
 

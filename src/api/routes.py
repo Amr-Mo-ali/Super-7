@@ -18,13 +18,17 @@ from core.exceptions import (
 from schemas.analysis import (
     AmbiguousResponse,
     AnalyzeResponse,
+    BallLossCandidateResponse,
     CompletedResponse,
+    ControlledMovementCandidateResponse,
     Diagnostics,
+    DribbleCandidateResponse,
     FeatureMetric,
     InteractionAnalysisResponse,
     InteractionSegmentResponse,
     NonCompletedResponse,
     SelectedPlayer,
+    TechnicalEventAnalysisResponse,
     TrackingResponse,
     VideoResponse,
 )
@@ -41,6 +45,8 @@ from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.selection import Selection, TargetPlayerSelector
+from services.technical_events.analyzer import TechnicalEventAnalyzer
+from services.technical_events.models import TechnicalEventAnalysisResult
 from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
 
 
@@ -53,6 +59,7 @@ def create_router(
     ball_proximity_analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
     interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
     physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
 ) -> APIRouter:
@@ -118,6 +125,7 @@ def create_router(
                 ball_proximity_analyzer,
                 movement_analyzer,
                 interaction_analyzer,
+                technical_event_analyzer,
                 logger,
                 physical_scorer,
                 analysis_id,
@@ -172,6 +180,7 @@ def _completed(
     analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
     interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
     logger: logging.Logger,
     physical_scorer: PhysicalActivityScorerProtocol,
     analysis_id: str,
@@ -295,6 +304,24 @@ def _completed(
             track.track_id,
             "selected player observations or accepted ball observations were unavailable",
         )
+    technical_events: TechnicalEventAnalysisResult | None = None
+    technical_reason: str | None = "Technical-event analysis was unavailable."
+    if interaction is not None and movement is not None:
+        try:
+            technical_events = technical_event_analyzer.analyze(
+                players,
+                balls,
+                interaction,
+                movement,
+                metadata.fps,
+                (metadata.width, metadata.height),
+                min(1.0, track.visibility_ratio * track.average_confidence),
+                quality,
+                interaction.diagnostics.interaction_analysis_quality,
+            )
+            technical_reason = technical_events.reason
+        except Exception:
+            logger.exception("technical_event_analysis_failed analysis_id=%s", analysis_id)
     warnings = (
         ["Ball proximity is an approximation and does not prove possession."]
         if proximity is not None
@@ -309,6 +336,8 @@ def _completed(
         )
     if interaction is not None:
         warnings.extend(interaction.warnings)
+    if technical_events is not None:
+        warnings.extend(technical_events.warnings)
     physical = None
     try:
         physical = physical_scorer.score(
@@ -350,6 +379,7 @@ def _completed(
         ),
         features=extractor.features(proximity, ball_reason, movement, movement_reason),
         interaction_analysis=_interaction_response(interaction, interaction_reason),
+        technical_event_analysis=_technical_event_response(technical_events, technical_reason),
         scores=extractor.scores(physical),
         diagnostics=Diagnostics(
             frames_processed=(
@@ -473,6 +503,48 @@ def _completed(
             interaction_processing_time_ms=interaction.diagnostics.processing_time_ms
             if interaction
             else 0,
+            controlled_movement_raw_candidates=technical_events.diagnostics.controlled_movement_raw_candidates
+            if technical_events
+            else 0,
+            controlled_movement_accepted_candidates=technical_events.diagnostics.controlled_movement_accepted_candidates
+            if technical_events
+            else 0,
+            controlled_movement_rejected_short=technical_events.diagnostics.controlled_movement_rejected_short
+            if technical_events
+            else 0,
+            controlled_movement_rejected_low_confidence=technical_events.diagnostics.controlled_movement_rejected_low_confidence
+            if technical_events
+            else 0,
+            dribble_raw_candidates=technical_events.diagnostics.dribble_raw_candidates
+            if technical_events
+            else 0,
+            dribble_accepted_candidates=technical_events.diagnostics.dribble_accepted_candidates
+            if technical_events
+            else 0,
+            dribble_rejected_low_movement=technical_events.diagnostics.dribble_rejected_low_movement
+            if technical_events
+            else 0,
+            dribble_rejected_low_confidence=technical_events.diagnostics.dribble_rejected_low_confidence
+            if technical_events
+            else 0,
+            ball_loss_raw_candidates=technical_events.diagnostics.ball_loss_raw_candidates
+            if technical_events
+            else 0,
+            ball_loss_accepted_candidates=technical_events.diagnostics.ball_loss_accepted_candidates
+            if technical_events
+            else 0,
+            ball_loss_rejected_missing_post_evidence=technical_events.diagnostics.ball_loss_rejected_missing_post_evidence
+            if technical_events
+            else 0,
+            ball_loss_rejected_recovery=technical_events.diagnostics.ball_loss_rejected_recovery
+            if technical_events
+            else 0,
+            technical_event_analysis_quality=technical_events.diagnostics.technical_event_analysis_quality
+            if technical_events
+            else None,
+            technical_event_processing_time_ms=technical_events.diagnostics.processing_time_ms
+            if technical_events
+            else 0,
             physical_score_version=physical.version if physical else None,
             physical_confidence_version="physical_activity_confidence_v0.1" if physical else None,
             physical_score_raw=physical.raw_score if physical else None,
@@ -496,7 +568,7 @@ def _completed(
             ),
             physical_score_processing_time_ms=physical.processing_time_ms if physical else 0,
         ),
-        warnings=warnings,
+        warnings=list(dict.fromkeys(warnings)),
         analysis_version=settings.analysis_version,
         model_version=model_version,
         processing_time_ms=round((perf_counter() - started) * 1000),
@@ -537,6 +609,42 @@ def _interaction_response(
         if result
         else [],
         confidence_version=result.confidence_version if result else "interaction_confidence_v0.1",
+    )
+
+
+def _technical_event_response(
+    result: TechnicalEventAnalysisResult | None, reason: str | None
+) -> TechnicalEventAnalysisResponse:
+    def metric(value: float | None) -> FeatureMetric:
+        return FeatureMetric(value=value, reason=None if result else reason)
+
+    controlled = result.controlled_movement_candidates if result else ()
+    dribbles = result.dribble_candidates if result else ()
+    losses = result.ball_loss_candidates if result else ()
+    return TechnicalEventAnalysisResponse(
+        controlled_movement_candidate_count=metric(float(len(controlled)) if result else None),
+        controlled_movement_candidate_time_seconds=metric(
+            sum(x.duration_seconds for x in controlled) if result else None
+        ),
+        mean_controlled_movement_confidence=metric(
+            sum(x.confidence for x in controlled) / len(controlled) if controlled else None
+        ),
+        dribble_candidate_count=metric(float(len(dribbles)) if result else None),
+        dribble_candidate_time_seconds=metric(
+            sum(x.duration_seconds for x in dribbles) if result else None
+        ),
+        mean_dribble_candidate_confidence=metric(
+            sum(x.confidence for x in dribbles) / len(dribbles) if dribbles else None
+        ),
+        ball_loss_candidate_count=metric(float(len(losses)) if result else None),
+        mean_ball_loss_candidate_confidence=metric(
+            sum(x.confidence for x in losses) / len(losses) if losses else None
+        ),
+        controlled_movement_candidates=[
+            ControlledMovementCandidateResponse(**asdict(x)) for x in controlled
+        ],
+        dribble_candidates=[DribbleCandidateResponse(**asdict(x)) for x in dribbles],
+        ball_loss_candidates=[BallLossCandidateResponse(**asdict(x)) for x in losses],
     )
 
 
