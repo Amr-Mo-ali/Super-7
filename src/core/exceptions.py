@@ -69,6 +69,18 @@ class InternalInteractionDiagnosticsError(AnalysisError):
     """Raised when interaction results violate their response invariants."""
 
 
+class PhysicalScoreConfigurationError(AnalysisError):
+    """Raised when physical scoring settings are invalid."""
+
+
+class PhysicalScoreInputError(AnalysisError):
+    """Raised when physical scoring evidence is invalid."""
+
+
+class PhysicalScoreCalculationError(AnalysisError):
+    """Raised when physical scoring cannot be completed."""
+
+
 class InternalDiagnosticsError(AnalysisError):
     """Raised when a completed response would contain contradictory diagnostics."""
 

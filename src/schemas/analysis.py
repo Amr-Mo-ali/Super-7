@@ -17,6 +17,32 @@ class UnsupportedMetric(BaseModel):
     reason: str
 
 
+class PhysicalScoreEvidenceResponse(BaseModel):
+    movement_intensity: float
+    active_time_ratio: float
+    visibility_ratio: float
+    continuity_ratio: float
+    direction_component: float
+    movement_analysis_quality: float
+    movement_duration_seconds: float
+    movement_observations: int
+    accepted_interval_ratio: float
+
+
+class PhysicalScoreResponse(BaseModel):
+    value: float | None = Field(default=None, ge=0, le=100)
+    level: int | None = Field(default=None, ge=1, le=7)
+    level_label: str | None = None
+    level_midpoint: float | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    status: str
+    version: str
+    reason: str | None = None
+    evidence: PhysicalScoreEvidenceResponse | None = None
+    limitations: list[str] = Field(default_factory=list)
+    explanation: str
+
+
 class FeatureMetric(BaseModel):
     value: float | None = None
     reason: str | None = None
@@ -94,7 +120,7 @@ class InteractionAnalysisResponse(BaseModel):
 
 class ScoresResponse(BaseModel):
     technical: UnsupportedMetric
-    physical: UnsupportedMetric
+    physical: PhysicalScoreResponse | UnsupportedMetric
     game_intelligence: UnsupportedMetric
     mental_resilience: UnsupportedMetric
     professionalism: UnsupportedMetric
@@ -187,6 +213,16 @@ class Diagnostics(BaseModel):
     interaction_confidence_version: str | None = None
     interaction_analysis_quality: float | None = None
     interaction_processing_time_ms: int = 0
+    physical_score_version: str | None = None
+    physical_confidence_version: str | None = None
+    physical_score_raw: float | None = None
+    physical_score_final: float | None = None
+    physical_score_confidence: float | None = None
+    physical_score_level: int | None = None
+    physical_score_quality_gate_passed: bool = False
+    physical_score_confidence_capped: bool = False
+    physical_score_components: dict[str, float] | None = None
+    physical_score_processing_time_ms: int = 0
 
 
 class NonCompletedResponse(BaseModel):

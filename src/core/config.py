@@ -77,6 +77,18 @@ class Settings:
     interaction_min_player_track_quality: float = 0.50
     interaction_min_segment_confidence: float = 0.45
     interaction_max_returned_segments: int = 100
+    physical_score_activity_weight: float = 0.35
+    physical_score_active_time_weight: float = 0.25
+    physical_score_visibility_weight: float = 0.15
+    physical_score_continuity_weight: float = 0.15
+    physical_score_direction_weight: float = 0.10
+    physical_score_direction_rate_scale: float = 0.5
+    physical_score_min_movement_quality: float = 0.55
+    physical_score_min_visibility_ratio: float = 0.20
+    physical_score_min_visible_seconds: float = 3.0
+    physical_score_min_movement_observations: int = 30
+    physical_score_min_accepted_interval_ratio: float = 0.60
+    physical_score_raw_image_confidence_cap: float = 0.75
 
     @classmethod
     def from_environment(cls) -> "Settings":

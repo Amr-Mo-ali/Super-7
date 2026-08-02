@@ -39,6 +39,7 @@ from services.interactions.models import (
 from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
+from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.selection import Selection, TargetPlayerSelector
 from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
 
@@ -52,6 +53,7 @@ def create_router(
     ball_proximity_analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
     interaction_analyzer: BallInteractionAnalyzerProtocol,
+    physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
@@ -117,6 +119,7 @@ def create_router(
                 movement_analyzer,
                 interaction_analyzer,
                 logger,
+                physical_scorer,
                 analysis_id,
                 started,
             )
@@ -170,6 +173,7 @@ def _completed(
     movement_analyzer: MovementAnalyzer,
     interaction_analyzer: BallInteractionAnalyzerProtocol,
     logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
     analysis_id: str,
     started: float,
 ) -> CompletedResponse:
@@ -305,6 +309,24 @@ def _completed(
         )
     if interaction is not None:
         warnings.extend(interaction.warnings)
+    physical = None
+    try:
+        physical = physical_scorer.score(
+            movement,
+            track.visibility_ratio,
+            track.visible_frames,
+            track.longest_segment,
+            track.average_confidence,
+            min(
+                settings.movement_raw_image_space_quality_cap,
+                len(movement.trajectory) / max(track.visible_frames, 1),
+            )
+            if movement
+            else None,
+            "raw_image_space",
+        )
+    except Exception:
+        logger.exception("physical_activity_score_failed analysis_id=%s", analysis_id)
     response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -328,7 +350,7 @@ def _completed(
         ),
         features=extractor.features(proximity, ball_reason, movement, movement_reason),
         interaction_analysis=_interaction_response(interaction, interaction_reason),
-        scores=extractor.scores(),
+        scores=extractor.scores(physical),
         diagnostics=Diagnostics(
             frames_processed=(
                 typed_run.diagnostics.frames_processed
@@ -451,6 +473,28 @@ def _completed(
             interaction_processing_time_ms=interaction.diagnostics.processing_time_ms
             if interaction
             else 0,
+            physical_score_version=physical.version if physical else None,
+            physical_confidence_version="physical_activity_confidence_v0.1" if physical else None,
+            physical_score_raw=physical.raw_score if physical else None,
+            physical_score_final=physical.value if physical else None,
+            physical_score_confidence=physical.confidence if physical else None,
+            physical_score_level=physical.level if physical else None,
+            physical_score_quality_gate_passed=physical.status == "provisional_video_based"
+            if physical
+            else False,
+            physical_score_confidence_capped=physical.confidence_capped if physical else False,
+            physical_score_components=(
+                {
+                    "activity": physical.evidence.movement_intensity,
+                    "active_time": physical.evidence.active_time_ratio,
+                    "visibility": physical.evidence.visibility_ratio,
+                    "continuity": physical.evidence.continuity_ratio,
+                    "direction": physical.evidence.direction_component,
+                }
+                if physical and physical.evidence
+                else None
+            ),
+            physical_score_processing_time_ms=physical.processing_time_ms if physical else 0,
         ),
         warnings=warnings,
         analysis_version=settings.analysis_version,
