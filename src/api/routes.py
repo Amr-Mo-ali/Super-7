@@ -223,6 +223,13 @@ def _completed(
         if proximity is not None
         else [ball_reason or "Ball detection confidence was insufficient."]
     )
+    if movement is not None:
+        warnings.extend(
+            [
+                "Movement metrics are image-space estimates and may include camera motion.",
+                "Movement intensity is not an official physical-performance score.",
+            ]
+        )
     response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -312,10 +319,20 @@ def _completed(
                 movement.metrics.movement_intensity >= 1.0 if movement else False
             ),
             movement_analysis_quality=(
-                min(1.0, len(movement.trajectory) / max(track.visible_frames, 1))
+                min(
+                    settings.movement_raw_image_space_quality_cap,
+                    len(movement.trajectory) / max(track.visible_frames, 1),
+                )
                 if movement
                 else None
             ),
+            camera_motion_enabled=False,
+            camera_motion_evaluated_intervals=0,
+            camera_motion_accepted_intervals=0,
+            camera_motion_rejected_intervals=0,
+            camera_motion_coverage_ratio=0.0,
+            camera_motion_mean_confidence=None,
+            movement_metrics_source="raw_image_space",
         ),
         warnings=warnings,
         analysis_version=settings.analysis_version,

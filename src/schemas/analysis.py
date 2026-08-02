@@ -130,6 +130,13 @@ class Diagnostics(BaseModel):
     clamped_movement_intensity: float | None = None
     movement_intensity_saturated: bool = False
     movement_analysis_quality: float | None = None
+    camera_motion_enabled: bool = False
+    camera_motion_evaluated_intervals: int = 0
+    camera_motion_accepted_intervals: int = 0
+    camera_motion_rejected_intervals: int = 0
+    camera_motion_coverage_ratio: float = 0.0
+    camera_motion_mean_confidence: float | None = None
+    movement_metrics_source: str = "raw_image_space"
 
 
 class NonCompletedResponse(BaseModel):

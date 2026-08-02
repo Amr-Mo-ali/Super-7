@@ -60,6 +60,7 @@ class Settings:
     movement_speed_weight: float = 0.35
     movement_activity_weight: float = 0.25
     movement_minimum_quality: float = 0.20
+    movement_raw_image_space_quality_cap: float = 0.80
 
     @classmethod
     def from_environment(cls) -> "Settings":
