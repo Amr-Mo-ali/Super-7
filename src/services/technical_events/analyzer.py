@@ -137,11 +137,11 @@ class TechnicalEventAnalyzer:
         int,
         int,
         dict[str, int],
-        list[dict[str, float | int | None]],
+        list[dict[str, float | int | bool | str | None]],
     ]:
         accepted: list[ControlledMovementCandidate] = []
         short = low = 0
-        statistics: list[dict[str, float | int | None]] = []
+        statistics: list[dict[str, float | int | bool | str | None]] = []
         breakdown = {
             "duration": 0,
             "displacement": 0,
@@ -181,6 +181,8 @@ class TechnicalEventAnalyzer:
                         0.0,
                     )
                 )
+                statistics[-1]["accepted"] = False
+                statistics[-1]["rejection_reason"] = "coverage"
                 continue
             pp = [self._position(p[f]) for f in frames]
             bp = [b[f].center_point for f in frames]
@@ -226,6 +228,8 @@ class TechnicalEventAnalyzer:
                 segment.duration_seconds, norm, proximity, sim, coverage, confidence
             )
             if reason is not None and reason != "confidence":
+                statistic["accepted"] = False
+                statistic["rejection_reason"] = reason
                 short += 1
                 breakdown[reason] += 1
                 self._log_rejection(
@@ -239,6 +243,8 @@ class TechnicalEventAnalyzer:
                     reason,
                 )
             elif reason == "confidence":
+                statistic["accepted"] = False
+                statistic["rejection_reason"] = reason
                 low += 1
                 breakdown["confidence"] += 1
                 self._log_rejection(
@@ -252,6 +258,8 @@ class TechnicalEventAnalyzer:
                     reason,
                 )
             else:
+                statistic["accepted"] = True
+                statistic["rejection_reason"] = None
                 accepted.append(
                     ControlledMovementCandidate(
                         f"controlled-{segment.segment_id}",
@@ -290,7 +298,7 @@ class TechnicalEventAnalyzer:
         proximity: float,
         direction: float | None,
         confidence: float,
-    ) -> dict[str, float | int | None]:
+    ) -> dict[str, float | int | bool | str | None]:
         return {
             "segment_id": segment_id,
             "duration_seconds": duration,
@@ -305,7 +313,7 @@ class TechnicalEventAnalyzer:
         }
 
     @staticmethod
-    def _log_segment(statistic: dict[str, float | int | None]) -> None:
+    def _log_segment(statistic: dict[str, float | int | bool | str | None]) -> None:
         _LOGGER.warning(
             "controlled_movement_segment_statistics segment_id=%s duration_seconds=%s "
             "player_displacement_pixels=%s mean_player_height_pixels=%s "
@@ -325,7 +333,7 @@ class TechnicalEventAnalyzer:
 
     @staticmethod
     def _displacement_summary(
-        statistics: list[dict[str, float | int | None]],
+        statistics: list[dict[str, float | int | bool | str | None]],
     ) -> dict[str, float]:
         values = sorted(float(item["normalized_player_displacement"] or 0.0) for item in statistics)
         if not values:
@@ -354,7 +362,7 @@ class TechnicalEventAnalyzer:
 
     @staticmethod
     def _displacement_histogram(
-        statistics: list[dict[str, float | int | None]],
+        statistics: list[dict[str, float | int | bool | str | None]],
     ) -> dict[str, int]:
         histogram = {"0.00-0.05": 0, "0.05-0.10": 0, "0.10-0.15": 0, "0.15-0.20": 0, "0.20+": 0}
         for statistic in statistics:

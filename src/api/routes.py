@@ -551,6 +551,17 @@ def _completed(
             controlled_movement_thresholds=technical_events.diagnostics.controlled_movement_thresholds
             if technical_events
             else None,
+            controlled_movement_segment_statistics=list(
+                technical_events.diagnostics.controlled_movement_segment_statistics
+            )
+            if technical_events
+            else [],
+            displacement_summary=technical_events.diagnostics.displacement_summary
+            if technical_events
+            else None,
+            displacement_histogram=technical_events.diagnostics.displacement_histogram
+            if technical_events
+            else None,
             physical_score_version=physical.version if physical else None,
             physical_confidence_version="physical_activity_confidence_v0.1" if physical else None,
             physical_score_raw=physical.raw_score if physical else None,

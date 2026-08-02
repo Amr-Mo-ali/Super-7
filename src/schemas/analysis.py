@@ -299,6 +299,11 @@ class Diagnostics(BaseModel):
     technical_event_processing_time_ms: int = 0
     controlled_movement_rejection_breakdown: dict[str, int] | None = None
     controlled_movement_thresholds: dict[str, float] | None = None
+    controlled_movement_segment_statistics: list[dict[str, float | int | bool | str | None]] = (
+        Field(default_factory=list)
+    )
+    displacement_summary: dict[str, float] | None = None
+    displacement_histogram: dict[str, int] | None = None
     physical_score_version: str | None = None
     physical_confidence_version: str | None = None
     physical_score_raw: float | None = None
