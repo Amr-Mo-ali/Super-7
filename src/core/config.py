@@ -99,8 +99,13 @@ class Settings:
     dribble_directional_min_direction_changes: int = 1
     dribble_progressive_min_movement_component: float = 0.35
     dribble_progressive_min_duration_seconds: float = 0.60
-    dribble_progressive_min_direction_similarity: float = 0.35
+    dribble_progressive_min_direction_similarity: float = 0.60
     dribble_min_trajectory_quality: float = 0.60
+    dribble_minimum_direction_change_angle_degrees: float = 35.0
+    dribble_minimum_turn_frame_separation: int = 4
+    dribble_max_direction_changes_per_second: float = 4.0
+    dribble_progressive_min_normalized_displacement: float = 0.30
+    dribble_progressive_min_path_straightness: float = 0.55
     ball_loss_min_pre_interaction_seconds: float = 0.30
     ball_loss_min_separation_ratio: float = 1.50
     ball_loss_min_ball_away_speed_normalized: float = 0.20

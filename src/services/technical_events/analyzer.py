@@ -468,6 +468,7 @@ class TechnicalEventAnalyzer:
             "direction_evidence": 0,
             "trajectory_quality": 0,
             "confidence": 0,
+            "excessive_turn_frequency": 0,
         }
         weights = (
             self._settings.dribble_direct_displacement_weight
@@ -490,7 +491,9 @@ class TechnicalEventAnalyzer:
                 ]
             )
             height = sum(point[2] for point in points) / len(points) if points else 0.0
-            raw_path, filtered_path, ignored, rejected, angles = self._filtered_path(points, height)
+            raw_path, filtered_path, ignored, rejected, raw_turns = self._filtered_path(
+                points, height
+            )
             direct = item.player_displacement_pixels / height if height else 0.0
             normalized_path = filtered_path / height if height else 0.0
             movement_component = self._settings.dribble_direct_displacement_weight * self._bounded(
@@ -498,17 +501,32 @@ class TechnicalEventAnalyzer:
             ) + self._settings.dribble_path_length_weight * self._bounded(
                 normalized_path, self._settings.dribble_path_length_scale
             )
-            changes = sum(
-                angle > self._settings.movement_direction_change_degrees for angle in angles
+            turns, ignored_small, ignored_adjacent = self._filter_turns(raw_turns)
+            angles = [angle for _, angle in turns]
+            changes = len(turns)
+            turn_rate = changes / item.duration_seconds if item.duration_seconds else 0.0
+            path_ratio = filtered_path / raw_path if raw_path else 0.0
+            ball_coverage = len(frames) / max(item.end_frame - item.start_frame + 1, 1)
+            player_coverage = len(points) / max(item.end_frame - item.start_frame + 1, 1)
+            variability = self._turn_deviation(angles)
+            trajectory_quality = self._clamp(
+                0.30 * path_ratio
+                + 0.20 * (1 - self._clamp(variability / 90))
+                + 0.20 * ball_coverage
+                + 0.20 * player_coverage
+                + 0.10 * ball_coverage
             )
-            trajectory_quality = filtered_path / raw_path if raw_path else 0.0
             persistence = len(frames) / max(item.end_frame - item.start_frame + 1, 1)
             direction_evidence = self._clamp(
                 changes / max(self._settings.dribble_directional_min_direction_changes, 1)
             )
+            straightness = self._clamp(
+                item.player_displacement_pixels / filtered_path if filtered_path else 0.0
+            )
             progressive = (
                 item.duration_seconds >= self._settings.dribble_progressive_min_duration_seconds
-                and movement_component >= self._settings.dribble_progressive_min_movement_component
+                and direct >= self._settings.dribble_progressive_min_normalized_displacement
+                and straightness >= self._settings.dribble_progressive_min_path_straightness
                 and (item.direction_similarity or -1.0)
                 >= self._settings.dribble_progressive_min_direction_similarity
             )
@@ -544,6 +562,8 @@ class TechnicalEventAnalyzer:
                 reasons.append("proximity_persistence")
             if subtype is None:
                 reasons.append("direction_evidence")
+            if directional and turn_rate > self._settings.dribble_max_direction_changes_per_second:
+                reasons.append("excessive_turn_frequency")
             if trajectory_quality < self._settings.dribble_min_trajectory_quality:
                 reasons.append("trajectory_quality")
             if conf < self._settings.dribble_min_confidence:
@@ -560,6 +580,12 @@ class TechnicalEventAnalyzer:
                 if filtered_path
                 else 0.0,
                 "direction_changes_inside_segment": changes,
+                "raw_direction_changes": len(raw_turns),
+                "filtered_direction_changes": changes,
+                "raw_direction_changes_per_second": len(raw_turns) / item.duration_seconds,
+                "filtered_direction_changes_per_second": turn_rate,
+                "ignored_small_angle_turns": ignored_small,
+                "ignored_adjacent_turns": ignored_adjacent,
                 "mean_turn_angle_degrees": sum(angles) / len(angles) if angles else 0.0,
                 "maximum_turn_angle_degrees": max(angles, default=0.0),
                 "proximity_persistence": persistence,
@@ -574,8 +600,9 @@ class TechnicalEventAnalyzer:
                 "ignored_tiny_movement_vectors": ignored,
                 "rejected_path_jumps": rejected,
                 "path_quality_ratio": trajectory_quality,
+                "trajectory_quality_score": trajectory_quality,
                 "accepted": not reasons,
-                "rejection_reasons": ",".join(reasons) if reasons else None,
+                "rejection_reasons": ",".join(sorted(set(reasons))) if reasons else None,
             }
             statistics.append(statistic)
             for reason in reasons:
@@ -601,11 +628,7 @@ class TechnicalEventAnalyzer:
                         movement_component,
                         subtype,
                         persistence,
-                        self._clamp(
-                            item.player_displacement_pixels / filtered_path
-                            if filtered_path
-                            else 0.0
-                        ),
+                        straightness,
                         conf,
                         DRIBBLE_VERSION,
                     )
@@ -621,11 +644,11 @@ class TechnicalEventAnalyzer:
 
     def _filtered_path(
         self, points: list[tuple[int, tuple[float, float], float]], height: float
-    ) -> tuple[float, float, int, int, list[float]]:
+    ) -> tuple[float, float, int, int, list[tuple[int, float]]]:
         raw = filtered = 0.0
         ignored = rejected = 0
-        angles: list[float] = []
-        vectors: list[tuple[float, float]] = []
+        angles: list[tuple[int, float]] = []
+        vectors: list[tuple[int, tuple[float, float]]] = []
         for (first_frame, first, _), (second_frame, second, _) in zip(
             points, points[1:], strict=False
         ):
@@ -642,12 +665,37 @@ class TechnicalEventAnalyzer:
                 rejected += 1
                 continue
             filtered += distance
-            vectors.append(vector)
-        for first, second in zip(vectors, vectors[1:], strict=False):
+            vectors.append((second_frame, vector))
+        for (frame, first), (_, second) in zip(vectors, vectors[1:], strict=False):
             cosine = self._cosine(first, second)
             if cosine is not None:
-                angles.append(degrees(acos(cosine)))
+                angles.append((frame, degrees(acos(cosine))))
         return raw, filtered, ignored, rejected, angles
+
+    def _filter_turns(
+        self, turns: list[tuple[int, float]]
+    ) -> tuple[list[tuple[int, float]], int, int]:
+        accepted: list[tuple[int, float]] = []
+        small = adjacent = 0
+        for frame, angle in turns:
+            if angle < self._settings.dribble_minimum_direction_change_angle_degrees:
+                small += 1
+                continue
+            if (
+                accepted
+                and frame - accepted[-1][0] < self._settings.dribble_minimum_turn_frame_separation
+            ):
+                adjacent += 1
+                continue
+            accepted.append((frame, angle))
+        return accepted, small, adjacent
+
+    @staticmethod
+    def _turn_deviation(angles: list[float]) -> float:
+        if len(angles) < 2:
+            return 0.0
+        mean = sum(angles) / len(angles)
+        return float((sum((angle - mean) ** 2 for angle in angles) / len(angles)) ** 0.5)
 
     @staticmethod
     def _bounded(value: float, scale: float) -> float:
