@@ -116,6 +116,7 @@ def create_router(
                 ball_proximity_analyzer,
                 movement_analyzer,
                 interaction_analyzer,
+                logger,
                 analysis_id,
                 started,
             )
@@ -168,6 +169,7 @@ def _completed(
     analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
     interaction_analyzer: BallInteractionAnalyzerProtocol,
+    logger: logging.Logger,
     analysis_id: str,
     started: float,
 ) -> CompletedResponse:
@@ -238,6 +240,11 @@ def _completed(
         and typed_run.ball_points is not None
     ):
         try:
+            logger.warning(
+                "interaction_analysis_started analysis_id=%s track_id=%s",
+                analysis_id,
+                track.track_id,
+            )
             players = tuple(
                 PlayerObservation(frame, frame / metadata.fps, box, track.average_confidence)
                 for frame, box in typed_run.player_boxes.get(track.track_id, {}).items()
@@ -258,14 +265,32 @@ def _completed(
                 min(1.0, track.visibility_ratio * track.average_confidence),
             )
             interaction_reason = interaction.reason
+            logger.warning(
+                "interaction_analysis_finished analysis_id=%s track_id=%s processing_time_ms=%s",
+                analysis_id,
+                track.track_id,
+                interaction.diagnostics.processing_time_ms,
+            )
+            logger.warning(
+                "interaction_segment_count analysis_id=%s track_id=%s count=%s",
+                analysis_id,
+                track.track_id,
+                interaction.possible_ball_interaction_count,
+            )
         except Exception:
-            logger = logging.getLogger("football_analysis.api")
             logger.exception(
                 "interaction_analysis_failed analysis_id=%s track_id=%s stage=analyze",
                 analysis_id,
                 track.track_id,
             )
             interaction_reason = "Interaction analysis was unavailable."
+    else:
+        logger.warning(
+            "interaction_analysis_skipped analysis_id=%s track_id=%s reason=%s",
+            analysis_id,
+            track.track_id,
+            "selected player observations or accepted ball observations were unavailable",
+        )
     warnings = (
         ["Ball proximity is an approximation and does not prove possession."]
         if proximity is not None
