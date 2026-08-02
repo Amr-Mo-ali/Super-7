@@ -59,6 +59,39 @@ class FeaturesResponse(BaseModel):
     max_acceleration_pixels_per_second_squared: FeatureMetric = Field(default_factory=FeatureMetric)
 
 
+class InteractionSegmentResponse(BaseModel):
+    segment_id: int
+    start_frame: int
+    end_frame: int
+    start_time_seconds: float
+    end_time_seconds: float
+    duration_seconds: float
+    observed_frame_count: int
+    bridged_gap_frames: int
+    candidate_frame_count: int
+    evidence_coverage_ratio: float = Field(ge=0, le=1)
+    mean_distance_pixels: float
+    minimum_distance_pixels: float
+    mean_normalized_distance: float
+    minimum_normalized_distance: float
+    mean_player_confidence: float = Field(ge=0, le=1)
+    mean_ball_confidence: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    status: Literal["possible_ball_interaction"]
+
+
+class InteractionAnalysisResponse(BaseModel):
+    possible_ball_interaction_count: FeatureMetric = Field(default_factory=FeatureMetric)
+    possible_ball_interaction_time_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
+    longest_possible_ball_interaction_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
+    mean_possible_ball_interaction_confidence: FeatureMetric = Field(default_factory=FeatureMetric)
+    interaction_candidate_frames: FeatureMetric = Field(default_factory=FeatureMetric)
+    interaction_observed_frames: FeatureMetric = Field(default_factory=FeatureMetric)
+    interaction_evidence_coverage_ratio: FeatureMetric = Field(default_factory=FeatureMetric)
+    segments: list[InteractionSegmentResponse] = Field(default_factory=list)
+    confidence_version: str = "interaction_confidence_v0.1"
+
+
 class ScoresResponse(BaseModel):
     technical: UnsupportedMetric
     physical: UnsupportedMetric
@@ -76,6 +109,9 @@ class CompletedResponse(BaseModel):
     selected_player: SelectedPlayer
     tracking: TrackingResponse
     features: FeaturesResponse
+    interaction_analysis: InteractionAnalysisResponse = Field(
+        default_factory=InteractionAnalysisResponse
+    )
     scores: ScoresResponse
     diagnostics: "Diagnostics"
     warnings: list[str]
@@ -137,6 +173,20 @@ class Diagnostics(BaseModel):
     camera_motion_coverage_ratio: float = 0.0
     camera_motion_mean_confidence: float | None = None
     movement_metrics_source: str = "raw_image_space"
+    interaction_aligned_frames: int = 0
+    interaction_candidate_frames: int = 0
+    interaction_non_candidate_frames: int = 0
+    interaction_missing_evidence_frames: int = 0
+    raw_interaction_segments: int = 0
+    accepted_interaction_segments: int = 0
+    rejected_short_interaction_segments: int = 0
+    rejected_low_confidence_interaction_segments: int = 0
+    bridged_interaction_gaps: int = 0
+    maximum_bridged_gap_frames: int = 0
+    interaction_evidence_coverage_ratio: float = 0.0
+    interaction_confidence_version: str | None = None
+    interaction_analysis_quality: float | None = None
+    interaction_processing_time_ms: int = 0
 
 
 class NonCompletedResponse(BaseModel):

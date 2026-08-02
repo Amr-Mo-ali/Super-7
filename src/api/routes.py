@@ -20,6 +20,9 @@ from schemas.analysis import (
     AnalyzeResponse,
     CompletedResponse,
     Diagnostics,
+    FeatureMetric,
+    InteractionAnalysisResponse,
+    InteractionSegmentResponse,
     NonCompletedResponse,
     SelectedPlayer,
     TrackingResponse,
@@ -27,6 +30,12 @@ from schemas.analysis import (
 )
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.feature_extractor import FeatureExtractor
+from services.interactions.analyzer import BallInteractionAnalyzerProtocol
+from services.interactions.models import (
+    BallObservation,
+    InteractionAnalysisResult,
+    PlayerObservation,
+)
 from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
@@ -42,6 +51,7 @@ def create_router(
     extractor: FeatureExtractor,
     ball_proximity_analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
     logger: logging.Logger,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
@@ -105,6 +115,7 @@ def create_router(
                 len(ranked),
                 ball_proximity_analyzer,
                 movement_analyzer,
+                interaction_analyzer,
                 analysis_id,
                 started,
             )
@@ -156,6 +167,7 @@ def _completed(
     valid_candidate_tracks: int,
     analyzer: BallProximityAnalyzer,
     movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
     analysis_id: str,
     started: float,
 ) -> CompletedResponse:
@@ -218,6 +230,42 @@ def _completed(
             )
         except Exception:
             movement_reason = "Movement analysis failed."
+    interaction: InteractionAnalysisResult | None = None
+    interaction_reason: str | None = "Interaction analysis was unavailable."
+    if (
+        typed_run is not None
+        and typed_run.player_boxes is not None
+        and typed_run.ball_points is not None
+    ):
+        try:
+            players = tuple(
+                PlayerObservation(frame, frame / metadata.fps, box, track.average_confidence)
+                for frame, box in typed_run.player_boxes.get(track.track_id, {}).items()
+            )
+            balls = tuple(
+                BallObservation(
+                    point.frame_index, point.timestamp_seconds, point.center_point, point.confidence
+                )
+                for point in typed_run.ball_points.values()
+                if point.visible and point.center_point is not None and point.confidence is not None
+            )
+            interaction = interaction_analyzer.analyze(
+                players,
+                balls,
+                metadata.fps,
+                (metadata.width, metadata.height),
+                quality,
+                min(1.0, track.visibility_ratio * track.average_confidence),
+            )
+            interaction_reason = interaction.reason
+        except Exception:
+            logger = logging.getLogger("football_analysis.api")
+            logger.exception(
+                "interaction_analysis_failed analysis_id=%s track_id=%s stage=analyze",
+                analysis_id,
+                track.track_id,
+            )
+            interaction_reason = "Interaction analysis was unavailable."
     warnings = (
         ["Ball proximity is an approximation and does not prove possession."]
         if proximity is not None
@@ -230,6 +278,8 @@ def _completed(
                 "Movement intensity is not an official physical-performance score.",
             ]
         )
+    if interaction is not None:
+        warnings.extend(interaction.warnings)
     response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -252,6 +302,7 @@ def _completed(
             longest_continuous_visible_segment=track.longest_segment,
         ),
         features=extractor.features(proximity, ball_reason, movement, movement_reason),
+        interaction_analysis=_interaction_response(interaction, interaction_reason),
         scores=extractor.scores(),
         diagnostics=Diagnostics(
             frames_processed=(
@@ -333,6 +384,48 @@ def _completed(
             camera_motion_coverage_ratio=0.0,
             camera_motion_mean_confidence=None,
             movement_metrics_source="raw_image_space",
+            interaction_aligned_frames=interaction.diagnostics.interaction_aligned_frames
+            if interaction
+            else 0,
+            interaction_candidate_frames=interaction.diagnostics.interaction_candidate_frames
+            if interaction
+            else 0,
+            interaction_non_candidate_frames=interaction.diagnostics.interaction_non_candidate_frames
+            if interaction
+            else 0,
+            interaction_missing_evidence_frames=interaction.diagnostics.interaction_missing_evidence_frames
+            if interaction
+            else 0,
+            raw_interaction_segments=interaction.diagnostics.raw_interaction_segments
+            if interaction
+            else 0,
+            accepted_interaction_segments=interaction.diagnostics.accepted_interaction_segments
+            if interaction
+            else 0,
+            rejected_short_interaction_segments=interaction.diagnostics.rejected_short_interaction_segments
+            if interaction
+            else 0,
+            rejected_low_confidence_interaction_segments=interaction.diagnostics.rejected_low_confidence_interaction_segments
+            if interaction
+            else 0,
+            bridged_interaction_gaps=interaction.diagnostics.bridged_interaction_gaps
+            if interaction
+            else 0,
+            maximum_bridged_gap_frames=interaction.diagnostics.maximum_bridged_gap_frames
+            if interaction
+            else 0,
+            interaction_evidence_coverage_ratio=interaction.diagnostics.interaction_evidence_coverage_ratio
+            if interaction
+            else 0.0,
+            interaction_confidence_version=interaction.diagnostics.interaction_confidence_version
+            if interaction
+            else None,
+            interaction_analysis_quality=interaction.diagnostics.interaction_analysis_quality
+            if interaction
+            else None,
+            interaction_processing_time_ms=interaction.diagnostics.processing_time_ms
+            if interaction
+            else 0,
         ),
         warnings=warnings,
         analysis_version=settings.analysis_version,
@@ -341,6 +434,41 @@ def _completed(
     )
     _validate_completed_diagnostics(response)
     return response
+
+
+def _interaction_response(
+    result: InteractionAnalysisResult | None, reason: str | None
+) -> InteractionAnalysisResponse:
+    def metric(value: float | None) -> FeatureMetric:
+        return FeatureMetric(value=value, reason=None if result else reason)
+
+    return InteractionAnalysisResponse(
+        possible_ball_interaction_count=metric(
+            float(result.possible_ball_interaction_count) if result else None
+        ),
+        possible_ball_interaction_time_seconds=metric(
+            result.possible_ball_interaction_time_seconds if result else None
+        ),
+        longest_possible_ball_interaction_seconds=metric(
+            result.longest_possible_ball_interaction_seconds if result else None
+        ),
+        mean_possible_ball_interaction_confidence=metric(
+            result.mean_possible_ball_interaction_confidence if result else None
+        ),
+        interaction_candidate_frames=metric(
+            float(result.interaction_candidate_frames) if result else None
+        ),
+        interaction_observed_frames=metric(
+            float(result.interaction_observed_frames) if result else None
+        ),
+        interaction_evidence_coverage_ratio=metric(
+            result.interaction_evidence_coverage_ratio if result else None
+        ),
+        segments=[InteractionSegmentResponse(**asdict(segment)) for segment in result.segments]
+        if result
+        else [],
+        confidence_version=result.confidence_version if result else "interaction_confidence_v0.1",
+    )
 
 
 def _ball_quality(

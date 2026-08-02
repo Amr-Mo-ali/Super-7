@@ -9,6 +9,7 @@ from core.config import Settings
 from core.logging import get_logger
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.feature_extractor import FeatureExtractor
+from services.interactions.analyzer import BallInteractionAnalyzer
 from services.movement.analyzer import BottomCenterMovementAnalyzer
 from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelector
@@ -45,6 +46,7 @@ def create_app(
             FeatureExtractor(),
             NormalizedBallProximityAnalyzer(resolved_settings),
             BottomCenterMovementAnalyzer(resolved_settings),
+            BallInteractionAnalyzer(resolved_settings),
             get_logger("football_analysis.api"),
         )
     )

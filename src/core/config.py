@@ -61,6 +61,22 @@ class Settings:
     movement_activity_weight: float = 0.25
     movement_minimum_quality: float = 0.20
     movement_raw_image_space_quality_cap: float = 0.80
+    interaction_proximity_threshold_ratio: float = 1.20
+    interaction_min_player_confidence: float = 0.25
+    interaction_min_ball_confidence: float = 0.25
+    interaction_max_gap_frames: int = 2
+    interaction_min_segment_frames: int = 5
+    interaction_min_segment_duration_seconds: float = 0.15
+    interaction_duration_scale: float = 1.0
+    interaction_distance_weight: float = 0.30
+    interaction_coverage_weight: float = 0.20
+    interaction_duration_weight: float = 0.15
+    interaction_detection_weight: float = 0.15
+    interaction_quality_weight: float = 0.20
+    interaction_min_ball_analysis_quality: float = 0.50
+    interaction_min_player_track_quality: float = 0.50
+    interaction_min_segment_confidence: float = 0.45
+    interaction_max_returned_segments: int = 100
 
     @classmethod
     def from_environment(cls) -> "Settings":

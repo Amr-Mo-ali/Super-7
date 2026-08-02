@@ -53,6 +53,22 @@ class BallProximityAnalysisError(AnalysisError):
     """Raised when ball proximity analysis receives invalid observations."""
 
 
+class InteractionInputError(AnalysisError):
+    """Raised when interaction analysis observations are invalid."""
+
+
+class InteractionSegmentationError(AnalysisError):
+    """Raised when interaction evidence cannot be segmented safely."""
+
+
+class InteractionConfidenceError(AnalysisError):
+    """Raised when interaction confidence settings are invalid."""
+
+
+class InternalInteractionDiagnosticsError(AnalysisError):
+    """Raised when interaction results violate their response invariants."""
+
+
 class InternalDiagnosticsError(AnalysisError):
     """Raised when a completed response would contain contradictory diagnostics."""
 
