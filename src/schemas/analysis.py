@@ -43,8 +43,16 @@ class TrackingResponse(BaseModel):
 
 class FeaturesResponse(BaseModel):
     ball_proximity_time_seconds: FeatureMetric
-    movement_intensity: UnsupportedMetric
-    direction_changes: UnsupportedMetric
+    movement_intensity: FeatureMetric
+    direction_changes: FeatureMetric
+    average_speed: FeatureMetric = Field(default_factory=FeatureMetric)
+    max_speed: FeatureMetric = Field(default_factory=FeatureMetric)
+    covered_distance: FeatureMetric = Field(default_factory=FeatureMetric)
+    stationary_periods: FeatureMetric = Field(default_factory=FeatureMetric)
+    covered_distance_pixels: FeatureMetric = Field(default_factory=FeatureMetric)
+    average_speed_pixels_per_second: FeatureMetric = Field(default_factory=FeatureMetric)
+    max_speed_pixels_per_second: FeatureMetric = Field(default_factory=FeatureMetric)
+    stationary_time_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
 
 
 class ScoresResponse(BaseModel):
@@ -90,6 +98,24 @@ class Diagnostics(BaseModel):
     ball_visible_frames: int = 0
     ball_track_segments: int = 0
     ball_detection_confidence_mean: float | None = None
+    raw_ball_detections: int = 0
+    filtered_ball_detections: int = 0
+    accepted_ball_track_observations: int = 0
+    frames_with_multiple_ball_candidates: int = 0
+    rejected_ball_candidates: int = 0
+    unique_track_ids: int = 0
+    selected_track_visible_frames: int | None = None
+    ball_analysis_quality: float | None = None
+    movement_frames: int = 0
+    movement_segments: int = 0
+    rejected_position_jumps: int = 0
+    smoothed_positions: int = 0
+    average_speed: float | None = None
+    maximum_speed: float | None = None
+    movement_observations: int = 0
+    movement_duration_seconds: float | None = None
+    stationary_frames: int = 0
+    movement_scoring_version: str | None = None
 
 
 class NonCompletedResponse(BaseModel):

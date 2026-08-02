@@ -23,6 +23,12 @@ class TrackingDiagnostics:
     total_person_detections: int
     tracks_created: int
     ball_detections: int
+    raw_ball_detections: int = 0
+    filtered_ball_detections: int = 0
+    accepted_ball_track_observations: int = 0
+    frames_with_multiple_ball_candidates: int = 0
+    rejected_ball_candidates: int = 0
+    unique_track_ids: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,7 +77,7 @@ class DetectionOnlyPlayerTracker:
         self._ball_detector = ball_detector
         self._settings = settings
         self._ball_tracker_factory = ball_tracker_factory
-        self.model_version = detector.__class__.__name__
+        self.model_version = f"{settings.model_path}+{settings.ball_model_path}+bytetrack"
 
     def analyze(self, video_path: Path, metadata: VideoMetadata) -> TrackingRun:
         """Decode every frame and accumulate truthful player-detection diagnostics."""
@@ -81,6 +87,7 @@ class DetectionOnlyPlayerTracker:
         boxes: dict[int, dict[int, BoundingBox]] = {}
         ball_points: dict[int, BallTrackPoint] = {}
         ball_confidences: list[float] = []
+        filtered_ball_detections = accepted_ball_observations = multiple_ball_frames = 0
         ball_warning: str | None = None
         ball_tracker = (
             self._ball_tracker_factory(self._settings) if self._ball_detector is not None else None
@@ -108,9 +115,19 @@ class DetectionOnlyPlayerTracker:
                             frame, processed - 1, (processed - 1) / metadata.fps
                         )
                         ball_confidences.extend(item.confidence for item in found_balls)
-                        ball_points[processed - 1] = ball_tracker.update(
+                        filtered = tuple(
+                            item
+                            for item in found_balls
+                            if item.confidence >= self._settings.ball_minimum_detection_confidence
+                        )
+                        filtered_ball_detections += len(filtered)
+                        if len(filtered) > 1:
+                            multiple_ball_frames += 1
+                        point = ball_tracker.update(
                             processed - 1, (processed - 1) / metadata.fps, found_balls
                         )
+                        ball_points[processed - 1] = point
+                        accepted_ball_observations += int(point.visible)
                     except Exception:
                         ball_warning = "Ball detection was unavailable for this video."
                         ball_points = {}
@@ -127,6 +144,12 @@ class DetectionOnlyPlayerTracker:
                 detections,
                 self._tracker.tracks_created,
                 len(ball_confidences),
+                len(ball_confidences),
+                filtered_ball_detections,
+                accepted_ball_observations,
+                multiple_ball_frames,
+                ball_tracker.rejected_candidates if ball_tracker is not None else 0,
+                self._tracker.tracks_created,
             ),
             boxes,
             ball_points,

@@ -1,2 +1,10 @@
 INFO:     127.0.0.1:61075 - "GET /docs HTTP/1.1" 200 OK
 INFO:     127.0.0.1:61079 - "POST /analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53902 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53902 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53902 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53902 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59898 - "POST /analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49896 - "POST /analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56078 - "POST /analyze HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57457 - "POST /analyze HTTP/1.1" 200 OK

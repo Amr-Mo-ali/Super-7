@@ -29,6 +29,7 @@ class NearestNeighborBallTracker:
         self._segment = 0
         self._history: deque[tuple[float, float]] = deque(maxlen=settings.ball_smoothing_window)
         self.segments = 0
+        self.rejected_candidates = 0
 
     def update(
         self, frame_index: int, timestamp_seconds: float, detections: Sequence[BallDetection]
@@ -39,8 +40,10 @@ class NearestNeighborBallTracker:
                 for d in detections
                 if d.confidence >= self._settings.ball_minimum_detection_confidence
             ]
+            self.rejected_candidates += len(detections) - len(candidates)
             accepted = self._choose(candidates)
             if accepted is None:
+                self.rejected_candidates += len(candidates)
                 self._missing += 1
                 if self._missing > self._settings.ball_max_missing_frames:
                     self._last = None

@@ -6,8 +6,20 @@ import numpy as np
 import pytest
 
 from adapters.yolo_ball_detector import YOLOBallDetector
+from api.routes import _ball_quality, _validate_completed_diagnostics
 from core.config import Settings
-from core.exceptions import BallDetectionError
+from core.exceptions import BallDetectionError, InternalDiagnosticsError
+from schemas.analysis import (
+    CompletedResponse,
+    Diagnostics,
+    FeatureMetric,
+    FeaturesResponse,
+    ScoresResponse,
+    SelectedPlayer,
+    TrackingResponse,
+    UnsupportedMetric,
+    VideoResponse,
+)
 from services.ball_detector import BallDetection
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
@@ -69,6 +81,13 @@ def test_ball_tracker_gates_jumps_and_ends_after_long_gap() -> None:
     assert tracker.update(4, 0.4, [_ball(4, 100)]).segment_id == 2
 
 
+def test_ball_tracker_selects_only_one_primary_candidate_per_frame() -> None:
+    tracker = NearestNeighborBallTracker(Settings(ball_motion_gate=30))
+    tracker.update(0, 0, [_ball(0, 10)])
+    point = tracker.update(1, 0.1, [_ball(1, 12, 0.7), _ball(1, 80, 0.99)])
+    assert point.visible and point.center_point == pytest.approx((13, 12))
+
+
 def test_proximity_normalization_boundary_and_segments() -> None:
     analyzer = NormalizedBallProximityAnalyzer(
         Settings(ball_proximity_threshold=1.0, ball_interaction_gap_frames=1)
@@ -87,3 +106,60 @@ def test_proximity_normalization_boundary_and_segments() -> None:
     assert result.ball_proximity_frames == 3
     assert result.possible_ball_interaction_count == 2
     assert result.ball_proximity_time_seconds == pytest.approx(0.3)
+
+
+def test_ball_quality_gate_penalizes_rejections_and_multiple_candidates() -> None:
+    assert _ball_quality(100, 100, (0.9,) * 100, 1, 0, 0, 100) > 0.9
+    assert _ball_quality(1, 100, (0.1,), 10, 90, 90, 100) < 0.3
+
+
+def test_completed_response_rejects_contradictory_player_diagnostics() -> None:
+    unavailable = UnsupportedMetric(reason="not implemented")
+    response = CompletedResponse(
+        analysis_id="test",
+        status="completed",
+        video=VideoResponse(duration_seconds=1, fps=10, width=64, height=64),
+        selected_player=SelectedPlayer(
+            track_id=1,
+            selection_method="test",
+            selection_score=1,
+            confidence=1,
+            visible_frames=1,
+            visibility_ratio=1,
+            ball_proximity_frames=0,
+            ball_proximity_ratio=0,
+            visibility_contribution=1,
+            ball_proximity_contribution=0,
+        ),
+        tracking=TrackingResponse(
+            frames_processed=1, lost_track_count=0, longest_continuous_visible_segment=1
+        ),
+        features=FeaturesResponse(
+            ball_proximity_time_seconds=FeatureMetric(reason="unavailable"),
+            movement_intensity=FeatureMetric(reason="unavailable"),
+            direction_changes=FeatureMetric(reason="unavailable"),
+        ),
+        scores=ScoresResponse(
+            technical=unavailable,
+            physical=unavailable,
+            game_intelligence=unavailable,
+            mental_resilience=unavailable,
+            professionalism=unavailable,
+            growth_potential=unavailable,
+            market_readiness=unavailable,
+        ),
+        diagnostics=Diagnostics(
+            frames_processed=1,
+            frames_with_player_detections=0,
+            total_person_detections=0,
+            tracks_created=0,
+            valid_candidate_tracks=0,
+            ball_detections=0,
+        ),
+        warnings=[],
+        analysis_version="test",
+        model_version="test",
+        processing_time_ms=0,
+    )
+    with pytest.raises(InternalDiagnosticsError):
+        _validate_completed_diagnostics(response)

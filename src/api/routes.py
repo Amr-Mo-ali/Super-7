@@ -9,7 +9,12 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 
 from core.config import Settings
-from core.exceptions import AnalysisError, InvalidRequestError, RealDetectorNotConfiguredError
+from core.exceptions import (
+    AnalysisError,
+    InternalDiagnosticsError,
+    InvalidRequestError,
+    RealDetectorNotConfiguredError,
+)
 from schemas.analysis import (
     AmbiguousResponse,
     AnalyzeResponse,
@@ -22,6 +27,8 @@ from schemas.analysis import (
 )
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.feature_extractor import FeatureExtractor
+from services.movement.analyzer import MovementAnalyzer
+from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.selection import Selection, TargetPlayerSelector
 from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
@@ -34,6 +41,7 @@ def create_router(
     selector: TargetPlayerSelector,
     extractor: FeatureExtractor,
     ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
     logger: logging.Logger,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
@@ -94,7 +102,9 @@ def create_router(
                 selection,
                 extractor,
                 run,
+                len(ranked),
                 ball_proximity_analyzer,
+                movement_analyzer,
                 analysis_id,
                 started,
             )
@@ -143,7 +153,9 @@ def _completed(
     selection: Selection,
     extractor: FeatureExtractor,
     run: object,
+    valid_candidate_tracks: int,
     analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
     analysis_id: str,
     started: float,
 ) -> CompletedResponse:
@@ -176,12 +188,42 @@ def _completed(
     visible = proximity.ball_visible_frames if proximity is not None else 0
     ball_frames = proximity.ball_proximity_frames if proximity is not None else 0
     confidences = typed_run.ball_detection_confidences if typed_run is not None else ()
+    accepted_confidences = (
+        tuple(
+            point.confidence
+            for point in (typed_run.ball_points or {}).values()
+            if point.visible and point.confidence is not None
+        )
+        if typed_run is not None
+        else ()
+    )
+    quality = _ball_quality(
+        visible,
+        track.total_frames,
+        accepted_confidences,
+        typed_run.ball_track_segments if typed_run is not None else 0,
+        typed_run.diagnostics.frames_with_multiple_ball_candidates if typed_run else 0,
+        typed_run.diagnostics.rejected_ball_candidates if typed_run else 0,
+        len(confidences),
+    )
+    if proximity is not None and quality < settings.ball_minimum_quality:
+        proximity = None
+        ball_reason = "Ball tracking quality was insufficient for reliable proximity analysis."
+    movement: MovementResult | None = None
+    movement_reason: str | None = None
+    if typed_run is not None and typed_run.player_boxes is not None:
+        try:
+            movement = movement_analyzer.analyze(
+                typed_run.player_boxes.get(track.track_id, {}), metadata.fps
+            )
+        except Exception:
+            movement_reason = "Movement analysis failed."
     warnings = (
         ["Ball proximity is an approximation and does not prove possession."]
         if proximity is not None
         else [ball_reason or "Ball detection confidence was insufficient."]
     )
-    return CompletedResponse(
+    response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
         video=VideoResponse(**asdict(metadata)),
@@ -202,7 +244,7 @@ def _completed(
             lost_track_count=track.lost_track_count,
             longest_continuous_visible_segment=track.longest_segment,
         ),
-        features=extractor.features(proximity, ball_reason),
+        features=extractor.features(proximity, ball_reason, movement, movement_reason),
         scores=extractor.scores(),
         diagnostics=Diagnostics(
             frames_processed=(
@@ -217,16 +259,94 @@ def _completed(
                 typed_run.diagnostics.total_person_detections if typed_run is not None else 0
             ),
             tracks_created=typed_run.diagnostics.tracks_created if typed_run is not None else 0,
-            valid_candidate_tracks=0,
+            valid_candidate_tracks=valid_candidate_tracks,
             ball_detections=len(confidences),
             ball_visible_frames=visible,
             ball_track_segments=typed_run.ball_track_segments if typed_run is not None else 0,
             ball_detection_confidence_mean=sum(confidences) / len(confidences)
             if confidences
             else None,
+            raw_ball_detections=typed_run.diagnostics.raw_ball_detections if typed_run else 0,
+            filtered_ball_detections=(
+                typed_run.diagnostics.filtered_ball_detections if typed_run else 0
+            ),
+            accepted_ball_track_observations=(
+                typed_run.diagnostics.accepted_ball_track_observations if typed_run else 0
+            ),
+            frames_with_multiple_ball_candidates=(
+                typed_run.diagnostics.frames_with_multiple_ball_candidates if typed_run else 0
+            ),
+            rejected_ball_candidates=(
+                typed_run.diagnostics.rejected_ball_candidates if typed_run else 0
+            ),
+            unique_track_ids=typed_run.diagnostics.unique_track_ids if typed_run else 0,
+            selected_track_visible_frames=track.visible_frames,
+            ball_analysis_quality=quality if typed_run is not None else None,
+            movement_frames=len(movement.trajectory) if movement else 0,
+            movement_segments=movement.movement_segments if movement else 0,
+            rejected_position_jumps=movement.rejected_position_jumps if movement else 0,
+            smoothed_positions=movement.smoothed_positions if movement else 0,
+            average_speed=movement.metrics.average_speed if movement else None,
+            maximum_speed=movement.metrics.maximum_speed if movement else None,
+            movement_observations=len(movement.trajectory) if movement else 0,
+            movement_duration_seconds=(
+                movement.trajectory[-1].timestamp_seconds - movement.trajectory[0].timestamp_seconds
+                if movement and len(movement.trajectory) > 1
+                else None
+            ),
+            movement_scoring_version="movement_rule_v0.1" if movement else None,
         ),
         warnings=warnings,
         analysis_version=settings.analysis_version,
         model_version=model_version,
         processing_time_ms=round((perf_counter() - started) * 1000),
     )
+    _validate_completed_diagnostics(response)
+    return response
+
+
+def _ball_quality(
+    visible_frames: int,
+    frames_processed: int,
+    accepted_confidences: tuple[float, ...],
+    segments: int,
+    multiple_frames: int,
+    rejected: int,
+    raw_detections: int,
+) -> float:
+    """Conservative, explainable quality score for gating proximity output."""
+    visibility = visible_frames / frames_processed if frames_processed else 0.0
+    confidence = (
+        sum(accepted_confidences) / len(accepted_confidences) if accepted_confidences else 0.0
+    )
+    continuity = visible_frames / (visible_frames + max(segments - 1, 0)) if visible_frames else 0.0
+    multiple_rate = multiple_frames / frames_processed if frames_processed else 1.0
+    rejected_rate = rejected / raw_detections if raw_detections else 1.0
+    return max(
+        0.0,
+        min(
+            1.0,
+            (visibility + confidence + continuity + (1 - multiple_rate) + (1 - rejected_rate)) / 5,
+        ),
+    )
+
+
+def _validate_completed_diagnostics(response: CompletedResponse) -> None:
+    """Prevent successful responses from asserting impossible stage counters."""
+    diagnostics = response.diagnostics
+    player = response.selected_player
+    failures: list[str] = []
+    if diagnostics.tracks_created <= 0:
+        failures.append("selected player requires tracks_created > 0")
+    if player.visible_frames > 0 and (
+        diagnostics.frames_with_player_detections <= 0 or diagnostics.total_person_detections <= 0
+    ):
+        failures.append("visible selected player requires non-zero player detection counters")
+    if diagnostics.valid_candidate_tracks < 1:
+        failures.append("selected player requires at least one valid candidate")
+    if player.visible_frames > diagnostics.frames_processed:
+        failures.append("selected player visibility exceeds processed frames")
+    if diagnostics.ball_visible_frames > diagnostics.frames_processed:
+        failures.append("ball visibility exceeds processed frames")
+    if failures:
+        raise InternalDiagnosticsError("; ".join(failures))

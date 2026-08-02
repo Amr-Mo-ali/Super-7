@@ -51,3 +51,19 @@ class BallTrackerError(AnalysisError):
 
 class BallProximityAnalysisError(AnalysisError):
     """Raised when ball proximity analysis receives invalid observations."""
+
+
+class InternalDiagnosticsError(AnalysisError):
+    """Raised when a completed response would contain contradictory diagnostics."""
+
+
+class MovementAnalysisError(AnalysisError):
+    """Raised when movement analysis cannot safely produce metrics."""
+
+
+class TrajectoryError(MovementAnalysisError):
+    """Raised when trajectory observations are invalid."""
+
+
+class SpeedCalculationError(MovementAnalysisError):
+    """Raised when speed calculation cannot be completed."""

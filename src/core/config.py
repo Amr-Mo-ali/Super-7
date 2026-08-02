@@ -43,6 +43,23 @@ class Settings:
     ball_proximity_threshold: float = 1.25
     ball_interaction_gap_frames: int = 2
     ball_minimum_visible_frames: int = 3
+    ball_minimum_quality: float = 0.30
+    movement_smoothing_window: int = 5
+    movement_max_normalized_jump: float = 3.0
+    movement_direction_change_degrees: float = 30.0
+    movement_minimum_vector_pixels: float = 2.0
+    movement_stationary_speed: float = 5.0
+    movement_distance_normalizer: float = 1000.0
+    movement_speed_normalizer: float = 100.0
+    movement_acceleration_normalizer: float = 300.0
+    movement_min_stationary_duration_seconds: float = 0.3
+    movement_frame_diagonal_pixels: float = 1175.0
+    movement_distance_rate_scale: float = 0.08
+    movement_speed_rate_scale: float = 0.08
+    movement_distance_weight: float = 0.40
+    movement_speed_weight: float = 0.35
+    movement_activity_weight: float = 0.25
+    movement_minimum_quality: float = 0.20
 
     @classmethod
     def from_environment(cls) -> "Settings":

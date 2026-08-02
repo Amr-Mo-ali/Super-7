@@ -37,7 +37,10 @@ uv run pre-commit run --all-files
 uv run uvicorn main:app --reload
 ```
 
-Send a multipart request containing `video`, `player_id`, and optionally `x`, `y`, `width`, `height`, and `frame_index`.
+Send a multipart request containing only the `video` field.
+
+`selected_player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
+not a permanent player identity and may differ when the same video is analyzed again.
 
 ## Container
 
