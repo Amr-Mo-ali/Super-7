@@ -76,14 +76,4 @@ class WeightedTargetPlayerSelector:
 
     def _score(self, track: PlayerTrack) -> Selection:
         visibility = track.visibility_ratio
-        if not track.ball_tracking_available:
-            return Selection(track, "visibility_and_track_continuity", visibility, visibility, 0.0)
-        visibility_part = self._settings.visibility_weight * visibility
-        ball_part = self._settings.ball_proximity_weight * track.ball_proximity_ratio
-        return Selection(
-            track,
-            "visibility_and_ball_proximity",
-            visibility_part + ball_part,
-            visibility_part,
-            ball_part,
-        )
+        return Selection(track, "visibility_and_track_continuity", visibility, visibility, 0.0)

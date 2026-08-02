@@ -22,11 +22,12 @@ def test_selects_most_visible_player() -> None:
     assert result is not None and result.track.track_id == 1
 
 
-def test_selects_stronger_ball_proximity() -> None:
+def test_does_not_use_ball_proximity_for_target_selection() -> None:
     result = WeightedTargetPlayerSelector(Settings(selection_margin=0.01)).select(
         (_track(1, 8, 1), _track(2, 7, 7))
     )
-    assert result is not None and result.track.track_id == 2
+    assert result is not None and result.track.track_id == 1
+    assert result.method == "visibility_and_track_continuity"
 
 
 def test_falls_back_when_ball_tracking_unavailable() -> None:

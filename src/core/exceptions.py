@@ -35,3 +35,19 @@ class InvalidFrameError(AnalysisError):
 
 class InferenceError(AnalysisError):
     """Raised when model inference fails."""
+
+
+class BallDetectorInitializationError(AnalysisError):
+    """Raised when the configured ball detector cannot be initialized."""
+
+
+class BallDetectionError(AnalysisError):
+    """Raised when ball inference cannot produce trustworthy output."""
+
+
+class BallTrackerError(AnalysisError):
+    """Raised when ball tracking cannot continue safely."""
+
+
+class BallProximityAnalysisError(AnalysisError):
+    """Raised when ball proximity analysis receives invalid observations."""

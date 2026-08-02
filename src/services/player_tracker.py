@@ -3,13 +3,17 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
 import cv2
 
+from core.config import Settings
 from core.exceptions import RealDetectorNotConfiguredError
+from services.ball_detector import BallDetector
+from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
+from services.player_detector import BoundingBox, PlayerDetectorProtocol
 from services.selection import PlayerTrack
-from services.video_validator import VideoMetadata
-from services.player_detector import PlayerDetectorProtocol
 from services.tracker import ByteTrackTracker
+from services.video_validator import VideoMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +29,11 @@ class TrackingDiagnostics:
 class TrackingRun:
     tracks: tuple[PlayerTrack, ...]
     diagnostics: TrackingDiagnostics
+    player_boxes: dict[int, dict[int, BoundingBox]] | None = None
+    ball_points: dict[int, BallTrackPoint] | None = None
+    ball_detection_confidences: tuple[float, ...] = ()
+    ball_track_segments: int = 0
+    ball_warning: str | None = None
 
 
 class AutomaticPlayerTracker(Protocol):
@@ -48,9 +57,20 @@ class UnconfiguredPlayerTracker:
 
 class DetectionOnlyPlayerTracker:
     """Runs the real detector over decoded frames; tracking is intentionally unavailable."""
-    def __init__(self, detector: PlayerDetectorProtocol, tracker: ByteTrackTracker) -> None:
+
+    def __init__(
+        self,
+        detector: PlayerDetectorProtocol,
+        tracker: ByteTrackTracker,
+        settings: Settings,
+        ball_detector: BallDetector | None = None,
+        ball_tracker_factory: type[NearestNeighborBallTracker] = NearestNeighborBallTracker,
+    ) -> None:
         self._detector = detector
         self._tracker = tracker
+        self._ball_detector = ball_detector
+        self._settings = settings
+        self._ball_tracker_factory = ball_tracker_factory
         self.model_version = detector.__class__.__name__
 
     def analyze(self, video_path: Path, metadata: VideoMetadata) -> TrackingRun:
@@ -58,6 +78,13 @@ class DetectionOnlyPlayerTracker:
         capture = cv2.VideoCapture(str(video_path))
         processed = with_people = detections = 0
         observations: dict[int, list[tuple[int, float]]] = {}
+        boxes: dict[int, dict[int, BoundingBox]] = {}
+        ball_points: dict[int, BallTrackPoint] = {}
+        ball_confidences: list[float] = []
+        ball_warning: str | None = None
+        ball_tracker = (
+            self._ball_tracker_factory(self._settings) if self._ball_detector is not None else None
+        )
         try:
             while True:
                 ok, frame = capture.read()
@@ -66,14 +93,47 @@ class DetectionOnlyPlayerTracker:
                 processed += 1
                 found = self._detector.detect(frame, processed - 1, (processed - 1) / metadata.fps)
                 for track in self._tracker.update(found):
-                    observations.setdefault(track.track_id, []).append((track.frame_index, track.confidence))
+                    observations.setdefault(track.track_id, []).append(
+                        (track.frame_index, track.confidence)
+                    )
+                    boxes.setdefault(track.track_id, {})[track.frame_index] = BoundingBox(
+                        *track.bounding_box
+                    )
                 detections += len(found)
                 if found:
                     with_people += 1
+                if self._ball_detector is not None and ball_tracker is not None:
+                    try:
+                        found_balls = self._ball_detector.detect(
+                            frame, processed - 1, (processed - 1) / metadata.fps
+                        )
+                        ball_confidences.extend(item.confidence for item in found_balls)
+                        ball_points[processed - 1] = ball_tracker.update(
+                            processed - 1, (processed - 1) / metadata.fps, found_balls
+                        )
+                    except Exception:
+                        ball_warning = "Ball detection was unavailable for this video."
+                        ball_points = {}
         finally:
             capture.release()
-        summaries = tuple(self._summary(track_id, values, processed) for track_id, values in observations.items())
-        return TrackingRun(summaries, TrackingDiagnostics(processed, with_people, detections, self._tracker.tracks_created, 0))
+        summaries = tuple(
+            self._summary(track_id, values, processed) for track_id, values in observations.items()
+        )
+        return TrackingRun(
+            summaries,
+            TrackingDiagnostics(
+                processed,
+                with_people,
+                detections,
+                self._tracker.tracks_created,
+                len(ball_confidences),
+            ),
+            boxes,
+            ball_points,
+            tuple(ball_confidences),
+            ball_tracker.segments if ball_tracker is not None else 0,
+            ball_warning,
+        )
 
     @staticmethod
     def _summary(track_id: int, values: list[tuple[int, float]], processed: int) -> PlayerTrack:
@@ -85,4 +145,6 @@ class DetectionOnlyPlayerTracker:
             longest = max(longest, current)
             previous = frame
         confidence = sum(value for _, value in values) / len(values)
-        return PlayerTrack(track_id, len(values), processed, longest, len(frames) - longest, confidence, 0, False)
+        return PlayerTrack(
+            track_id, len(values), processed, longest, len(frames) - longest, confidence, 0, False
+        )

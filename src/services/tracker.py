@@ -1,9 +1,12 @@
 """Stateful ByteTrack adapter isolated from detector and API code."""
+
+from collections.abc import Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Protocol
-from collections.abc import Sequence
+from typing import Any, Protocol, cast
+
 import numpy as np
+
 from core.config import Settings
 from services.player_detector import Detection
 
@@ -19,6 +22,7 @@ class Track:
 @dataclass(frozen=True, slots=True)
 class ByteTrackDetections:
     """Validated Results-like container required by Ultralytics ByteTrack."""
+
     xyxy: np.ndarray
     conf: np.ndarray
     cls: np.ndarray
@@ -46,10 +50,11 @@ class ByteTrackDetections:
         return len(self.xyxy)
 
     def __getitem__(self, index: object) -> "ByteTrackDetections":
+        array_index = cast(Any, index)
         return ByteTrackDetections(
-            np.atleast_2d(self.xyxy[index]).astype(np.float32),
-            np.atleast_1d(self.conf[index]).astype(np.float32),
-            np.atleast_1d(self.cls[index]).astype(np.float32),
+            np.atleast_2d(self.xyxy[array_index]).astype(np.float32),
+            np.atleast_1d(self.conf[array_index]).astype(np.float32),
+            np.atleast_1d(self.cls[array_index]).astype(np.float32),
         )
 
 
@@ -59,6 +64,7 @@ class TrackerProtocol(Protocol):
 
 class ByteTrackTracker:
     """Ultralytics ByteTrack state maintained for one video analysis."""
+
     def __init__(self, settings: Settings) -> None:
         self._args = SimpleNamespace(
             track_high_thresh=settings.tracker_high_threshold,
@@ -79,9 +85,14 @@ class ByteTrackTracker:
         payload = self._payload(detections)
         rows = self._get_tracker().update(payload)
         tracks = tuple(
-            Track(int(row[4]), detections[int(row[7])].frame_index, float(row[5]),
-                  (float(row[0]), float(row[1]), float(row[2]), float(row[3])))
-            for row in rows if len(row) >= 8 and 0 <= int(row[7]) < len(detections)
+            Track(
+                int(row[4]),
+                detections[int(row[7])].frame_index,
+                float(row[5]),
+                (float(row[0]), float(row[1]), float(row[2]), float(row[3])),
+            )
+            for row in rows
+            if len(row) >= 8 and 0 <= int(row[7]) < len(detections)
         )
         self._seen.update(track.track_id for track in tracks)
         self.tracks_created = len(self._seen)
@@ -91,6 +102,7 @@ class ByteTrackTracker:
         """Create ByteTrack only on first inference, after application import succeeds."""
         if self._tracker is None:
             from ultralytics.trackers.byte_tracker import BYTETracker
+
             self._tracker = BYTETracker(self._args)  # type: ignore[no-untyped-call]
         return self._tracker
 
@@ -98,7 +110,14 @@ class ByteTrackTracker:
     def _payload(detections: Sequence[Detection]) -> ByteTrackDetections:
         """Convert domain detections without exposing Ultralytics types."""
         xyxy = np.asarray(
-            [[d.bounding_box.x1, d.bounding_box.y1, d.bounding_box.x2, d.bounding_box.y2] for d in detections],
+            [
+                [d.bounding_box.x1, d.bounding_box.y1, d.bounding_box.x2, d.bounding_box.y2]
+                for d in detections
+            ],
             dtype=np.float32,
         ).reshape((-1, 4))
-        return ByteTrackDetections(xyxy, np.asarray([d.confidence for d in detections], dtype=np.float32), np.zeros(len(detections), dtype=np.float32))
+        return ByteTrackDetections(
+            xyxy,
+            np.asarray([d.confidence for d in detections], dtype=np.float32),
+            np.zeros(len(detections), dtype=np.float32),
+        )

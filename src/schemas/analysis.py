@@ -17,6 +17,11 @@ class UnsupportedMetric(BaseModel):
     reason: str
 
 
+class FeatureMetric(BaseModel):
+    value: float | None = None
+    reason: str | None = None
+
+
 class SelectedPlayer(BaseModel):
     track_id: int
     selection_method: str
@@ -37,7 +42,7 @@ class TrackingResponse(BaseModel):
 
 
 class FeaturesResponse(BaseModel):
-    ball_proximity_time_seconds: UnsupportedMetric
+    ball_proximity_time_seconds: FeatureMetric
     movement_intensity: UnsupportedMetric
     direction_changes: UnsupportedMetric
 
@@ -60,6 +65,7 @@ class CompletedResponse(BaseModel):
     tracking: TrackingResponse
     features: FeaturesResponse
     scores: ScoresResponse
+    diagnostics: "Diagnostics"
     warnings: list[str]
     analysis_version: str
     model_version: str
@@ -81,11 +87,20 @@ class Diagnostics(BaseModel):
     tracks_created: int
     valid_candidate_tracks: int
     ball_detections: int
+    ball_visible_frames: int = 0
+    ball_track_segments: int = 0
+    ball_detection_confidence_mean: float | None = None
 
 
 class NonCompletedResponse(BaseModel):
     analysis_id: str
-    status: Literal["invalid_video", "no_players_detected", "no_valid_tracks", "failed", "player_detection_completed_tracking_not_available"]
+    status: Literal[
+        "invalid_video",
+        "no_players_detected",
+        "no_valid_tracks",
+        "failed",
+        "player_detection_completed_tracking_not_available",
+    ]
     selected_player: None = None
     candidate_count: int = 0
     warnings: list[str]

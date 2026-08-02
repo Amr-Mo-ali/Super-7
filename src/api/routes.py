@@ -20,6 +20,7 @@ from schemas.analysis import (
     TrackingResponse,
     VideoResponse,
 )
+from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.feature_extractor import FeatureExtractor
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.selection import Selection, TargetPlayerSelector
@@ -32,6 +33,7 @@ def create_router(
     tracker: AutomaticPlayerTracker,
     selector: TargetPlayerSelector,
     extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
     logger: logging.Logger,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
@@ -59,7 +61,13 @@ def create_router(
                 )
             ranked = selector.rank(run.tracks)
             if not run.tracks:
-                return _noncompleted(analysis_id, "player_detection_completed_tracking_not_available", "Player detection completed; multi-object tracking is not available.", run.diagnostics, 0)
+                return _noncompleted(
+                    analysis_id,
+                    "player_detection_completed_tracking_not_available",
+                    "Player detection completed; multi-object tracking is not available.",
+                    run.diagnostics,
+                    0,
+                )
             if not ranked:
                 return _noncompleted(
                     analysis_id,
@@ -85,6 +93,8 @@ def create_router(
                 metadata,
                 selection,
                 extractor,
+                run,
+                ball_proximity_analyzer,
                 analysis_id,
                 started,
             )
@@ -105,7 +115,13 @@ def create_router(
 
 def _noncompleted(
     analysis_id: str,
-    response_status: Literal["invalid_video", "no_players_detected", "no_valid_tracks", "failed", "player_detection_completed_tracking_not_available"],
+    response_status: Literal[
+        "invalid_video",
+        "no_players_detected",
+        "no_valid_tracks",
+        "failed",
+        "player_detection_completed_tracking_not_available",
+    ],
     warning: str,
     diagnostics: TrackingDiagnostics,
     candidates: int,
@@ -126,11 +142,45 @@ def _completed(
     metadata: VideoMetadata,
     selection: Selection,
     extractor: FeatureExtractor,
+    run: object,
+    analyzer: BallProximityAnalyzer,
     analysis_id: str,
     started: float,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
+    from services.player_tracker import TrackingRun
+
+    typed_run = run if isinstance(run, TrackingRun) else None
+    proximity: BallProximityResult | None = None
+    ball_reason: str | None = "Ball detection was unavailable for this video."
+    if (
+        typed_run is not None
+        and typed_run.ball_warning is None
+        and typed_run.ball_points is not None
+        and typed_run.player_boxes is not None
+    ):
+        try:
+            proximity = analyzer.analyze(
+                typed_run.player_boxes.get(track.track_id, {}), typed_run.ball_points, metadata.fps
+            )
+            if proximity.ball_visible_frames < settings.ball_minimum_visible_frames:
+                ball_reason = (
+                    "The ball was visible in too few frames for reliable proximity analysis."
+                )
+                proximity = None
+            else:
+                ball_reason = None
+        except Exception:
+            ball_reason = "Ball detection was unavailable for this video."
+    visible = proximity.ball_visible_frames if proximity is not None else 0
+    ball_frames = proximity.ball_proximity_frames if proximity is not None else 0
+    confidences = typed_run.ball_detection_confidences if typed_run is not None else ()
+    warnings = (
+        ["Ball proximity is an approximation and does not prove possession."]
+        if proximity is not None
+        else [ball_reason or "Ball detection confidence was insufficient."]
+    )
     return CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -142,8 +192,8 @@ def _completed(
             confidence=track.average_confidence,
             visible_frames=track.visible_frames,
             visibility_ratio=track.visibility_ratio,
-            ball_proximity_frames=track.ball_proximity_frames,
-            ball_proximity_ratio=track.ball_proximity_ratio,
+            ball_proximity_frames=ball_frames,
+            ball_proximity_ratio=proximity.ball_proximity_ratio if proximity is not None else 0.0,
             visibility_contribution=selection.visibility_contribution,
             ball_proximity_contribution=selection.ball_contribution,
         ),
@@ -152,9 +202,30 @@ def _completed(
             lost_track_count=track.lost_track_count,
             longest_continuous_visible_segment=track.longest_segment,
         ),
-        features=extractor.features(),
+        features=extractor.features(proximity, ball_reason),
         scores=extractor.scores(),
-        warnings=[],
+        diagnostics=Diagnostics(
+            frames_processed=(
+                typed_run.diagnostics.frames_processed
+                if typed_run is not None
+                else track.total_frames
+            ),
+            frames_with_player_detections=(
+                typed_run.diagnostics.frames_with_player_detections if typed_run is not None else 0
+            ),
+            total_person_detections=(
+                typed_run.diagnostics.total_person_detections if typed_run is not None else 0
+            ),
+            tracks_created=typed_run.diagnostics.tracks_created if typed_run is not None else 0,
+            valid_candidate_tracks=0,
+            ball_detections=len(confidences),
+            ball_visible_frames=visible,
+            ball_track_segments=typed_run.ball_track_segments if typed_run is not None else 0,
+            ball_detection_confidence_mean=sum(confidences) / len(confidences)
+            if confidences
+            else None,
+        ),
+        warnings=warnings,
         analysis_version=settings.analysis_version,
         model_version=model_version,
         processing_time_ms=round((perf_counter() - started) * 1000),

@@ -31,6 +31,18 @@ class Settings:
     tracker_match_threshold: float = 0.80
     tracker_buffer: int = 30
     minimum_track_frames: int = 5
+    ball_model_path: str = "yolo11n.pt"
+    ball_confidence: float = 0.15
+    ball_iou: float = 0.45
+    ball_image_size: int = 640
+    ball_max_center_displacement: float = 120.0
+    ball_max_missing_frames: int = 8
+    ball_minimum_detection_confidence: float = 0.15
+    ball_smoothing_window: int = 3
+    ball_motion_gate: float = 120.0
+    ball_proximity_threshold: float = 1.25
+    ball_interaction_gap_frames: int = 2
+    ball_minimum_visible_frames: int = 3
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -43,4 +55,8 @@ class Settings:
             model_confidence=float(environ.get("MODEL_CONFIDENCE", 0.25)),
             model_iou=float(environ.get("MODEL_IOU", 0.45)),
             model_image_size=int(environ.get("MODEL_IMAGE_SIZE", 640)),
+            ball_model_path=environ.get("BALL_MODEL_PATH", environ.get("MODEL_PATH", "yolo11n.pt")),
+            ball_confidence=float(environ.get("BALL_CONFIDENCE", 0.15)),
+            ball_iou=float(environ.get("BALL_IOU", 0.45)),
+            ball_image_size=int(environ.get("BALL_IMAGE_SIZE", 640)),
         )
