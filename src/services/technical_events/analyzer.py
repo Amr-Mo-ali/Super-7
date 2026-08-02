@@ -1,8 +1,9 @@
 """O(n), deterministic candidate detection using existing tracking evidence only."""
 
 import logging
-from math import hypot
+from math import acos, degrees, hypot
 from time import perf_counter
+from typing import Literal
 
 from core.config import Settings
 from core.exceptions import InternalTechnicalEventDiagnosticsError, TechnicalEventInputError
@@ -21,7 +22,7 @@ from services.technical_events.models import (
 )
 
 CONTROLLED_VERSION = "controlled_movement_confidence_v0.1"
-DRIBBLE_VERSION = "dribble_candidate_confidence_v0.1"
+DRIBBLE_VERSION = "dribble_candidate_confidence_v0.2"
 BALL_LOSS_VERSION = "ball_loss_candidate_confidence_v0.1"
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,7 +90,9 @@ class TechnicalEventAnalyzer:
         controlled, cs, cr_short, cr_conf, breakdown, statistics = self._controlled(
             interactions, player, ball, quality
         )
-        dribbles, ds, dr_move, dr_conf = self._dribbles(controlled, player, ball, movement, quality)
+        dribbles, ds, dr_move, dr_conf, dribble_stats, dribble_breakdown = self._dribbles(
+            controlled, player, ball, movement, quality
+        )
         losses, ls, lr_missing, lr_recovery = self._losses(interactions, player, ball, quality, fps)
         diagnostics = TechnicalEventDiagnostics(
             cs,
@@ -111,6 +114,9 @@ class TechnicalEventAnalyzer:
             tuple(statistics),
             self._displacement_summary(statistics),
             self._displacement_histogram(statistics),
+            tuple(dribble_stats),
+            dribble_breakdown,
+            self._dribble_thresholds(),
         )
         warnings = [
             warning,
@@ -444,42 +450,144 @@ class TechnicalEventAnalyzer:
         b: dict[int, BallObservation],
         movement: MovementResult | None,
         quality: float,
-    ) -> tuple[list[DribbleCandidate], int, int, int]:
+    ) -> tuple[
+        list[DribbleCandidate],
+        int,
+        int,
+        int,
+        list[dict[str, float | int | bool | str | None]],
+        dict[str, int],
+    ]:
         result: list[DribbleCandidate] = []
         low_move = low_conf = 0
+        statistics: list[dict[str, float | int | bool | str | None]] = []
+        breakdown = {
+            "duration": 0,
+            "movement_evidence": 0,
+            "proximity_persistence": 0,
+            "direction_evidence": 0,
+            "trajectory_quality": 0,
+            "confidence": 0,
+        }
+        weights = (
+            self._settings.dribble_direct_displacement_weight
+            + self._settings.dribble_path_length_weight
+        )
+        if abs(weights - 1.0) > 1e-9:
+            raise TechnicalEventInputError("Dribble movement weights must sum to one.")
         for item in controlled:
             frames = [f for f in range(item.start_frame, item.end_frame + 1) if f in p and f in b]
             points = (
                 [
-                    point.position
+                    (point.frame_index, point.position, point.bbox_height)
                     for point in movement.trajectory
                     if item.start_frame <= point.frame_index <= item.end_frame
                 ]
-                if movement is not None
-                else [self._position(p[f]) for f in frames]
+                if movement
+                else [
+                    (f, self._position(p[f]), p[f].bounding_box.y2 - p[f].bounding_box.y1)
+                    for f in frames
+                ]
             )
-            changes = self._direction_changes(points)
-            path = sum(self._distance(a, z) for a, z in zip(points, points[1:], strict=False))
-            straight = item.player_displacement_pixels / path if path else 0.0
-            persist = item.proximity_frame_ratio
+            height = sum(point[2] for point in points) / len(points) if points else 0.0
+            raw_path, filtered_path, ignored, rejected, angles = self._filtered_path(points, height)
+            direct = item.player_displacement_pixels / height if height else 0.0
+            normalized_path = filtered_path / height if height else 0.0
+            movement_component = self._settings.dribble_direct_displacement_weight * self._bounded(
+                direct, self._settings.dribble_direct_displacement_scale
+            ) + self._settings.dribble_path_length_weight * self._bounded(
+                normalized_path, self._settings.dribble_path_length_scale
+            )
+            changes = sum(
+                angle > self._settings.movement_direction_change_degrees for angle in angles
+            )
+            trajectory_quality = filtered_path / raw_path if raw_path else 0.0
+            persistence = len(frames) / max(item.end_frame - item.start_frame + 1, 1)
+            direction_evidence = self._clamp(
+                changes / max(self._settings.dribble_directional_min_direction_changes, 1)
+            )
+            progressive = (
+                item.duration_seconds >= self._settings.dribble_progressive_min_duration_seconds
+                and movement_component >= self._settings.dribble_progressive_min_movement_component
+                and (item.direction_similarity or -1.0)
+                >= self._settings.dribble_progressive_min_direction_similarity
+            )
+            directional = changes >= self._settings.dribble_directional_min_direction_changes
+            subtype: (
+                Literal["directional_dribble_candidate", "progressive_carry_candidate"] | None
+            ) = (
+                "directional_dribble_candidate"
+                if directional
+                else "progressive_carry_candidate"
+                if progressive
+                else None
+            )
+            direction_component = (
+                direction_evidence
+                if directional
+                else self._clamp(((item.direction_similarity or -1.0) + 1) / 2)
+            )
             conf = self._clamp(
-                0.30 * item.confidence
-                + 0.20 * self._clamp(changes / max(self._settings.dribble_min_direction_changes, 1))
-                + 0.20 * self._clamp(item.normalized_player_displacement)
-                + 0.15 * persist
-                + 0.15 * quality
+                0.25 * item.confidence
+                + 0.25 * movement_component
+                + 0.20 * persistence
+                + 0.10 * direction_component
+                + 0.10 * trajectory_quality
+                + 0.10 * quality
             )
-            if (
-                item.duration_seconds < self._settings.dribble_min_duration_seconds
-                or changes < self._settings.dribble_min_direction_changes
-                or item.normalized_player_displacement
-                < self._settings.dribble_min_normalized_displacement
-                or persist < self._settings.dribble_min_proximity_ratio
-            ):
-                low_move += 1
-            elif conf < self._settings.dribble_min_confidence:
-                low_conf += 1
+            reasons: list[str] = []
+            if item.duration_seconds < self._settings.dribble_min_duration_seconds:
+                reasons.append("duration")
+            if movement_component < self._settings.dribble_progressive_min_movement_component:
+                reasons.append("movement_evidence")
+            if persistence < self._settings.dribble_min_proximity_ratio:
+                reasons.append("proximity_persistence")
+            if subtype is None:
+                reasons.append("direction_evidence")
+            if trajectory_quality < self._settings.dribble_min_trajectory_quality:
+                reasons.append("trajectory_quality")
+            if conf < self._settings.dribble_min_confidence:
+                reasons.append("confidence")
+            statistic: dict[str, float | int | bool | str | None] = {
+                "controlled_event_id": item.event_id,
+                "source_interaction_segment_id": item.source_interaction_segment_id,
+                "duration_seconds": item.duration_seconds,
+                "player_displacement_pixels": item.player_displacement_pixels,
+                "normalized_player_displacement": direct,
+                "player_path_length_pixels": filtered_path,
+                "normalized_player_path_length": normalized_path,
+                "direct_displacement_to_path_ratio": item.player_displacement_pixels / filtered_path
+                if filtered_path
+                else 0.0,
+                "direction_changes_inside_segment": changes,
+                "mean_turn_angle_degrees": sum(angles) / len(angles) if angles else 0.0,
+                "maximum_turn_angle_degrees": max(angles, default=0.0),
+                "proximity_persistence": persistence,
+                "mean_normalized_ball_distance": None,
+                "ball_displacement_pixels": item.ball_displacement_pixels,
+                "player_ball_direction_similarity": item.direction_similarity,
+                "segment_movement_intensity": movement_component,
+                "controlled_movement_confidence": item.confidence,
+                "raw_dribble_confidence": conf,
+                "raw_player_path_length_pixels": raw_path,
+                "filtered_player_path_length_pixels": filtered_path,
+                "ignored_tiny_movement_vectors": ignored,
+                "rejected_path_jumps": rejected,
+                "path_quality_ratio": trajectory_quality,
+                "accepted": not reasons,
+                "rejection_reasons": ",".join(reasons) if reasons else None,
+            }
+            statistics.append(statistic)
+            for reason in reasons:
+                breakdown[reason] += 1
+            if reasons:
+                low_move += int(any(reason != "confidence" for reason in reasons))
+                low_conf += int(reasons == ["confidence"])
             else:
+                if subtype is None:
+                    raise InternalTechnicalEventDiagnosticsError(
+                        "Accepted dribble candidates require a subtype."
+                    )
                 result.append(
                     DribbleCandidate(
                         f"dribble-{item.source_interaction_segment_id}",
@@ -488,10 +596,18 @@ class TechnicalEventAnalyzer:
                         item.end_frame,
                         item.duration_seconds,
                         changes,
-                        item.normalized_player_displacement,
-                        persist,
-                        self._clamp(straight),
+                        direct,
+                        normalized_path,
+                        movement_component,
+                        subtype,
+                        persistence,
+                        self._clamp(
+                            item.player_displacement_pixels / filtered_path
+                            if filtered_path
+                            else 0.0
+                        ),
                         conf,
+                        DRIBBLE_VERSION,
                     )
                 )
         return (
@@ -499,7 +615,52 @@ class TechnicalEventAnalyzer:
             len(controlled),
             low_move,
             low_conf,
+            statistics,
+            breakdown,
         )
+
+    def _filtered_path(
+        self, points: list[tuple[int, tuple[float, float], float]], height: float
+    ) -> tuple[float, float, int, int, list[float]]:
+        raw = filtered = 0.0
+        ignored = rejected = 0
+        angles: list[float] = []
+        vectors: list[tuple[float, float]] = []
+        for (first_frame, first, _), (second_frame, second, _) in zip(
+            points, points[1:], strict=False
+        ):
+            vector = (second[0] - first[0], second[1] - first[1])
+            distance = hypot(*vector)
+            raw += distance
+            if (
+                second_frame != first_frame + 1
+                or distance < self._settings.movement_minimum_vector_pixels
+            ):
+                ignored += 1
+                continue
+            if height and distance / height > self._settings.movement_max_normalized_jump:
+                rejected += 1
+                continue
+            filtered += distance
+            vectors.append(vector)
+        for first, second in zip(vectors, vectors[1:], strict=False):
+            cosine = self._cosine(first, second)
+            if cosine is not None:
+                angles.append(degrees(acos(cosine)))
+        return raw, filtered, ignored, rejected, angles
+
+    @staticmethod
+    def _bounded(value: float, scale: float) -> float:
+        return value / (value + scale) if value > 0 and scale > 0 else 0.0
+
+    def _dribble_thresholds(self) -> dict[str, float]:
+        return {
+            "min_duration": self._settings.dribble_min_duration_seconds,
+            "min_proximity_persistence": self._settings.dribble_min_proximity_ratio,
+            "min_confidence": self._settings.dribble_min_confidence,
+            "min_movement_component": self._settings.dribble_progressive_min_movement_component,
+            "min_trajectory_quality": self._settings.dribble_min_trajectory_quality,
+        }
 
     def _losses(
         self,

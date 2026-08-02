@@ -31,9 +31,13 @@ class DribbleCandidate:
     duration_seconds: float
     direction_changes: int
     normalized_player_displacement: float
+    normalized_player_path_length: float
+    movement_evidence_component: float
+    candidate_subtype: Literal["directional_dribble_candidate", "progressive_carry_candidate"]
     proximity_persistence: float
     path_straightness: float
     confidence: float
+    confidence_version: str
     status: Literal["dribble_candidate"] = "dribble_candidate"
 
 
@@ -74,6 +78,9 @@ class TechnicalEventDiagnostics:
     ] = ()
     displacement_summary: dict[str, float] | None = None
     displacement_histogram: dict[str, int] | None = None
+    dribble_candidate_statistics: tuple[dict[str, float | int | bool | str | None], ...] = ()
+    dribble_rejection_breakdown: dict[str, int] | None = None
+    dribble_thresholds: dict[str, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)

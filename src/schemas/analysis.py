@@ -143,9 +143,13 @@ class DribbleCandidateResponse(BaseModel):
     duration_seconds: float
     direction_changes: int
     normalized_player_displacement: float
+    normalized_player_path_length: float
+    movement_evidence_component: float
+    candidate_subtype: Literal["directional_dribble_candidate", "progressive_carry_candidate"]
     proximity_persistence: float
     path_straightness: float
     confidence: float = Field(ge=0, le=1)
+    confidence_version: str
     status: Literal["dribble_candidate"]
 
 
@@ -179,7 +183,7 @@ class TechnicalEventAnalysisResponse(BaseModel):
     versions: dict[str, str] = Field(
         default_factory=lambda: {
             "controlled_movement": "controlled_movement_confidence_v0.1",
-            "dribble": "dribble_candidate_confidence_v0.1",
+            "dribble": "dribble_candidate_confidence_v0.2",
             "ball_loss": "ball_loss_candidate_confidence_v0.1",
         }
     )
@@ -304,6 +308,11 @@ class Diagnostics(BaseModel):
     )
     displacement_summary: dict[str, float] | None = None
     displacement_histogram: dict[str, int] | None = None
+    dribble_candidate_statistics: list[dict[str, float | int | bool | str | None]] = Field(
+        default_factory=list
+    )
+    dribble_rejection_breakdown: dict[str, int] | None = None
+    dribble_thresholds: dict[str, float] | None = None
     physical_score_version: str | None = None
     physical_confidence_version: str | None = None
     physical_score_raw: float | None = None

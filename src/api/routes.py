@@ -562,6 +562,17 @@ def _completed(
             displacement_histogram=technical_events.diagnostics.displacement_histogram
             if technical_events
             else None,
+            dribble_candidate_statistics=list(
+                technical_events.diagnostics.dribble_candidate_statistics
+            )
+            if technical_events
+            else [],
+            dribble_rejection_breakdown=technical_events.diagnostics.dribble_rejection_breakdown
+            if technical_events
+            else None,
+            dribble_thresholds=technical_events.diagnostics.dribble_thresholds
+            if technical_events
+            else None,
             physical_score_version=physical.version if physical else None,
             physical_confidence_version="physical_activity_confidence_v0.1" if physical else None,
             physical_score_raw=physical.raw_score if physical else None,

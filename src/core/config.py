@@ -92,6 +92,15 @@ class Settings:
     dribble_min_normalized_displacement: float = 0.50
     dribble_min_proximity_ratio: float = 0.75
     dribble_min_confidence: float = 0.55
+    dribble_direct_displacement_scale: float = 0.30
+    dribble_path_length_scale: float = 0.60
+    dribble_direct_displacement_weight: float = 0.40
+    dribble_path_length_weight: float = 0.60
+    dribble_directional_min_direction_changes: int = 1
+    dribble_progressive_min_movement_component: float = 0.35
+    dribble_progressive_min_duration_seconds: float = 0.60
+    dribble_progressive_min_direction_similarity: float = 0.35
+    dribble_min_trajectory_quality: float = 0.60
     ball_loss_min_pre_interaction_seconds: float = 0.30
     ball_loss_min_separation_ratio: float = 1.50
     ball_loss_min_ball_away_speed_normalized: float = 0.20
