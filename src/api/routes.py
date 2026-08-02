@@ -294,7 +294,28 @@ def _completed(
                 if movement and len(movement.trajectory) > 1
                 else None
             ),
-            movement_scoring_version="movement_rule_v0.1" if movement else None,
+            movement_scoring_version="movement_rule_v0.2" if movement else None,
+            stationary_frames=movement.metrics.stationary_frames if movement else 0,
+            raw_stationary_segments=movement.metrics.raw_stationary_segments if movement else 0,
+            accepted_stationary_segments=movement.metrics.stationary_period_count
+            if movement
+            else 0,
+            rejected_short_stationary_segments=(
+                movement.metrics.rejected_short_stationary_segments if movement else 0
+            ),
+            distance_component=movement.metrics.distance_component if movement else None,
+            speed_component=movement.metrics.speed_component if movement else None,
+            activity_component=movement.metrics.activity_component if movement else None,
+            raw_movement_intensity=movement.metrics.raw_movement_intensity if movement else None,
+            clamped_movement_intensity=movement.metrics.movement_intensity if movement else None,
+            movement_intensity_saturated=(
+                movement.metrics.movement_intensity >= 1.0 if movement else False
+            ),
+            movement_analysis_quality=(
+                min(1.0, len(movement.trajectory) / max(track.visible_frames, 1))
+                if movement
+                else None
+            ),
         ),
         warnings=warnings,
         analysis_version=settings.analysis_version,

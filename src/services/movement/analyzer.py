@@ -73,11 +73,19 @@ class BottomCenterMovementAnalyzer:
             if angle > self._settings.movement_direction_change_degrees
         ]
         raw_runs = self._stationary_runs(stationary)
-        stationary_runs = [run for run in raw_runs if run >= self._settings.movement_min_stationary_duration_seconds]
+        stationary_runs = [
+            run
+            for run in raw_runs
+            if run >= self._settings.movement_min_stationary_duration_seconds
+        ]
         stationary_frames = sum(round(run * fps) for run in stationary_runs)
-        intensity, distance_component, speed_component, activity_component, raw_intensity = self._intensity(
-            sum(distances), sum(speeds) / len(speeds), sum(stationary_runs),
-            smoothed[-1].timestamp_seconds - smoothed[0].timestamp_seconds,
+        intensity, distance_component, speed_component, activity_component, raw_intensity = (
+            self._intensity(
+                sum(distances),
+                sum(speeds) / len(speeds),
+                sum(stationary_runs),
+                smoothed[-1].timestamp_seconds - smoothed[0].timestamp_seconds,
+            )
         )
         metrics = MovementMetrics(
             sum(distances),
@@ -174,15 +182,35 @@ class BottomCenterMovementAnalyzer:
             runs.append(current)
         return runs
 
-    def _intensity(self, distance: float, speed: float, stationary_time: float, duration: float) -> tuple[float, float, float, float, float]:
-        weights = self._settings.movement_distance_weight + self._settings.movement_speed_weight + self._settings.movement_activity_weight
+    def _intensity(
+        self, distance: float, speed: float, stationary_time: float, duration: float
+    ) -> tuple[float, float, float, float, float]:
+        weights = (
+            self._settings.movement_distance_weight
+            + self._settings.movement_speed_weight
+            + self._settings.movement_activity_weight
+        )
         if abs(weights - 1.0) > 1e-9:
             raise MovementAnalysisError("Movement intensity weights must sum to one.")
         diagonal = self._settings.movement_frame_diagonal_pixels
         distance_rate = distance / (diagonal * duration) if duration > 0 else 0.0
         speed_rate = speed / diagonal
-        distance_component = distance_rate / (distance_rate + self._settings.movement_distance_rate_scale) if distance_rate else 0.0
-        speed_component = speed_rate / (speed_rate + self._settings.movement_speed_rate_scale) if speed_rate else 0.0
-        activity_component = max(0.0, min(1.0, 1 - stationary_time / duration)) if duration > 0 else 0.0
-        raw = self._settings.movement_distance_weight * distance_component + self._settings.movement_speed_weight * speed_component + self._settings.movement_activity_weight * activity_component
+        distance_component = (
+            distance_rate / (distance_rate + self._settings.movement_distance_rate_scale)
+            if distance_rate
+            else 0.0
+        )
+        speed_component = (
+            speed_rate / (speed_rate + self._settings.movement_speed_rate_scale)
+            if speed_rate
+            else 0.0
+        )
+        activity_component = (
+            max(0.0, min(1.0, 1 - stationary_time / duration)) if duration > 0 else 0.0
+        )
+        raw = (
+            self._settings.movement_distance_weight * distance_component
+            + self._settings.movement_speed_weight * speed_component
+            + self._settings.movement_activity_weight * activity_component
+        )
         return max(0.0, min(1.0, raw)), distance_component, speed_component, activity_component, raw

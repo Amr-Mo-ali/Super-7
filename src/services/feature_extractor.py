@@ -50,6 +50,12 @@ class FeatureExtractor:
             stationary_time_seconds=movement_metric(
                 movement.metrics.stationary_time_seconds if movement else 0
             ),
+            average_acceleration_pixels_per_second_squared=movement_metric(
+                movement.metrics.average_acceleration if movement else 0
+            ),
+            max_acceleration_pixels_per_second_squared=movement_metric(
+                movement.metrics.maximum_acceleration if movement else 0
+            ),
         )
 
     def scores(self) -> ScoresResponse:

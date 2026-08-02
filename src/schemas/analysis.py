@@ -53,6 +53,10 @@ class FeaturesResponse(BaseModel):
     average_speed_pixels_per_second: FeatureMetric = Field(default_factory=FeatureMetric)
     max_speed_pixels_per_second: FeatureMetric = Field(default_factory=FeatureMetric)
     stationary_time_seconds: FeatureMetric = Field(default_factory=FeatureMetric)
+    average_acceleration_pixels_per_second_squared: FeatureMetric = Field(
+        default_factory=FeatureMetric
+    )
+    max_acceleration_pixels_per_second_squared: FeatureMetric = Field(default_factory=FeatureMetric)
 
 
 class ScoresResponse(BaseModel):
@@ -116,6 +120,16 @@ class Diagnostics(BaseModel):
     movement_duration_seconds: float | None = None
     stationary_frames: int = 0
     movement_scoring_version: str | None = None
+    raw_stationary_segments: int = 0
+    accepted_stationary_segments: int = 0
+    rejected_short_stationary_segments: int = 0
+    distance_component: float | None = None
+    speed_component: float | None = None
+    activity_component: float | None = None
+    raw_movement_intensity: float | None = None
+    clamped_movement_intensity: float | None = None
+    movement_intensity_saturated: bool = False
+    movement_analysis_quality: float | None = None
 
 
 class NonCompletedResponse(BaseModel):
