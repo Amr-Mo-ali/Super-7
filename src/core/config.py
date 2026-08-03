@@ -29,6 +29,10 @@ class Settings:
     target_segment_min_quality: float = 0.45
     target_segment_max_normalized_center_jump: float = 3.0
     tracklet_stitching_enabled: bool = False
+    segment_ball_max_interpolation_gap_frames: int = 2
+    segment_ball_max_normalized_jump: float = 3.0
+    segment_ball_min_endpoint_confidence: float = 0.25
+    segment_ball_min_analysis_quality: float = 0.45
     model_path: str = "yolo11n.pt"
     model_device: str = "cpu"
     model_confidence: float = 0.25
@@ -163,4 +167,16 @@ class Settings:
             target_segment_min_quality=float(environ.get("TARGET_SEGMENT_MIN_QUALITY", 0.45)),
             tracklet_stitching_enabled=environ.get("TRACKLET_STITCHING_ENABLED", "false").lower()
             == "true",
+            segment_ball_max_interpolation_gap_frames=int(
+                environ.get("SEGMENT_BALL_MAX_INTERPOLATION_GAP_FRAMES", 2)
+            ),
+            segment_ball_max_normalized_jump=float(
+                environ.get("SEGMENT_BALL_MAX_NORMALIZED_JUMP", 3.0)
+            ),
+            segment_ball_min_endpoint_confidence=float(
+                environ.get("SEGMENT_BALL_MIN_ENDPOINT_CONFIDENCE", 0.25)
+            ),
+            segment_ball_min_analysis_quality=float(
+                environ.get("SEGMENT_BALL_MIN_ANALYSIS_QUALITY", 0.45)
+            ),
         )

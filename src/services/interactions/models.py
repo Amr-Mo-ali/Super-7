@@ -73,6 +73,8 @@ class InteractionDiagnostics:
     interaction_confidence_version: str
     interaction_analysis_quality: float
     processing_time_ms: int
+    rejected_low_global_quality_interaction_segments: int = 0
+    rejected_invalid_interaction_segments: int = 0
 
 
 @dataclass(frozen=True, slots=True)

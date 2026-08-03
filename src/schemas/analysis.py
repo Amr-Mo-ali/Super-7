@@ -327,6 +327,28 @@ class Diagnostics(BaseModel):
     physical_score_confidence_capped: bool = False
     physical_score_components: dict[str, float] | None = None
     physical_score_processing_time_ms: int = 0
+    ball_analysis_scope: str = "full_video"
+    ball_quality_scope: str = "full_video"
+    global_ball_analysis_quality: float | None = None
+    selected_segment_ball_analysis_quality: float | None = None
+    ball_quality_failure_reasons: list[str] = Field(default_factory=list)
+    segment_ball_total_frames: int = 0
+    segment_ball_detected_frames: int = 0
+    segment_ball_interpolated_frames: int = 0
+    segment_ball_reconstructed_frames: int = 0
+    segment_ball_visibility_ratio: float = 0.0
+    segment_ball_track_segments_before_reconstruction: int = 0
+    segment_ball_track_segments_after_reconstruction: int = 0
+    segment_ball_longest_run_frames: int = 0
+    segment_ball_longest_gap_frames: int = 0
+    segment_ball_mean_confidence: float | None = None
+    segment_ball_multiple_candidate_ratio: float = 0.0
+    segment_ball_quality_components: dict[str, float] | None = None
+    segment_ball_reconstruction_version: str | None = None
+    segment_ball_quality_version: str | None = None
+    segment_ball_processing_time_ms: int = 0
+    rejected_low_global_quality_interaction_segments: int = 0
+    rejected_invalid_interaction_segments: int = 0
     rejected_tracks: list[dict[str, object]] = Field(default_factory=list)
     rejected_track_reason_breakdown: dict[str, int] = Field(default_factory=dict)
 

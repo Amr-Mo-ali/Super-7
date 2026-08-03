@@ -63,6 +63,14 @@ def test_low_quality_degrades_without_segments() -> None:
     )
     assert result.segments == ()
     assert result.reason is not None
+    diagnostics = result.diagnostics
+    assert diagnostics.raw_interaction_segments == (
+        diagnostics.accepted_interaction_segments
+        + diagnostics.rejected_short_interaction_segments
+        + diagnostics.rejected_low_confidence_interaction_segments
+        + diagnostics.rejected_low_global_quality_interaction_segments
+        + diagnostics.rejected_invalid_interaction_segments
+    )
 
 
 def test_confidence_weights_must_sum_to_one() -> None:

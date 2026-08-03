@@ -44,6 +44,8 @@ from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.scoring.protocols import PhysicalActivityScorerProtocol
+from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
+from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import build_segments, rejection_diagnostics, select_segment
 from services.selection import Selection, TargetPlayerSelector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
@@ -235,6 +237,46 @@ def _completed(
             typed_run.ball_detection_confidences,
             typed_run.ball_track_segments,
             typed_run.ball_warning,
+            {
+                f: candidates
+                for f, candidates in (typed_run.ball_candidates or {}).items()
+                if start <= f <= end
+            },
+        )
+    global_quality = _ball_quality(
+        typed_run.diagnostics.accepted_ball_track_observations if typed_run else 0,
+        typed_run.diagnostics.frames_processed if typed_run else 0,
+        tuple(
+            point.confidence
+            for point in (typed_run.ball_points or {}).values()
+            if point.visible and point.confidence is not None
+        )
+        if typed_run
+        else (),
+        typed_run.ball_track_segments if typed_run else 0,
+        typed_run.diagnostics.frames_with_multiple_ball_candidates if typed_run else 0,
+        typed_run.diagnostics.rejected_ball_candidates if typed_run else 0,
+        len(typed_run.ball_detection_confidences) if typed_run else 0,
+    )
+    segment_ball = None
+    if typed_run is not None and selection.segment_start_frame is not None:
+        segment_ball = reconstruct(
+            typed_run.ball_candidates or {},
+            selection.segment_start_frame,
+            selection.segment_end_frame or selection.segment_start_frame,
+            metadata.fps,
+            settings,
+        )
+        typed_run = TrackingRun(
+            typed_run.tracks,
+            typed_run.diagnostics,
+            typed_run.player_boxes,
+            typed_run.player_confidences,
+            segment_ball.points,
+            typed_run.ball_detection_confidences,
+            typed_run.ball_track_segments,
+            typed_run.ball_warning,
+            typed_run.ball_candidates,
         )
     proximity: BallProximityResult | None = None
     ball_reason: str | None = "Ball detection was unavailable for this video."
@@ -278,7 +320,9 @@ def _completed(
         typed_run.diagnostics.rejected_ball_candidates if typed_run else 0,
         len(confidences),
     )
-    if proximity is not None and quality < settings.ball_minimum_quality:
+    if segment_ball is not None:
+        quality = segment_ball.quality or 0.0
+    if proximity is not None and segment_ball is None and quality < settings.ball_minimum_quality:
         proximity = None
         ball_reason = "Ball tracking quality was insufficient for reliable proximity analysis."
     movement: MovementResult | None = None
@@ -376,6 +420,9 @@ def _completed(
         warnings.append(
             "Target player was selected from the best continuous track segment rather than the full video."
         )
+        warnings.append("Ball analysis was scoped to the selected player segment.")
+    if segment_ball is not None and segment_ball.interpolated_frames:
+        warnings.append("Short ball-track gaps were interpolated for segment-level analysis.")
     if movement is not None:
         warnings.extend(
             [
@@ -478,6 +525,46 @@ def _completed(
             unique_track_ids=typed_run.diagnostics.unique_track_ids if typed_run else 0,
             selected_track_visible_frames=track.visible_frames,
             ball_analysis_quality=quality if typed_run is not None else None,
+            ball_analysis_scope="selected_player_segment"
+            if segment_ball is not None
+            else "full_video",
+            ball_quality_scope="selected_player_segment"
+            if segment_ball is not None
+            else "full_video",
+            global_ball_analysis_quality=global_quality if typed_run is not None else None,
+            selected_segment_ball_analysis_quality=segment_ball.quality if segment_ball else None,
+            ball_quality_failure_reasons=list(segment_ball.failure_reasons) if segment_ball else [],
+            segment_ball_total_frames=(
+                selection.segment_end_frame - selection.segment_start_frame + 1
+            )
+            if selection.segment_start_frame is not None and selection.segment_end_frame is not None
+            else 0,
+            segment_ball_detected_frames=segment_ball.detected_frames if segment_ball else 0,
+            segment_ball_interpolated_frames=segment_ball.interpolated_frames
+            if segment_ball
+            else 0,
+            segment_ball_reconstructed_frames=segment_ball.reconstructed_frames
+            if segment_ball
+            else 0,
+            segment_ball_visibility_ratio=segment_ball.visibility_ratio if segment_ball else 0.0,
+            segment_ball_track_segments_before_reconstruction=segment_ball.segments_before
+            if segment_ball
+            else 0,
+            segment_ball_track_segments_after_reconstruction=segment_ball.segments_after
+            if segment_ball
+            else 0,
+            segment_ball_longest_run_frames=segment_ball.longest_run if segment_ball else 0,
+            segment_ball_longest_gap_frames=segment_ball.longest_gap if segment_ball else 0,
+            segment_ball_mean_confidence=segment_ball.mean_confidence if segment_ball else None,
+            segment_ball_multiple_candidate_ratio=segment_ball.multiple_candidate_ratio
+            if segment_ball
+            else 0.0,
+            segment_ball_quality_components=segment_ball.quality_components
+            if segment_ball
+            else None,
+            segment_ball_reconstruction_version=RECONSTRUCTION_VERSION if segment_ball else None,
+            segment_ball_quality_version=SEGMENT_BALL_QUALITY_VERSION if segment_ball else None,
+            segment_ball_processing_time_ms=segment_ball.processing_time_ms if segment_ball else 0,
             movement_frames=len(movement.trajectory) if movement else 0,
             movement_segments=movement.movement_segments if movement else 0,
             rejected_position_jumps=movement.rejected_position_jumps if movement else 0,
@@ -544,6 +631,12 @@ def _completed(
             if interaction
             else 0,
             rejected_low_confidence_interaction_segments=interaction.diagnostics.rejected_low_confidence_interaction_segments
+            if interaction
+            else 0,
+            rejected_low_global_quality_interaction_segments=interaction.diagnostics.rejected_low_global_quality_interaction_segments
+            if interaction
+            else 0,
+            rejected_invalid_interaction_segments=interaction.diagnostics.rejected_invalid_interaction_segments
             if interaction
             else 0,
             bridged_interaction_gaps=interaction.diagnostics.bridged_interaction_gaps

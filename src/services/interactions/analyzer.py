@@ -75,19 +75,24 @@ class BallInteractionAnalyzer:
             or player_track_quality < self._settings.interaction_min_player_track_quality
         )
         accepted: list[InteractionSegment] = []
-        rejected_short = rejected_low_confidence = 0
+        rejected_short = rejected_low_confidence = rejected_invalid = 0
+        rejected_global = len(raw) if low_global_quality else 0
         if not low_global_quality:
             for run in raw:
-                segment = self._segment(
-                    len(accepted) + 1,
-                    run,
-                    by_frame,
-                    fps,
-                    player_by_frame,
-                    ball_by_frame,
-                    player_track_quality,
-                    ball_analysis_quality,
-                )
+                try:
+                    segment = self._segment(
+                        len(accepted) + 1,
+                        run,
+                        by_frame,
+                        fps,
+                        player_by_frame,
+                        ball_by_frame,
+                        player_track_quality,
+                        ball_analysis_quality,
+                    )
+                except InteractionSegmentationError:
+                    rejected_invalid += 1
+                    continue
                 if (
                     segment.candidate_frame_count < self._settings.interaction_min_segment_frames
                     or segment.duration_seconds
@@ -120,6 +125,8 @@ class BallInteractionAnalyzer:
             accepted_interaction_segments=len(accepted),
             rejected_short_interaction_segments=rejected_short,
             rejected_low_confidence_interaction_segments=rejected_low_confidence,
+            rejected_low_global_quality_interaction_segments=rejected_global,
+            rejected_invalid_interaction_segments=rejected_invalid,
             bridged_interaction_gaps=bridged,
             maximum_bridged_gap_frames=self._settings.interaction_max_gap_frames,
             interaction_evidence_coverage_ratio=observed / total_span if total_span else 0.0,
@@ -259,6 +266,17 @@ class BallInteractionAnalyzer:
 
     @staticmethod
     def _validate(result: InteractionAnalysisResult) -> None:
+        d = result.diagnostics
+        if d.raw_interaction_segments != (
+            d.accepted_interaction_segments
+            + d.rejected_short_interaction_segments
+            + d.rejected_low_confidence_interaction_segments
+            + d.rejected_low_global_quality_interaction_segments
+            + d.rejected_invalid_interaction_segments
+        ):
+            raise InternalInteractionDiagnosticsError(
+                "Interaction segment accounting must reconcile."
+            )
         previous_end = -1
         for segment in result.segments:
             if segment.start_frame > segment.end_frame or segment.start_frame <= previous_end:

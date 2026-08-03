@@ -8,7 +8,7 @@ import cv2
 
 from core.config import Settings
 from core.exceptions import RealDetectorNotConfiguredError
-from services.ball_detector import BallDetector
+from services.ball_detector import BallDetection, BallDetector
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
 from services.player_detector import BoundingBox, PlayerDetectorProtocol
 from services.selection import PlayerTrack
@@ -43,6 +43,7 @@ class TrackingRun:
     ball_detection_confidences: tuple[float, ...] = ()
     ball_track_segments: int = 0
     ball_warning: str | None = None
+    ball_candidates: dict[int, tuple[BallDetection, ...]] | None = None
 
 
 class AutomaticPlayerTracker(Protocol):
@@ -91,6 +92,7 @@ class DetectionOnlyPlayerTracker:
         confidences_by_track: dict[int, dict[int, float]] = {}
         ball_points: dict[int, BallTrackPoint] = {}
         ball_confidences: list[float] = []
+        ball_candidates: dict[int, tuple[BallDetection, ...]] = {}
         filtered_ball_detections = accepted_ball_observations = multiple_ball_frames = 0
         ball_warning: str | None = None
         ball_tracker = (
@@ -122,6 +124,7 @@ class DetectionOnlyPlayerTracker:
                             frame, processed - 1, (processed - 1) / metadata.fps
                         )
                         ball_confidences.extend(item.confidence for item in found_balls)
+                        ball_candidates[processed - 1] = tuple(found_balls)
                         filtered = tuple(
                             item
                             for item in found_balls
@@ -164,6 +167,7 @@ class DetectionOnlyPlayerTracker:
             tuple(ball_confidences),
             ball_tracker.segments if ball_tracker is not None else 0,
             ball_warning,
+            ball_candidates,
         )
 
     @staticmethod
