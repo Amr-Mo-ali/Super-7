@@ -8,11 +8,14 @@ from schemas.analysis import (
     PhysicalScoreEvidenceResponse,
     PhysicalScoreResponse,
     ScoresResponse,
+    TechnicalScoreResponse,
     UnsupportedMetric,
 )
 from services.ball_proximity import BallProximityResult
 from services.movement.schemas import MovementResult
 from services.scoring.models import PhysicalScoreResult
+from services.scoring.technical import VERSION as TECHNICAL_VERSION
+from services.scoring.technical import TechnicalScoreResult
 
 _REASON = "Not supported by the current automatic-tracking implementation."
 
@@ -68,7 +71,11 @@ class FeatureExtractor:
             ),
         )
 
-    def scores(self, physical: PhysicalScoreResult | None = None) -> ScoresResponse:
+    def scores(
+        self,
+        physical: PhysicalScoreResult | None = None,
+        technical: TechnicalScoreResult | None = None,
+    ) -> ScoresResponse:
         unavailable = UnsupportedMetric(reason=_REASON)
         physical_response = (
             PhysicalScoreResponse(
@@ -90,8 +97,22 @@ class FeatureExtractor:
             else unavailable
         )
         return ScoresResponse(
-            technical=UnsupportedMetric(
-                reason="Requires technical football events such as controlled movement, dribble, pass, shot, and ball-loss candidates."
+            technical=(
+                TechnicalScoreResponse(
+                    value=technical.value,
+                    confidence=technical.confidence,
+                    status=technical.status,
+                    version=TECHNICAL_VERSION,
+                    evidence=technical.evidence,
+                )
+                if technical is not None
+                and technical.value is not None
+                and technical.confidence is not None
+                else UnsupportedMetric(
+                    reason=technical.reason
+                    if technical and technical.reason
+                    else "Technical-event analysis was unavailable."
+                )
             ),
             physical=physical_response,
             game_intelligence=UnsupportedMetric(

@@ -43,6 +43,14 @@ class PhysicalScoreResponse(BaseModel):
     explanation: str
 
 
+class TechnicalScoreResponse(BaseModel):
+    value: float = Field(ge=0, le=100)
+    confidence: float = Field(ge=0, le=1)
+    status: str
+    version: str
+    evidence: dict[str, float]
+
+
 class FeatureMetric(BaseModel):
     value: float | None = None
     reason: str | None = None
@@ -194,7 +202,7 @@ class TechnicalEventAnalysisResponse(BaseModel):
 
 
 class ScoresResponse(BaseModel):
-    technical: UnsupportedMetric
+    technical: TechnicalScoreResponse | UnsupportedMetric
     physical: PhysicalScoreResponse | UnsupportedMetric
     game_intelligence: UnsupportedMetric
     mental_resilience: UnsupportedMetric
@@ -351,6 +359,12 @@ class Diagnostics(BaseModel):
     rejected_invalid_interaction_segments: int = 0
     rejected_tracks: list[dict[str, object]] = Field(default_factory=list)
     rejected_track_reason_breakdown: dict[str, int] = Field(default_factory=dict)
+    technical_evidence_score: float = 0.0
+    technical_event_count: int = 0
+    technical_controlled_component: float | None = None
+    technical_dribble_component: float | None = None
+    technical_ball_loss_penalty: float = 0.0
+    technical_score_quality: float = 0.0
 
 
 class NonCompletedResponse(BaseModel):

@@ -44,6 +44,7 @@ from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.scoring.protocols import PhysicalActivityScorerProtocol
+from services.scoring.technical import TechnicalScorer
 from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import build_segments, rejection_diagnostics, select_segment
@@ -452,6 +453,7 @@ def _completed(
         )
     except Exception:
         logger.exception("physical_activity_score_failed analysis_id=%s", analysis_id)
+    technical_score = TechnicalScorer().score(technical_events)
     response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -484,7 +486,7 @@ def _completed(
         features=extractor.features(proximity, ball_reason, movement, movement_reason),
         interaction_analysis=_interaction_response(interaction, interaction_reason),
         technical_event_analysis=_technical_event_response(technical_events, technical_reason),
-        scores=extractor.scores(physical),
+        scores=extractor.scores(physical, technical_score),
         diagnostics=Diagnostics(
             frames_processed=(
                 typed_run.diagnostics.frames_processed
@@ -699,6 +701,18 @@ def _completed(
             technical_event_processing_time_ms=technical_events.diagnostics.processing_time_ms
             if technical_events
             else 0,
+            technical_evidence_score=(
+                sum(technical_score.evidence.values()) if technical_score.evidence else 0.0
+            ),
+            technical_event_count=int(
+                technical_score.evidence.get("controlled_movement_events", 0)
+                + technical_score.evidence.get("dribble_events", 0)
+                + technical_score.evidence.get("ball_loss_events", 0)
+            ),
+            technical_controlled_component=technical_score.controlled_component,
+            technical_dribble_component=technical_score.dribble_component,
+            technical_ball_loss_penalty=technical_score.ball_loss_penalty,
+            technical_score_quality=technical_score.quality,
             controlled_movement_rejection_breakdown=technical_events.diagnostics.controlled_movement_rejection_breakdown
             if technical_events
             else None,
