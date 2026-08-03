@@ -33,6 +33,10 @@ class Selection:
     score: float
     visibility_contribution: float
     ball_contribution: float
+    segment_id: int | None = None
+    segment_start_frame: int | None = None
+    segment_end_frame: int | None = None
+    segment_duration_seconds: float | None = None
 
 
 class TargetPlayerSelector(Protocol):

@@ -29,6 +29,8 @@ class TrackingDiagnostics:
     frames_with_multiple_ball_candidates: int = 0
     rejected_ball_candidates: int = 0
     unique_track_ids: int = 0
+    rejected_tracks: tuple[dict[str, object], ...] = ()
+    rejected_track_reason_breakdown: dict[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +38,7 @@ class TrackingRun:
     tracks: tuple[PlayerTrack, ...]
     diagnostics: TrackingDiagnostics
     player_boxes: dict[int, dict[int, BoundingBox]] | None = None
+    player_confidences: dict[int, dict[int, float]] | None = None
     ball_points: dict[int, BallTrackPoint] | None = None
     ball_detection_confidences: tuple[float, ...] = ()
     ball_track_segments: int = 0
@@ -85,6 +88,7 @@ class DetectionOnlyPlayerTracker:
         processed = with_people = detections = 0
         observations: dict[int, list[tuple[int, float]]] = {}
         boxes: dict[int, dict[int, BoundingBox]] = {}
+        confidences_by_track: dict[int, dict[int, float]] = {}
         ball_points: dict[int, BallTrackPoint] = {}
         ball_confidences: list[float] = []
         filtered_ball_detections = accepted_ball_observations = multiple_ball_frames = 0
@@ -105,6 +109,9 @@ class DetectionOnlyPlayerTracker:
                     )
                     boxes.setdefault(track.track_id, {})[track.frame_index] = BoundingBox(
                         *track.bounding_box
+                    )
+                    confidences_by_track.setdefault(track.track_id, {})[track.frame_index] = (
+                        track.confidence
                     )
                 detections += len(found)
                 if found:
@@ -152,6 +159,7 @@ class DetectionOnlyPlayerTracker:
                 self._tracker.tracks_created,
             ),
             boxes,
+            confidences_by_track,
             ball_points,
             tuple(ball_confidences),
             ball_tracker.segments if ball_tracker is not None else 0,

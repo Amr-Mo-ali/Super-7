@@ -163,3 +163,57 @@ def test_completed_response_rejects_contradictory_player_diagnostics() -> None:
     )
     with pytest.raises(InternalDiagnosticsError):
         _validate_completed_diagnostics(response)
+
+
+def test_completed_response_rejects_contradictory_ball_diagnostics() -> None:
+    unavailable = UnsupportedMetric(reason="not implemented")
+    response = CompletedResponse(
+        analysis_id="test",
+        status="completed",
+        video=VideoResponse(duration_seconds=1, fps=10, width=64, height=64),
+        selected_player=SelectedPlayer(
+            track_id=1,
+            selection_method="test",
+            selection_score=1,
+            confidence=1,
+            visible_frames=1,
+            visibility_ratio=1,
+            ball_proximity_frames=0,
+            ball_proximity_ratio=0,
+            visibility_contribution=1,
+            ball_proximity_contribution=0,
+        ),
+        tracking=TrackingResponse(
+            frames_processed=1, lost_track_count=0, longest_continuous_visible_segment=1
+        ),
+        features=FeaturesResponse(
+            ball_proximity_time_seconds=FeatureMetric(reason="unavailable"),
+            movement_intensity=FeatureMetric(reason="unavailable"),
+            direction_changes=FeatureMetric(reason="unavailable"),
+        ),
+        scores=ScoresResponse(
+            technical=unavailable,
+            physical=unavailable,
+            game_intelligence=unavailable,
+            mental_resilience=unavailable,
+            professionalism=unavailable,
+            growth_potential=unavailable,
+            market_readiness=unavailable,
+        ),
+        diagnostics=Diagnostics(
+            frames_processed=1,
+            frames_with_player_detections=1,
+            total_person_detections=1,
+            tracks_created=1,
+            valid_candidate_tracks=1,
+            ball_detections=1,
+            ball_visible_frames=0,
+            accepted_ball_track_observations=1,
+        ),
+        warnings=[],
+        analysis_version="test",
+        model_version="test",
+        processing_time_ms=0,
+    )
+    with pytest.raises(InternalDiagnosticsError, match="ball visibility"):
+        _validate_completed_diagnostics(response)

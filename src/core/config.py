@@ -21,6 +21,14 @@ class Settings:
     minimum_visibility_ratio: float = 0.20
     minimum_continuous_track_length: int = 5
     minimum_detection_confidence: float = 0.50
+    target_selection_mode: str = "segment"
+    target_segment_max_gap_frames: int = 3
+    target_segment_min_visible_frames: int = 30
+    target_segment_min_duration_seconds: float = 1.0
+    target_segment_min_mean_confidence: float = 0.30
+    target_segment_min_quality: float = 0.45
+    target_segment_max_normalized_center_jump: float = 3.0
+    tracklet_stitching_enabled: bool = False
     model_path: str = "yolo11n.pt"
     model_device: str = "cpu"
     model_confidence: float = 0.25
@@ -141,4 +149,18 @@ class Settings:
             ball_confidence=float(environ.get("BALL_CONFIDENCE", 0.15)),
             ball_iou=float(environ.get("BALL_IOU", 0.45)),
             ball_image_size=int(environ.get("BALL_IMAGE_SIZE", 640)),
+            target_selection_mode=environ.get("TARGET_SELECTION_MODE", "segment"),
+            target_segment_max_gap_frames=int(environ.get("TARGET_SEGMENT_MAX_GAP_FRAMES", 3)),
+            target_segment_min_visible_frames=int(
+                environ.get("TARGET_SEGMENT_MIN_VISIBLE_FRAMES", 30)
+            ),
+            target_segment_min_duration_seconds=float(
+                environ.get("TARGET_SEGMENT_MIN_DURATION_SECONDS", 1.0)
+            ),
+            target_segment_min_mean_confidence=float(
+                environ.get("TARGET_SEGMENT_MIN_MEAN_CONFIDENCE", 0.30)
+            ),
+            target_segment_min_quality=float(environ.get("TARGET_SEGMENT_MIN_QUALITY", 0.45)),
+            tracklet_stitching_enabled=environ.get("TRACKLET_STITCHING_ENABLED", "false").lower()
+            == "true",
         )

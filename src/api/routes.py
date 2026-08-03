@@ -1,7 +1,7 @@
 """Thin HTTP orchestration for automatic target-player analysis."""
 
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from time import perf_counter
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -44,6 +44,7 @@ from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.scoring.protocols import PhysicalActivityScorerProtocol
+from services.segment_selection import build_segments, rejection_diagnostics, select_segment
 from services.selection import Selection, TargetPlayerSelector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
@@ -86,7 +87,6 @@ def create_router(
                     run.diagnostics,
                     0,
                 )
-            ranked = selector.rank(run.tracks)
             if not run.tracks:
                 return _noncompleted(
                     analysis_id,
@@ -95,12 +95,36 @@ def create_router(
                     run.diagnostics,
                     0,
                 )
+            selection_diagnostics = run.diagnostics
+            ranked: tuple[Selection, ...]
+            if (
+                settings.target_selection_mode == "segment"
+                and run.player_boxes is not None
+                and run.player_confidences is not None
+            ):
+                segments = build_segments(
+                    run.player_boxes,
+                    run.player_confidences,
+                    run.ball_points or {},
+                    metadata.fps,
+                    settings,
+                )
+                rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
+                selection_diagnostics = replace(
+                    run.diagnostics,
+                    rejected_tracks=tuple(rejected),
+                    rejected_track_reason_breakdown=breakdown,
+                )
+                selected = select_segment(segments)
+                ranked = (selected,) if selected is not None else ()
+            else:
+                ranked = selector.rank(run.tracks)
             if not ranked:
                 return _noncompleted(
                     analysis_id,
                     "no_valid_tracks",
                     "No track passed the configured quality thresholds.",
-                    run.diagnostics,
+                    selection_diagnostics,
                     0,
                 )
             if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
@@ -130,6 +154,7 @@ def create_router(
                 physical_scorer,
                 analysis_id,
                 started,
+                selection_diagnostics,
             )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
@@ -185,12 +210,32 @@ def _completed(
     physical_scorer: PhysicalActivityScorerProtocol,
     analysis_id: str,
     started: float,
+    selection_diagnostics: TrackingDiagnostics | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
     from services.player_tracker import TrackingRun
 
     typed_run = run if isinstance(run, TrackingRun) else None
+    if typed_run is not None and selection.segment_start_frame is not None:
+        start, end = selection.segment_start_frame, selection.segment_end_frame
+        assert end is not None
+        typed_run = TrackingRun(
+            typed_run.tracks,
+            typed_run.diagnostics,
+            {
+                track_id: {f: box for f, box in boxes.items() if start <= f <= end}
+                for track_id, boxes in (typed_run.player_boxes or {}).items()
+            },
+            {
+                track_id: {f: value for f, value in values.items() if start <= f <= end}
+                for track_id, values in (typed_run.player_confidences or {}).items()
+            },
+            {f: point for f, point in (typed_run.ball_points or {}).items() if start <= f <= end},
+            typed_run.ball_detection_confidences,
+            typed_run.ball_track_segments,
+            typed_run.ball_warning,
+        )
     proximity: BallProximityResult | None = None
     ball_reason: str | None = "Ball detection was unavailable for this video."
     if (
@@ -212,7 +257,7 @@ def _completed(
                 ball_reason = None
         except Exception:
             ball_reason = "Ball detection was unavailable for this video."
-    visible = proximity.ball_visible_frames if proximity is not None else 0
+    proximity_visible = proximity.ball_visible_frames if proximity is not None else 0
     ball_frames = proximity.ball_proximity_frames if proximity is not None else 0
     confidences = typed_run.ball_detection_confidences if typed_run is not None else ()
     accepted_confidences = (
@@ -225,7 +270,7 @@ def _completed(
         else ()
     )
     quality = _ball_quality(
-        visible,
+        proximity_visible,
         track.total_frames,
         accepted_confidences,
         typed_run.ball_track_segments if typed_run is not None else 0,
@@ -327,6 +372,10 @@ def _completed(
         if proximity is not None
         else [ball_reason or "Ball detection confidence was insufficient."]
     )
+    if selection.method == "best_continuous_track_segment":
+        warnings.append(
+            "Target player was selected from the best continuous track segment rather than the full video."
+        )
     if movement is not None:
         warnings.extend(
             [
@@ -371,9 +420,17 @@ def _completed(
             ball_proximity_ratio=proximity.ball_proximity_ratio if proximity is not None else 0.0,
             visibility_contribution=selection.visibility_contribution,
             ball_proximity_contribution=selection.ball_contribution,
+            segment_id=selection.segment_id,
+            segment_start_frame=selection.segment_start_frame,
+            segment_end_frame=selection.segment_end_frame,
+            segment_duration_seconds=selection.segment_duration_seconds,
         ),
         tracking=TrackingResponse(
-            frames_processed=track.total_frames,
+            frames_processed=(
+                selection_diagnostics.frames_processed
+                if selection_diagnostics
+                else track.total_frames
+            ),
             lost_track_count=track.lost_track_count,
             longest_continuous_visible_segment=track.longest_segment,
         ),
@@ -396,7 +453,11 @@ def _completed(
             tracks_created=typed_run.diagnostics.tracks_created if typed_run is not None else 0,
             valid_candidate_tracks=valid_candidate_tracks,
             ball_detections=len(confidences),
-            ball_visible_frames=visible,
+            ball_visible_frames=(
+                selection_diagnostics.accepted_ball_track_observations
+                if selection_diagnostics is not None
+                else (typed_run.diagnostics.accepted_ball_track_observations if typed_run else 0)
+            ),
             ball_track_segments=typed_run.ball_track_segments if typed_run is not None else 0,
             ball_detection_confidence_mean=sum(confidences) / len(confidences)
             if confidences
@@ -595,6 +656,14 @@ def _completed(
                 else None
             ),
             physical_score_processing_time_ms=physical.processing_time_ms if physical else 0,
+            rejected_tracks=list(selection_diagnostics.rejected_tracks)
+            if selection_diagnostics
+            else [],
+            rejected_track_reason_breakdown=(
+                selection_diagnostics.rejected_track_reason_breakdown or {}
+            )
+            if selection_diagnostics
+            else {},
         ),
         warnings=list(dict.fromkeys(warnings)),
         analysis_version=settings.analysis_version,
@@ -719,5 +788,7 @@ def _validate_completed_diagnostics(response: CompletedResponse) -> None:
         failures.append("selected player visibility exceeds processed frames")
     if diagnostics.ball_visible_frames > diagnostics.frames_processed:
         failures.append("ball visibility exceeds processed frames")
+    if diagnostics.ball_visible_frames != diagnostics.accepted_ball_track_observations:
+        failures.append("ball visibility must equal accepted primary-ball observations")
     if failures:
         raise InternalDiagnosticsError("; ".join(failures))

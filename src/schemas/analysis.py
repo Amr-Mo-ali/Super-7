@@ -59,6 +59,10 @@ class SelectedPlayer(BaseModel):
     ball_proximity_ratio: float
     visibility_contribution: float
     ball_proximity_contribution: float
+    segment_id: int | None = None
+    segment_start_frame: int | None = None
+    segment_end_frame: int | None = None
+    segment_duration_seconds: float | None = None
 
 
 class TrackingResponse(BaseModel):
@@ -323,6 +327,8 @@ class Diagnostics(BaseModel):
     physical_score_confidence_capped: bool = False
     physical_score_components: dict[str, float] | None = None
     physical_score_processing_time_ms: int = 0
+    rejected_tracks: list[dict[str, object]] = Field(default_factory=list)
+    rejected_track_reason_breakdown: dict[str, int] = Field(default_factory=dict)
 
 
 class NonCompletedResponse(BaseModel):
