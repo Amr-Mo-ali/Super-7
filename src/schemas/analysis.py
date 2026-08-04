@@ -249,6 +249,41 @@ class PassDetectionResponse(BaseModel):
     processing_time_ms: int = 0
 
 
+class ShotCandidateResponse(BaseModel):
+    shot_id: str
+    possessor_track_id: int
+    start_frame: int
+    preparation_start_frame: int
+    preparation_end_frame: int
+    release_frame: int
+    end_frame: int
+    duration_seconds: float
+    distance: float
+    trajectory_points: list[tuple[float, float]]
+    trajectory_duration: float
+    mean_speed: float
+    maximum_speed: float
+    release_speed: float
+    release_direction: tuple[float, float]
+    release_acceleration: float
+    preparation_confidence: float = Field(ge=0, le=1)
+    release_confidence: float = Field(ge=0, le=1)
+    trajectory_quality: float = Field(ge=0, le=1)
+    follow_through_confidence: float = Field(ge=0, le=1)
+    confidence: float = Field(ge=0, le=1)
+    status: str
+
+
+class ShotDetectionResponse(BaseModel):
+    shot_candidates: list[ShotCandidateResponse] = Field(default_factory=list)
+    raw_shot_candidates: int = 0
+    accepted_shot_candidates: int = 0
+    rejected_shot_candidates: int = 0
+    rejection_breakdown: dict[str, int] = Field(default_factory=dict)
+    shot_detection_version: str = "shot_detection_v0.1"
+    processing_time_ms: int = 0
+
+
 class ScoresResponse(BaseModel):
     technical: TechnicalScoreResponse | UnsupportedMetric
     physical: PhysicalScoreResponse | UnsupportedMetric
@@ -273,6 +308,7 @@ class CompletedResponse(BaseModel):
         default_factory=TechnicalEventAnalysisResponse
     )
     pass_detection: PassDetectionResponse = Field(default_factory=PassDetectionResponse)
+    shot_detection: ShotDetectionResponse = Field(default_factory=ShotDetectionResponse)
     scores: ScoresResponse
     diagnostics: "Diagnostics"
     warnings: list[str]

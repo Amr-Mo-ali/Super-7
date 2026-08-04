@@ -34,6 +34,8 @@ from schemas.analysis import (
     PassDetectionResponse,
     PipelineTiming,
     SelectedPlayer,
+    ShotCandidateResponse,
+    ShotDetectionResponse,
     StageGate,
     TechnicalEventAnalysisResponse,
     TrackingResponse,
@@ -58,6 +60,7 @@ from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSIO
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import build_segments, rejection_diagnostics, select_segment
 from services.selection import Selection, TargetPlayerSelector
+from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
 from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
@@ -74,6 +77,7 @@ def create_router(
     interaction_analyzer: BallInteractionAnalyzerProtocol,
     technical_event_analyzer: TechnicalEventAnalyzer,
     pass_detector: PassDetector,
+    shot_detector: ShotDetector,
     physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
 ) -> APIRouter:
@@ -176,6 +180,7 @@ def create_router(
                 interaction_analyzer,
                 technical_event_analyzer,
                 pass_detector,
+                shot_detector,
                 logger,
                 physical_scorer,
                 analysis_id,
@@ -246,6 +251,7 @@ def _completed(
     interaction_analyzer: BallInteractionAnalyzerProtocol,
     technical_event_analyzer: TechnicalEventAnalyzer,
     pass_detector: PassDetector,
+    shot_detector: ShotDetector,
     logger: logging.Logger,
     physical_scorer: PhysicalActivityScorerProtocol,
     analysis_id: str,
@@ -369,12 +375,19 @@ def _completed(
         proximity = None
         ball_reason = "Ball tracking quality was insufficient for reliable proximity analysis."
     pass_detection: PassDetectionResult | None = None
+    shot_detection: ShotDetectionResult | None = None
     if (
         typed_run is not None
         and typed_run.player_boxes is not None
         and typed_run.ball_points is not None
     ):
         pass_detection = pass_detector.analyze(
+            typed_run.player_boxes,
+            typed_run.player_confidences or {},
+            typed_run.ball_points,
+            metadata.fps,
+        )
+        shot_detection = shot_detector.analyze(
             typed_run.player_boxes,
             typed_run.player_confidences or {},
             typed_run.ball_points,
@@ -563,6 +576,7 @@ def _completed(
         interaction_analysis=_interaction_response(interaction, interaction_reason),
         technical_event_analysis=_technical_event_response(technical_events, technical_reason),
         pass_detection=_pass_detection_response(pass_detection),
+        shot_detection=_shot_detection_response(shot_detection),
         scores=extractor.scores(physical, technical_score),
         diagnostics=Diagnostics(
             frames_processed=(
@@ -864,6 +878,7 @@ def _completed(
             "technical_scoring": "technical_scoring_v0.1",
             "physical_scoring": physical.version if physical else "physical_activity_v0.1",
             "pass_detection": PASS_DETECTION_VERSION,
+            "shot_detection": SHOT_DETECTION_VERSION,
         },
         timing=stage_timing,
         quality_gates=_quality_gates(
@@ -882,6 +897,7 @@ def _completed(
                 interaction,
                 technical_events,
                 pass_detection,
+                shot_detection,
             )
         except Exception:
             logger.exception("debug_render_failed analysis_id=%s", analysis_id)
@@ -973,6 +989,20 @@ def _pass_detection_response(result: PassDetectionResult | None) -> PassDetectio
         rejected_pass_candidates=result.rejected_pass_candidates,
         rejection_breakdown=result.rejection_breakdown,
         pass_detection_version=result.version,
+        processing_time_ms=result.processing_time_ms,
+    )
+
+
+def _shot_detection_response(result: ShotDetectionResult | None) -> ShotDetectionResponse:
+    if result is None:
+        return ShotDetectionResponse()
+    return ShotDetectionResponse(
+        shot_candidates=[ShotCandidateResponse(**asdict(item)) for item in result.candidates],
+        raw_shot_candidates=result.raw_shot_candidates,
+        accepted_shot_candidates=result.accepted_shot_candidates,
+        rejected_shot_candidates=result.rejected_shot_candidates,
+        rejection_breakdown=result.rejection_breakdown,
+        shot_detection_version=result.version,
         processing_time_ms=result.processing_time_ms,
     )
 
