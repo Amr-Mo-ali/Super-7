@@ -220,6 +220,35 @@ class TechnicalEventAnalysisResponse(BaseModel):
     )
 
 
+class PassCandidateResponse(BaseModel):
+    pass_id: str
+    possessor_track_id: int
+    receiver_track_id: int
+    start_frame: int
+    release_frame: int
+    end_frame: int
+    duration_seconds: float
+    distance: float
+    confidence: float = Field(ge=0, le=1)
+    release_speed: float
+    trajectory_points: list[tuple[float, float]]
+    trajectory_duration: float
+    trajectory_length: float
+    trajectory_direction: tuple[float, float]
+    trajectory_quality: float = Field(ge=0, le=1)
+    status: str
+
+
+class PassDetectionResponse(BaseModel):
+    pass_candidates: list[PassCandidateResponse] = Field(default_factory=list)
+    raw_pass_candidates: int = 0
+    accepted_pass_candidates: int = 0
+    rejected_pass_candidates: int = 0
+    rejection_breakdown: dict[str, int] = Field(default_factory=dict)
+    pass_detection_version: str = "pass_detection_v0.1"
+    processing_time_ms: int = 0
+
+
 class ScoresResponse(BaseModel):
     technical: TechnicalScoreResponse | UnsupportedMetric
     physical: PhysicalScoreResponse | UnsupportedMetric
@@ -243,6 +272,7 @@ class CompletedResponse(BaseModel):
     technical_event_analysis: TechnicalEventAnalysisResponse = Field(
         default_factory=TechnicalEventAnalysisResponse
     )
+    pass_detection: PassDetectionResponse = Field(default_factory=PassDetectionResponse)
     scores: ScoresResponse
     diagnostics: "Diagnostics"
     warnings: list[str]

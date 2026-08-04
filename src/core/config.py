@@ -182,6 +182,16 @@ class Settings:
     physical_score_min_accepted_interval_ratio: float = 0.60
     physical_score_raw_image_confidence_cap: float = 0.75
     debug_output_dir: str = "debug"
+    pass_possession_proximity_ratio: float = 1.2
+    pass_min_possession_frames: int = 3
+    pass_max_gap_frames: int = 2
+    pass_release_window_frames: int = 6
+    pass_min_release_speed_pixels: float = 20.0
+    pass_max_trajectory_frames: int = 90
+    pass_min_trajectory_frames: int = 3
+    pass_min_trajectory_length_pixels: float = 30.0
+    pass_trajectory_quality_length_pixels: float = 150.0
+    pass_receiver_proximity_ratio: float = 1.5
 
     @classmethod
     def from_environment(cls) -> "Settings":

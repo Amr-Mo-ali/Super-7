@@ -11,6 +11,7 @@ from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzer
 from services.movement.analyzer import BottomCenterMovementAnalyzer
+from services.pass_detection import PassDetector
 from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.scoring.physical_activity import RuleBasedPhysicalActivityScorer
 from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelector
@@ -50,6 +51,7 @@ def create_app(
             BottomCenterMovementAnalyzer(resolved_settings),
             BallInteractionAnalyzer(resolved_settings),
             TechnicalEventAnalyzer(resolved_settings),
+            PassDetector(resolved_settings),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
         )

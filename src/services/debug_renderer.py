@@ -6,6 +6,7 @@ import cv2
 
 from services.ball_tracker import BallTrackPoint
 from services.interactions.models import InteractionAnalysisResult
+from services.pass_detection import PassDetectionResult
 from services.player_detector import BoundingBox
 from services.selection import Selection
 from services.technical_events.models import TechnicalEventAnalysisResult
@@ -19,6 +20,7 @@ def render_debug_video(
     ball_points: dict[int, BallTrackPoint] | None,
     interactions: InteractionAnalysisResult | None,
     events: TechnicalEventAnalysisResult | None,
+    passes: PassDetectionResult | None = None,
 ) -> dict[str, str]:
     """Render overlays into new files; the uploaded source is opened read-only."""
     del interactions, events  # Their ranges are represented by candidate IDs in API diagnostics.
@@ -58,6 +60,14 @@ def render_debug_video(
             cv2.circle(image, center, 5, (0, 165, 255), -1)
         for left, right in zip(trajectory, trajectory[1:], strict=False):
             cv2.line(image, left, right, (0, 165, 255), 2)
+        for candidate in passes.candidates if passes else ():
+            if candidate.start_frame <= frame <= candidate.end_frame:
+                path = [(int(value[0]), int(value[1])) for value in candidate.trajectory_points]
+                for left, right in zip(path, path[1:], strict=False):
+                    cv2.line(image, left, right, (255, 0, 255), 2)
+                cv2.putText(image, candidate.pass_id, (10, 20), 0, 0.5, (255, 0, 255), 1)
+            if frame == candidate.release_frame:
+                cv2.putText(image, "release", (10, 40), 0, 0.5, (0, 0, 255), 1)
         writer.write(image)
         cv2.imwrite(str(frames_dir / f"frame_{frame:06d}.jpg"), image)
         frame += 1
