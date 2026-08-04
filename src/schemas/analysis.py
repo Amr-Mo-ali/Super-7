@@ -375,6 +375,8 @@ class Diagnostics(BaseModel):
     camera_motion_rejected_intervals: int = 0
     camera_motion_coverage_ratio: float = 0.0
     camera_motion_mean_confidence: float | None = None
+    camera_motion: dict[str, object] | None = None
+    trajectory_validation: list[dict[str, object]] = Field(default_factory=list)
     movement_metrics_source: str = "raw_image_space"
     interaction_aligned_frames: int = 0
     interaction_candidate_frames: int = 0

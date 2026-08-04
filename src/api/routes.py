@@ -42,6 +42,8 @@ from schemas.analysis import (
     VideoResponse,
 )
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
+from services.camera_motion import CameraMotionEstimator
+from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
@@ -290,6 +292,15 @@ def _completed(
                 if start <= f <= end
             },
         )
+    camera_motion = None
+    if debug_source is not None:
+        try:
+            camera_motion = CameraMotionEstimator().estimate(
+                debug_source, selection.segment_start_frame or 0, selection.segment_end_frame
+            )
+        except Exception:
+            logger.exception("camera_motion_estimation_failed analysis_id=%s", analysis_id)
+    camera_diagnostics = camera_motion_diagnostics(camera_motion) if camera_motion else None
     global_quality = _ball_quality(
         typed_run.diagnostics.accepted_ball_track_observations if typed_run else 0,
         typed_run.diagnostics.frames_processed if typed_run else 0,
@@ -695,12 +706,22 @@ def _completed(
                 if movement
                 else None
             ),
-            camera_motion_enabled=False,
-            camera_motion_evaluated_intervals=0,
-            camera_motion_accepted_intervals=0,
-            camera_motion_rejected_intervals=0,
-            camera_motion_coverage_ratio=0.0,
-            camera_motion_mean_confidence=None,
+            camera_motion_enabled=bool(camera_motion and camera_motion.intervals),
+            camera_motion_evaluated_intervals=len(camera_motion.intervals) if camera_motion else 0,
+            camera_motion_accepted_intervals=camera_motion.accepted_intervals
+            if camera_motion
+            else 0,
+            camera_motion_rejected_intervals=camera_motion.rejected_intervals
+            if camera_motion
+            else 0,
+            camera_motion_coverage_ratio=camera_motion.coverage_ratio if camera_motion else 0.0,
+            camera_motion_mean_confidence=(
+                sum(item.confidence for item in camera_motion.intervals if item.accepted)
+                / camera_motion.accepted_intervals
+                if camera_motion and camera_motion.accepted_intervals
+                else None
+            ),
+            camera_motion=camera_diagnostics,
             movement_metrics_source="raw_image_space",
             interaction_aligned_frames=interaction.diagnostics.interaction_aligned_frames
             if interaction
