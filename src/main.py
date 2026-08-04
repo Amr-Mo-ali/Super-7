@@ -1,12 +1,18 @@
 """Application entry point."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from adapters.yolo_ball_detector import YOLOBallDetector
 from adapters.yolo_player_detector import YOLOPlayerDetector
+from api.request_lifecycle import RequestLifecycle
 from api.routes import create_router
+from concurrency.admission import AdmissionController
+from concurrency.executor import AnalysisExecutor
 from core.config import Settings
 from core.logging import get_logger
+from diagnostics.artifacts import ArtifactManager
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzer
@@ -25,6 +31,8 @@ def create_app(
     settings: Settings | None = None,
     tracker: AutomaticPlayerTracker | None = None,
     selector: TargetPlayerSelector | None = None,
+    validator: VideoValidator | None = None,
+    lifecycle: RequestLifecycle | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
@@ -41,10 +49,21 @@ def create_app(
         resolved_settings.model_device,
     )
     app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
+    resolved_lifecycle = lifecycle or RequestLifecycle(
+        AdmissionController(max_active_analyses=1),
+        AnalysisExecutor(),
+        ArtifactManager(
+            Path(resolved_settings.debug_output_dir), resolved_settings.max_upload_bytes
+        ),
+    )
+    app.state.admission_controller = resolved_lifecycle.admission
+    app.state.analysis_executor = resolved_lifecycle.executor
+    app.state.artifact_manager = resolved_lifecycle.artifacts
+    app.state.request_lifecycle = resolved_lifecycle
     app.include_router(
         create_router(
             resolved_settings,
-            VideoValidator(resolved_settings),
+            validator or VideoValidator(resolved_settings),
             resolved_tracker,
             selector or WeightedTargetPlayerSelector(resolved_settings),
             FeatureExtractor(),
@@ -56,6 +75,7 @@ def create_app(
             ShotDetector(),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
+            resolved_lifecycle,
         )
     )
     return app
