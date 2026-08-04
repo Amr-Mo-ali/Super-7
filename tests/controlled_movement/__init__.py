@@ -1,0 +1,1 @@
+"""Controlled-movement deterministic tests."""

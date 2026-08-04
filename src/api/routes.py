@@ -2,6 +2,8 @@
 
 import logging
 from dataclasses import asdict, replace
+from pathlib import Path
+from shutil import copyfile
 from time import perf_counter
 from typing import Annotated, Literal
 from uuid import uuid4
@@ -15,6 +17,7 @@ from core.exceptions import (
     InvalidRequestError,
     RealDetectorNotConfiguredError,
 )
+from core.reproducibility import metadata as reproducibility_metadata
 from schemas.analysis import (
     AmbiguousResponse,
     AnalyzeResponse,
@@ -27,12 +30,15 @@ from schemas.analysis import (
     InteractionAnalysisResponse,
     InteractionSegmentResponse,
     NonCompletedResponse,
+    PipelineTiming,
     SelectedPlayer,
+    StageGate,
     TechnicalEventAnalysisResponse,
     TrackingResponse,
     VideoResponse,
 )
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
+from services.debug_renderer import render_debug_video
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
 from services.interactions.models import (
@@ -75,6 +81,7 @@ def create_router(
         """Validate one video and select exactly one non-ambiguous player track."""
         started = perf_counter()
         analysis_id = str(uuid4())
+        detection_started = perf_counter()
         try:
             unexpected_fields = set((await request.form()).keys()) - {"video"}
             if unexpected_fields:
@@ -82,6 +89,15 @@ def create_router(
             async with temporary_upload(video, settings) as video_path:
                 metadata = validator.validate(video_path)
                 run = tracker.analyze(video_path, metadata)
+                detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
+                request_metadata = reproducibility_metadata(video_path, tracker.model_version)
+                debug_source = (
+                    Path(settings.debug_output_dir)
+                    / analysis_id
+                    / f"source_video{video_path.suffix}"
+                )
+                debug_source.parent.mkdir(parents=True, exist_ok=True)
+                copyfile(video_path, debug_source)
             if run.diagnostics.total_person_detections == 0:
                 return _noncompleted(
                     analysis_id,
@@ -100,6 +116,7 @@ def create_router(
                 )
             selection_diagnostics = run.diagnostics
             ranked: tuple[Selection, ...]
+            selection_started = perf_counter()
             if (
                 settings.target_selection_mode == "segment"
                 and run.player_boxes is not None
@@ -122,6 +139,7 @@ def create_router(
                 ranked = (selected,) if selected is not None else ()
             else:
                 ranked = selector.rank(run.tracks)
+            selection_time_ms = round((perf_counter() - selection_started) * 1000)
             if not ranked:
                 return _noncompleted(
                     analysis_id,
@@ -158,6 +176,13 @@ def create_router(
                 analysis_id,
                 started,
                 selection_diagnostics,
+                PipelineTiming(
+                    player_detection_time_ms=detection_tracking_time_ms,
+                    tracking_time_ms=detection_tracking_time_ms,
+                    segment_selection_time_ms=selection_time_ms,
+                ),
+                request_metadata,
+                debug_source,
             )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
@@ -194,6 +219,12 @@ def _noncompleted(
         candidate_count=candidates,
         warnings=[warning],
         diagnostics=Diagnostics(**asdict(diagnostics), valid_candidate_tracks=candidates),
+        pipeline_state="DETECTION"
+        if response_status == "no_players_detected"
+        else "PLAYER_SELECTION",
+        quality_gates={
+            "pipeline": StageGate(quality=0.0, status="rejected", failure_reasons=[warning])
+        },
     )
 
 
@@ -214,6 +245,9 @@ def _completed(
     analysis_id: str,
     started: float,
     selection_diagnostics: TrackingDiagnostics | None = None,
+    timing: PipelineTiming | None = None,
+    analysis_metadata: dict[str, str | None] | None = None,
+    debug_source: Path | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
@@ -259,6 +293,8 @@ def _completed(
         typed_run.diagnostics.rejected_ball_candidates if typed_run else 0,
         len(typed_run.ball_detection_confidences) if typed_run else 0,
     )
+    stage_timing = timing or PipelineTiming()
+    ball_started = perf_counter()
     segment_ball = None
     if typed_run is not None and selection.segment_start_frame is not None:
         segment_ball = reconstruct(
@@ -326,6 +362,9 @@ def _completed(
     if proximity is not None and segment_ball is None and quality < settings.ball_minimum_quality:
         proximity = None
         ball_reason = "Ball tracking quality was insufficient for reliable proximity analysis."
+    stage_timing = stage_timing.model_copy(
+        update={"ball_processing_time_ms": round((perf_counter() - ball_started) * 1000)}
+    )
     movement: MovementResult | None = None
     movement_reason: str | None = None
     if typed_run is not None and typed_run.player_boxes is not None:
@@ -396,6 +435,7 @@ def _completed(
         )
     technical_events: TechnicalEventAnalysisResult | None = None
     technical_reason: str | None = "Technical-event analysis was unavailable."
+    event_started = perf_counter()
     if interaction is not None and movement is not None:
         try:
             technical_events = technical_event_analyzer.analyze(
@@ -412,6 +452,7 @@ def _completed(
             technical_reason = technical_events.reason
         except Exception:
             logger.exception("technical_event_analysis_failed analysis_id=%s", analysis_id)
+    event_time_ms = round((perf_counter() - event_started) * 1000)
     warnings = (
         ["Ball proximity is an approximation and does not prove possession."]
         if proximity is not None
@@ -435,6 +476,7 @@ def _completed(
         warnings.extend(interaction.warnings)
     if technical_events is not None:
         warnings.extend(technical_events.warnings)
+    physical_started = perf_counter()
     physical = None
     try:
         physical = physical_scorer.score(
@@ -453,7 +495,23 @@ def _completed(
         )
     except Exception:
         logger.exception("physical_activity_score_failed analysis_id=%s", analysis_id)
+    physical_time_ms = round((perf_counter() - physical_started) * 1000)
+    technical_score_started = perf_counter()
     technical_score = TechnicalScorer().score(technical_events)
+    technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
+    total_time_ms = round((perf_counter() - started) * 1000)
+    stage_timing = stage_timing.model_copy(
+        update={
+            "interaction_processing_time_ms": interaction.diagnostics.processing_time_ms
+            if interaction
+            else 0,
+            "controlled_movement_time_ms": event_time_ms,
+            "dribble_processing_time_ms": event_time_ms,
+            "technical_scoring_time_ms": technical_score_time_ms,
+            "physical_scoring_time_ms": physical_time_ms,
+            "total_processing_time_ms": total_time_ms,
+        }
+    )
     response = CompletedResponse(
         analysis_id=analysis_id,
         status="completed",
@@ -775,8 +833,40 @@ def _completed(
         warnings=list(dict.fromkeys(warnings)),
         analysis_version=settings.analysis_version,
         model_version=model_version,
-        processing_time_ms=round((perf_counter() - started) * 1000),
+        processing_time_ms=total_time_ms,
+        algorithm_versions={
+            "player_detection": model_version,
+            "tracking": "bytetrack_v0.1",
+            "player_selection": "segment_selection_v0.1",
+            "ball_reconstruction": RECONSTRUCTION_VERSION,
+            "interaction_analysis": "interaction_analysis_v0.1",
+            "controlled_movement": "controlled_movement_confidence_v0.1",
+            "dribble": "dribble_candidate_confidence_v0.2",
+            "technical_scoring": "technical_scoring_v0.1",
+            "physical_scoring": physical.version if physical else "physical_activity_v0.1",
+        },
+        timing=stage_timing,
+        quality_gates=_quality_gates(
+            track.visibility_ratio, quality, interaction, technical_events, physical, ball_reason
+        ),
+        analysis_metadata=analysis_metadata or {},
     )
+    if typed_run is not None and debug_source is not None:
+        try:
+            response.debug_artifacts = render_debug_video(
+                debug_source,
+                debug_source.parent,
+                selection,
+                typed_run.player_boxes,
+                typed_run.ball_points,
+                interaction,
+                technical_events,
+            )
+        except Exception:
+            logger.exception("debug_render_failed analysis_id=%s", analysis_id)
+            response.warnings.append(
+                "Debug-video rendering failed; analysis results are unaffected."
+            )
     _validate_completed_diagnostics(response)
     return response
 
@@ -899,3 +989,39 @@ def _validate_completed_diagnostics(response: CompletedResponse) -> None:
         failures.append("ball visibility must equal accepted primary-ball observations")
     if failures:
         raise InternalDiagnosticsError("; ".join(failures))
+
+
+def _quality_gates(
+    player_quality: float,
+    ball_quality: float,
+    interaction: InteractionAnalysisResult | None,
+    events: TechnicalEventAnalysisResult | None,
+    physical: object | None,
+    ball_reason: str | None,
+) -> dict[str, StageGate]:
+    """Give each pipeline stage an explicit, machine-readable outcome."""
+
+    def gate(quality: float, reason: str | None = None) -> StageGate:
+        return StageGate(
+            quality=max(0.0, min(1.0, quality)),
+            status="accepted" if reason is None else "rejected",
+            failure_reasons=[] if reason is None else [reason],
+        )
+
+    return {
+        "player_selection": gate(player_quality),
+        "ball_analysis": gate(ball_quality, ball_reason),
+        "interaction_analysis": gate(
+            interaction.diagnostics.interaction_analysis_quality if interaction else 0.0,
+            interaction.reason if interaction else "Interaction analysis was unavailable.",
+        ),
+        "event_analysis": gate(
+            events.diagnostics.technical_event_analysis_quality if events else 0.0,
+            events.reason if events else "Technical-event analysis was unavailable.",
+        ),
+        "technical_scoring": gate(1.0),
+        "physical_scoring": gate(
+            float(getattr(physical, "confidence", 0.0) or 0.0),
+            getattr(physical, "reason", None) if physical else "Physical scoring was unavailable.",
+        ),
+    }

@@ -12,6 +12,25 @@ class VideoResponse(BaseModel):
     height: int
 
 
+class StageGate(BaseModel):
+    quality: float = Field(ge=0, le=1)
+    status: Literal["accepted", "rejected", "skipped", "failed"]
+    failure_reasons: list[str] = Field(default_factory=list)
+
+
+class PipelineTiming(BaseModel):
+    player_detection_time_ms: int = 0
+    tracking_time_ms: int = 0
+    segment_selection_time_ms: int = 0
+    ball_processing_time_ms: int = 0
+    interaction_processing_time_ms: int = 0
+    controlled_movement_time_ms: int = 0
+    dribble_processing_time_ms: int = 0
+    technical_scoring_time_ms: int = 0
+    physical_scoring_time_ms: int = 0
+    total_processing_time_ms: int = 0
+
+
 class UnsupportedMetric(BaseModel):
     value: None = None
     reason: str
@@ -230,6 +249,12 @@ class CompletedResponse(BaseModel):
     analysis_version: str
     model_version: str
     processing_time_ms: int
+    pipeline_state: Literal["COMPLETE"] = "COMPLETE"
+    algorithm_versions: dict[str, str] = Field(default_factory=dict)
+    timing: PipelineTiming = Field(default_factory=PipelineTiming)
+    quality_gates: dict[str, StageGate] = Field(default_factory=dict)
+    analysis_metadata: dict[str, str | None] = Field(default_factory=dict)
+    debug_artifacts: dict[str, str] = Field(default_factory=dict)
 
 
 class AmbiguousResponse(BaseModel):
@@ -380,6 +405,8 @@ class NonCompletedResponse(BaseModel):
     candidate_count: int = 0
     warnings: list[str]
     diagnostics: Diagnostics
+    pipeline_state: str = "VIDEO"
+    quality_gates: dict[str, StageGate] = Field(default_factory=dict)
 
 
 AnalyzeResponse = CompletedResponse | AmbiguousResponse | NonCompletedResponse

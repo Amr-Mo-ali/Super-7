@@ -1,0 +1,1 @@
+"""Technical-scoring deterministic tests."""

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from os import environ
 
+from config.football_profiles import threshold
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -17,22 +19,32 @@ class Settings:
     model_version: str = "unconfigured"
     visibility_weight: float = 0.65
     ball_proximity_weight: float = 0.35
-    selection_margin: float = 0.08
-    minimum_visibility_ratio: float = 0.20
-    minimum_continuous_track_length: int = 5
-    minimum_detection_confidence: float = 0.50
+    selection_margin: float = float(threshold("selection_margin"))
+    minimum_visibility_ratio: float = float(threshold("minimum_visibility_ratio"))
+    minimum_continuous_track_length: int = int(threshold("minimum_continuous_track_length"))
+    minimum_detection_confidence: float = float(threshold("minimum_detection_confidence"))
     target_selection_mode: str = "segment"
-    target_segment_max_gap_frames: int = 3
-    target_segment_min_visible_frames: int = 30
-    target_segment_min_duration_seconds: float = 1.0
-    target_segment_min_mean_confidence: float = 0.30
-    target_segment_min_quality: float = 0.45
-    target_segment_max_normalized_center_jump: float = 3.0
+    target_segment_max_gap_frames: int = int(threshold("target_segment_max_gap_frames"))
+    target_segment_min_visible_frames: int = int(threshold("target_segment_min_visible_frames"))
+    target_segment_min_duration_seconds: float = float(
+        threshold("target_segment_min_duration_seconds")
+    )
+    target_segment_min_mean_confidence: float = float(
+        threshold("target_segment_min_mean_confidence")
+    )
+    target_segment_min_quality: float = float(threshold("target_segment_min_quality"))
+    target_segment_max_normalized_center_jump: float = float(
+        threshold("target_segment_max_normalized_center_jump")
+    )
     tracklet_stitching_enabled: bool = False
-    segment_ball_max_interpolation_gap_frames: int = 2
-    segment_ball_max_normalized_jump: float = 3.0
-    segment_ball_min_endpoint_confidence: float = 0.25
-    segment_ball_min_analysis_quality: float = 0.45
+    segment_ball_max_interpolation_gap_frames: int = int(
+        threshold("segment_ball_max_interpolation_gap_frames")
+    )
+    segment_ball_max_normalized_jump: float = float(threshold("segment_ball_max_normalized_jump"))
+    segment_ball_min_endpoint_confidence: float = float(
+        threshold("segment_ball_min_endpoint_confidence")
+    )
+    segment_ball_min_analysis_quality: float = float(threshold("segment_ball_min_analysis_quality"))
     model_path: str = "yolo11n.pt"
     model_device: str = "cpu"
     model_confidence: float = 0.25
@@ -49,13 +61,13 @@ class Settings:
     ball_image_size: int = 640
     ball_max_center_displacement: float = 120.0
     ball_max_missing_frames: int = 8
-    ball_minimum_detection_confidence: float = 0.15
+    ball_minimum_detection_confidence: float = float(threshold("ball_minimum_detection_confidence"))
     ball_smoothing_window: int = 3
     ball_motion_gate: float = 120.0
     ball_proximity_threshold: float = 1.25
     ball_interaction_gap_frames: int = 2
-    ball_minimum_visible_frames: int = 3
-    ball_minimum_quality: float = 0.30
+    ball_minimum_visible_frames: int = int(threshold("ball_minimum_visible_frames"))
+    ball_minimum_quality: float = float(threshold("ball_minimum_quality"))
     movement_smoothing_window: int = 5
     movement_max_normalized_jump: float = 3.0
     movement_direction_change_degrees: float = 30.0
@@ -73,51 +85,83 @@ class Settings:
     movement_activity_weight: float = 0.25
     movement_minimum_quality: float = 0.20
     movement_raw_image_space_quality_cap: float = 0.80
-    interaction_proximity_threshold_ratio: float = 1.20
-    interaction_min_player_confidence: float = 0.25
-    interaction_min_ball_confidence: float = 0.25
-    interaction_max_gap_frames: int = 2
-    interaction_min_segment_frames: int = 5
-    interaction_min_segment_duration_seconds: float = 0.15
+    interaction_proximity_threshold_ratio: float = float(
+        threshold("interaction_proximity_threshold_ratio")
+    )
+    interaction_min_player_confidence: float = float(threshold("interaction_min_player_confidence"))
+    interaction_min_ball_confidence: float = float(threshold("interaction_min_ball_confidence"))
+    interaction_max_gap_frames: int = int(threshold("interaction_max_gap_frames"))
+    interaction_min_segment_frames: int = int(threshold("interaction_min_segment_frames"))
+    interaction_min_segment_duration_seconds: float = float(
+        threshold("interaction_min_segment_duration_seconds")
+    )
     interaction_duration_scale: float = 1.0
     interaction_distance_weight: float = 0.30
     interaction_coverage_weight: float = 0.20
     interaction_duration_weight: float = 0.15
     interaction_detection_weight: float = 0.15
     interaction_quality_weight: float = 0.20
-    interaction_min_ball_analysis_quality: float = 0.50
-    interaction_min_player_track_quality: float = 0.50
-    interaction_min_segment_confidence: float = 0.45
+    interaction_min_ball_analysis_quality: float = float(
+        threshold("interaction_min_ball_analysis_quality")
+    )
+    interaction_min_player_track_quality: float = float(
+        threshold("interaction_min_player_track_quality")
+    )
+    interaction_min_segment_confidence: float = float(
+        threshold("interaction_min_segment_confidence")
+    )
     interaction_max_returned_segments: int = 100
-    technical_event_min_player_track_quality: float = 0.50
-    technical_event_min_ball_analysis_quality: float = 0.50
-    technical_event_min_interaction_quality: float = 0.50
-    technical_event_min_evidence_coverage: float = 0.60
-    controlled_min_duration_seconds: float = 0.25
-    controlled_min_player_displacement_ratio: float = 0.15
-    controlled_min_ball_proximity_ratio: float = 0.70
-    controlled_min_direction_similarity: float = 0.35
-    controlled_min_evidence_coverage: float = 0.70
-    controlled_min_confidence: float = 0.50
-    dribble_min_duration_seconds: float = 0.60
+    technical_event_min_player_track_quality: float = float(
+        threshold("technical_event_min_player_track_quality")
+    )
+    technical_event_min_ball_analysis_quality: float = float(
+        threshold("technical_event_min_ball_analysis_quality")
+    )
+    technical_event_min_interaction_quality: float = float(
+        threshold("technical_event_min_interaction_quality")
+    )
+    technical_event_min_evidence_coverage: float = float(
+        threshold("technical_event_min_evidence_coverage")
+    )
+    controlled_min_duration_seconds: float = float(threshold("controlled_min_duration_seconds"))
+    controlled_min_player_displacement_ratio: float = float(
+        threshold("controlled_min_player_displacement_ratio")
+    )
+    controlled_min_ball_proximity_ratio: float = float(
+        threshold("controlled_min_ball_proximity_ratio")
+    )
+    controlled_min_direction_similarity: float = float(
+        threshold("controlled_min_direction_similarity")
+    )
+    controlled_min_evidence_coverage: float = float(threshold("controlled_min_evidence_coverage"))
+    controlled_min_confidence: float = float(threshold("controlled_min_confidence"))
+    dribble_min_duration_seconds: float = float(threshold("dribble_min_duration_seconds"))
     dribble_min_direction_changes: int = 1
     dribble_min_normalized_displacement: float = 0.50
-    dribble_min_proximity_ratio: float = 0.75
-    dribble_min_confidence: float = 0.55
+    dribble_min_proximity_ratio: float = float(threshold("dribble_min_proximity_ratio"))
+    dribble_min_confidence: float = float(threshold("dribble_min_confidence"))
     dribble_direct_displacement_scale: float = 0.30
     dribble_path_length_scale: float = 0.60
     dribble_direct_displacement_weight: float = 0.40
     dribble_path_length_weight: float = 0.60
     dribble_directional_min_direction_changes: int = 1
-    dribble_progressive_min_movement_component: float = 0.35
+    dribble_progressive_min_movement_component: float = float(
+        threshold("dribble_progressive_min_movement_component")
+    )
     dribble_progressive_min_duration_seconds: float = 0.60
     dribble_progressive_min_direction_similarity: float = 0.60
-    dribble_min_trajectory_quality: float = 0.60
+    dribble_min_trajectory_quality: float = float(threshold("dribble_min_trajectory_quality"))
     dribble_minimum_direction_change_angle_degrees: float = 35.0
     dribble_minimum_turn_frame_separation: int = 4
-    dribble_max_direction_changes_per_second: float = 4.0
-    dribble_progressive_min_normalized_displacement: float = 0.30
-    dribble_progressive_min_path_straightness: float = 0.55
+    dribble_max_direction_changes_per_second: float = float(
+        threshold("dribble_max_direction_changes_per_second")
+    )
+    dribble_progressive_min_normalized_displacement: float = float(
+        threshold("dribble_progressive_min_normalized_displacement")
+    )
+    dribble_progressive_min_path_straightness: float = float(
+        threshold("dribble_progressive_min_path_straightness")
+    )
     ball_loss_min_pre_interaction_seconds: float = 0.30
     ball_loss_min_separation_ratio: float = 1.50
     ball_loss_min_ball_away_speed_normalized: float = 0.20
@@ -137,6 +181,7 @@ class Settings:
     physical_score_min_movement_observations: int = 30
     physical_score_min_accepted_interval_ratio: float = 0.60
     physical_score_raw_image_confidence_cap: float = 0.75
+    debug_output_dir: str = "debug"
 
     @classmethod
     def from_environment(cls) -> "Settings":

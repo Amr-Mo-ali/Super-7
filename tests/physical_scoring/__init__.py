@@ -1,0 +1,1 @@
+"""Physical-scoring deterministic tests."""

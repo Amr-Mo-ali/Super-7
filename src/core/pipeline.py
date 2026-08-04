@@ -1,0 +1,16 @@
+"""Stable pipeline state and response-level operational diagnostics."""
+
+from enum import StrEnum
+
+
+class PipelineState(StrEnum):
+    VIDEO = "VIDEO"
+    DETECTION = "DETECTION"
+    TRACKING = "TRACKING"
+    PLAYER_SELECTION = "PLAYER_SELECTION"
+    BALL_ANALYSIS = "BALL_ANALYSIS"
+    INTERACTION_ANALYSIS = "INTERACTION_ANALYSIS"
+    EVENT_ANALYSIS = "EVENT_ANALYSIS"
+    TECHNICAL_SCORING = "TECHNICAL_SCORING"
+    PHYSICAL_SCORING = "PHYSICAL_SCORING"
+    COMPLETE = "COMPLETE"
