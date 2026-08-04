@@ -4,10 +4,19 @@ import asyncio
 from collections.abc import Callable
 from contextvars import ContextVar
 from threading import Event
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 Result = TypeVar("Result")
+Signal = TypeVar("Signal", bound="CancellationSignal")
 _request_id: ContextVar[str | None] = ContextVar("analysis_request_id", default=None)
+
+
+class CancellationSignal(Protocol):
+    """The cooperative cancellation behavior required by one pipeline invocation."""
+
+    def is_cancelled(self) -> bool: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
 
 
 class CancellationState:
@@ -37,8 +46,8 @@ class AnalysisExecutor:
     async def execute(
         self,
         request_id: str,
-        cancellation: CancellationState,
-        pipeline: Callable[[CancellationState], Result],
+        cancellation: Signal,
+        pipeline: Callable[[Signal], Result],
     ) -> Result:
         """Run one pipeline invocation and propagate its original result or exception."""
         return await asyncio.to_thread(self._execute, request_id, cancellation, pipeline)
@@ -46,8 +55,8 @@ class AnalysisExecutor:
     @staticmethod
     def _execute(
         request_id: str,
-        cancellation: CancellationState,
-        pipeline: Callable[[CancellationState], Result],
+        cancellation: Signal,
+        pipeline: Callable[[Signal], Result],
     ) -> Result:
         context_token = _request_id.set(request_id)
         try:
