@@ -8,7 +8,9 @@ from time import perf_counter
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+
+from api.public_rating_mapper import public_rating_v2
 
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationManager
@@ -91,8 +93,12 @@ def create_router(
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
 
-    @router.post("/analyze", response_model=AnalyzeResponse)
-    async def analyze(request: Request, video: Annotated[UploadFile, File()]) -> AnalyzeResponse:
+    @router.post("/analyze", response_model=None)
+    async def analyze(
+        request: Request,
+        video: Annotated[UploadFile, File()],
+        response_version: Literal["v1", "v2"] = Query("v1"),
+    ) -> object:
         """Validate one video and select exactly one non-ambiguous player track."""
         started = perf_counter()
         analysis_id = str(uuid4())
@@ -102,7 +108,7 @@ def create_router(
             if unexpected_fields:
                 raise InvalidRequestError("Only the video multipart field is accepted.")
             async with temporary_upload(video, settings) as video_path:
-                return await lifecycle.execute_with_artifacts(
+                result = await lifecycle.execute_with_artifacts(
                     analysis_id,
                     lambda cancellation, artifacts: _analyze_uploaded(
                         settings,
@@ -126,11 +132,12 @@ def create_router(
                         artifacts,
                     ),
                 )
+                return public_rating_v2(result) if response_version == "v2" else result
         except AdmissionRejectedError as error:
-            diagnostics = replace(TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={})
-            return _noncompleted(
-                analysis_id, "failed", str(error), diagnostics, 0
+            diagnostics = replace(
+                TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={}
             )
+            return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
             return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
