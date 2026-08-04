@@ -25,6 +25,18 @@ class RequestLifecycle:
         self._executor = executor
         self._artifacts = artifacts
 
+    @property
+    def admission(self) -> AdmissionController:
+        return self._admission
+
+    @property
+    def executor(self) -> AnalysisExecutor:
+        return self._executor
+
+    @property
+    def artifacts(self) -> ArtifactManager | None:
+        return self._artifacts
+
     async def execute(
         self,
         request_id: str,

@@ -31,6 +31,8 @@ def create_app(
     settings: Settings | None = None,
     tracker: AutomaticPlayerTracker | None = None,
     selector: TargetPlayerSelector | None = None,
+    validator: VideoValidator | None = None,
+    lifecycle: RequestLifecycle | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
@@ -47,17 +49,21 @@ def create_app(
         resolved_settings.model_device,
     )
     app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
-    lifecycle = RequestLifecycle(
+    resolved_lifecycle = lifecycle or RequestLifecycle(
         AdmissionController(max_active_analyses=1),
         AnalysisExecutor(),
         ArtifactManager(
             Path(resolved_settings.debug_output_dir), resolved_settings.max_upload_bytes
         ),
     )
+    app.state.admission_controller = resolved_lifecycle.admission
+    app.state.analysis_executor = resolved_lifecycle.executor
+    app.state.artifact_manager = resolved_lifecycle.artifacts
+    app.state.request_lifecycle = resolved_lifecycle
     app.include_router(
         create_router(
             resolved_settings,
-            VideoValidator(resolved_settings),
+            validator or VideoValidator(resolved_settings),
             resolved_tracker,
             selector or WeightedTargetPlayerSelector(resolved_settings),
             FeatureExtractor(),
@@ -69,7 +75,7 @@ def create_app(
             ShotDetector(),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
-            lifecycle,
+            resolved_lifecycle,
         )
     )
     return app

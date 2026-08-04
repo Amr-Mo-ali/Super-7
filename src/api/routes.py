@@ -127,8 +127,9 @@ def create_router(
                     ),
                 )
         except AdmissionRejectedError as error:
+            diagnostics = replace(TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={})
             return _noncompleted(
-                analysis_id, "failed", str(error), TrackingDiagnostics(0, 0, 0, 0, 0), 0
+                analysis_id, "failed", str(error), diagnostics, 0
             )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
