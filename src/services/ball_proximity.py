@@ -43,7 +43,7 @@ class NormalizedBallProximityAnalyzer:
             raise BallProximityAnalysisError("FPS must be positive for proximity analysis.")
         proximity: list[int] = []
         visible = 0
-        for frame, point in ball_points.items():
+        for frame, point in sorted(ball_points.items()):
             if not point.visible or point.center_point is None:
                 continue
             visible += 1
