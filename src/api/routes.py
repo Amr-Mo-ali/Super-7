@@ -10,6 +10,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 
+from api.request_lifecycle import RequestLifecycle
+from concurrency.cancellation import CancellationManager
+from concurrency.exceptions import AdmissionRejectedError
 from core.config import Settings
 from core.exceptions import (
     AnalysisError,
@@ -18,6 +21,7 @@ from core.exceptions import (
     RealDetectorNotConfiguredError,
 )
 from core.reproducibility import metadata as reproducibility_metadata
+from diagnostics.artifacts import ArtifactSession
 from schemas.analysis import (
     AmbiguousResponse,
     AnalyzeResponse,
@@ -82,6 +86,7 @@ def create_router(
     shot_detector: ShotDetector,
     physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
+    lifecycle: RequestLifecycle,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
@@ -97,104 +102,33 @@ def create_router(
             if unexpected_fields:
                 raise InvalidRequestError("Only the video multipart field is accepted.")
             async with temporary_upload(video, settings) as video_path:
-                metadata = validator.validate(video_path)
-                run = tracker.analyze(video_path, metadata)
-                detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
-                request_metadata = reproducibility_metadata(video_path, tracker.model_version)
-                debug_source = (
-                    Path(settings.debug_output_dir)
-                    / analysis_id
-                    / f"source_video{video_path.suffix}"
-                )
-                debug_source.parent.mkdir(parents=True, exist_ok=True)
-                copyfile(video_path, debug_source)
-            if run.diagnostics.total_person_detections == 0:
-                return _noncompleted(
+                return await lifecycle.execute_with_artifacts(
                     analysis_id,
-                    "no_players_detected",
-                    "No player detections were produced.",
-                    run.diagnostics,
-                    0,
+                    lambda cancellation, artifacts: _analyze_uploaded(
+                        settings,
+                        validator,
+                        tracker,
+                        selector,
+                        extractor,
+                        ball_proximity_analyzer,
+                        movement_analyzer,
+                        interaction_analyzer,
+                        technical_event_analyzer,
+                        pass_detector,
+                        shot_detector,
+                        logger,
+                        physical_scorer,
+                        analysis_id,
+                        started,
+                        detection_started,
+                        video_path,
+                        cancellation,
+                        artifacts,
+                    ),
                 )
-            if not run.tracks:
-                return _noncompleted(
-                    analysis_id,
-                    "player_detection_completed_tracking_not_available",
-                    "Player detection completed; multi-object tracking is not available.",
-                    run.diagnostics,
-                    0,
-                )
-            selection_diagnostics = run.diagnostics
-            ranked: tuple[Selection, ...]
-            selection_started = perf_counter()
-            if (
-                settings.target_selection_mode == "segment"
-                and run.player_boxes is not None
-                and run.player_confidences is not None
-            ):
-                segments = build_segments(
-                    run.player_boxes,
-                    run.player_confidences,
-                    run.ball_points or {},
-                    metadata.fps,
-                    settings,
-                )
-                rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
-                selection_diagnostics = replace(
-                    run.diagnostics,
-                    rejected_tracks=tuple(rejected),
-                    rejected_track_reason_breakdown=breakdown,
-                )
-                selected = select_segment(segments)
-                ranked = (selected,) if selected is not None else ()
-            else:
-                ranked = selector.rank(run.tracks)
-            selection_time_ms = round((perf_counter() - selection_started) * 1000)
-            if not ranked:
-                return _noncompleted(
-                    analysis_id,
-                    "no_valid_tracks",
-                    "No track passed the configured quality thresholds.",
-                    selection_diagnostics,
-                    0,
-                )
-            if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
-                return AmbiguousResponse(
-                    analysis_id=analysis_id,
-                    status="ambiguous_target",
-                    candidate_count=len(ranked),
-                    warnings=[
-                        "The system could not identify one target player "
-                        "with sufficient confidence."
-                    ],
-                )
-            selection = ranked[0]
-            return _completed(
-                settings,
-                tracker.model_version,
-                metadata,
-                selection,
-                extractor,
-                run,
-                len(ranked),
-                ball_proximity_analyzer,
-                movement_analyzer,
-                interaction_analyzer,
-                technical_event_analyzer,
-                pass_detector,
-                shot_detector,
-                logger,
-                physical_scorer,
-                analysis_id,
-                started,
-                selection_diagnostics,
-                PipelineTiming(
-                    player_detection_time_ms=detection_tracking_time_ms,
-                    tracking_time_ms=detection_tracking_time_ms,
-                    segment_selection_time_ms=selection_time_ms,
-                ),
-                request_metadata,
-                debug_source,
+        except AdmissionRejectedError as error:
+            return _noncompleted(
+                analysis_id, "failed", str(error), TrackingDiagnostics(0, 0, 0, 0, 0), 0
             )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
@@ -209,6 +143,122 @@ def create_router(
             raise HTTPException(status_code=500, detail={"error": "Analysis failed."}) from error
 
     return router
+
+
+def _analyze_uploaded(
+    settings: Settings,
+    validator: VideoValidator,
+    tracker: AutomaticPlayerTracker,
+    selector: TargetPlayerSelector,
+    extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
+    pass_detector: PassDetector,
+    shot_detector: ShotDetector,
+    logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
+    analysis_id: str,
+    started: float,
+    detection_started: float,
+    video_path: Path,
+    cancellation: CancellationManager,
+    artifacts: ArtifactSession,
+) -> AnalyzeResponse:
+    """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
+    del cancellation
+    metadata = validator.validate(video_path)
+    run = tracker.analyze(video_path, metadata)
+    detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
+    request_metadata = reproducibility_metadata(video_path, tracker.model_version)
+    source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
+    debug_source = artifacts.create(source)
+    copyfile(video_path, debug_source)
+    debug_source = artifacts.finalize(source)
+    artifacts.retain()
+    if run.diagnostics.total_person_detections == 0:
+        return _noncompleted(
+            analysis_id,
+            "no_players_detected",
+            "No player detections were produced.",
+            run.diagnostics,
+            0,
+        )
+    if not run.tracks:
+        return _noncompleted(
+            analysis_id,
+            "player_detection_completed_tracking_not_available",
+            "Player detection completed; multi-object tracking is not available.",
+            run.diagnostics,
+            0,
+        )
+    selection_diagnostics = run.diagnostics
+    ranked: tuple[Selection, ...]
+    selection_started = perf_counter()
+    if (
+        settings.target_selection_mode == "segment"
+        and run.player_boxes is not None
+        and run.player_confidences is not None
+    ):
+        segments = build_segments(
+            run.player_boxes, run.player_confidences, run.ball_points or {}, metadata.fps, settings
+        )
+        rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
+        selection_diagnostics = replace(
+            run.diagnostics,
+            rejected_tracks=tuple(rejected),
+            rejected_track_reason_breakdown=breakdown,
+        )
+        selected = select_segment(segments)
+        ranked = (selected,) if selected is not None else ()
+    else:
+        ranked = selector.rank(run.tracks)
+    selection_time_ms = round((perf_counter() - selection_started) * 1000)
+    if not ranked:
+        return _noncompleted(
+            analysis_id,
+            "no_valid_tracks",
+            "No track passed the configured quality thresholds.",
+            selection_diagnostics,
+            0,
+        )
+    if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
+        return AmbiguousResponse(
+            analysis_id=analysis_id,
+            status="ambiguous_target",
+            candidate_count=len(ranked),
+            warnings=[
+                "The system could not identify one target player with sufficient confidence."
+            ],
+        )
+    return _completed(
+        settings,
+        tracker.model_version,
+        metadata,
+        ranked[0],
+        extractor,
+        run,
+        len(ranked),
+        ball_proximity_analyzer,
+        movement_analyzer,
+        interaction_analyzer,
+        technical_event_analyzer,
+        pass_detector,
+        shot_detector,
+        logger,
+        physical_scorer,
+        analysis_id,
+        started,
+        selection_diagnostics,
+        PipelineTiming(
+            player_detection_time_ms=detection_tracking_time_ms,
+            tracking_time_ms=detection_tracking_time_ms,
+            segment_selection_time_ms=selection_time_ms,
+        ),
+        request_metadata,
+        debug_source,
+    )
 
 
 def _noncompleted(

@@ -43,13 +43,14 @@ class CleanupResult:
 class ArtifactManager:
     """Creates request-scoped sessions with bounded retention and quota ownership."""
 
-    def __init__(self, root: Path, max_session_bytes: int, retained_sessions: int = 0) -> None:
+    def __init__(
+        self, root: Path, max_session_bytes: int, retained_sessions: int | None = None
+    ) -> None:
         if max_session_bytes < 0:
             raise ValueError("max_session_bytes must not be negative.")
-        if retained_sessions < 0:
+        if retained_sessions is not None and retained_sessions < 0:
             raise ValueError("retained_sessions must not be negative.")
         self._root = root.resolve()
-        self._root.mkdir(parents=True, exist_ok=True)
         self._max_session_bytes = max_session_bytes
         self._retained_sessions = retained_sessions
         self._lock = Lock()
@@ -64,6 +65,7 @@ class ArtifactManager:
                 "request_id must contain only letters, digits, hyphens, or underscores."
             )
         with self._lock:
+            self._root.mkdir(parents=True, exist_ok=True)
             if request_id in self._sessions:
                 raise ArtifactStateError("An artifact session already exists for this request.")
             directory = self._safe_directory(request_id)
@@ -80,6 +82,8 @@ class ArtifactManager:
             if retained:
                 self._next_retention_order += 1
                 self._retained[session.directory] = self._next_retention_order
+                if self._retained_sessions is None:
+                    return CleanupResult(())
                 stale = sorted(self._retained.items(), key=lambda item: item[1])[
                     : max(0, len(self._retained) - self._retained_sessions)
                 ]

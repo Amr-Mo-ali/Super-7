@@ -1,12 +1,18 @@
 """Application entry point."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from adapters.yolo_ball_detector import YOLOBallDetector
 from adapters.yolo_player_detector import YOLOPlayerDetector
+from api.request_lifecycle import RequestLifecycle
 from api.routes import create_router
+from concurrency.admission import AdmissionController
+from concurrency.executor import AnalysisExecutor
 from core.config import Settings
 from core.logging import get_logger
+from diagnostics.artifacts import ArtifactManager
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzer
@@ -41,6 +47,13 @@ def create_app(
         resolved_settings.model_device,
     )
     app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
+    lifecycle = RequestLifecycle(
+        AdmissionController(max_active_analyses=1),
+        AnalysisExecutor(),
+        ArtifactManager(
+            Path(resolved_settings.debug_output_dir), resolved_settings.max_upload_bytes
+        ),
+    )
     app.include_router(
         create_router(
             resolved_settings,
@@ -56,6 +69,7 @@ def create_app(
             ShotDetector(),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
+            lifecycle,
         )
     )
     return app
