@@ -12,8 +12,8 @@ from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, 
 
 from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
-from concurrency.cancellation import CancellationManager
-from concurrency.exceptions import AdmissionRejectedError
+from concurrency.cancellation import CancellationChecker, CancellationManager
+from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
 from core.config import Settings
 from core.exceptions import (
     AnalysisError,
@@ -140,6 +140,9 @@ def create_router(
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
             return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+        except AnalysisCancelled:
+            logger.info("analysis_cancelled analysis_id=%s", analysis_id)
+            raise HTTPException(status_code=499, detail={"error": "Analysis cancelled."}) from None
         except AnalysisError as error:
             logger.warning("analysis_validation_failed: %s", error)
             raise HTTPException(
@@ -174,9 +177,12 @@ def _analyze_uploaded(
     artifacts: ArtifactSession,
 ) -> AnalyzeResponse:
     """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
-    del cancellation
+    checker = CancellationChecker(cancellation)
+    checker.check("upload validation")
     metadata = validator.validate(video_path)
+    checker.check("detection")
     run = tracker.analyze(video_path, metadata)
+    checker.check("tracking")
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
     request_metadata = reproducibility_metadata(video_path, tracker.model_version)
     debug_source: Path | None = None
@@ -205,6 +211,7 @@ def _analyze_uploaded(
     selection_diagnostics = run.diagnostics
     ranked: tuple[Selection, ...]
     selection_started = perf_counter()
+    checker.check("player selection")
     if (
         settings.target_selection_mode == "segment"
         and run.player_boxes is not None
@@ -267,6 +274,7 @@ def _analyze_uploaded(
         ),
         request_metadata,
         debug_source,
+        checker,
     )
 
 
@@ -321,9 +329,12 @@ def _completed(
     timing: PipelineTiming | None = None,
     analysis_metadata: dict[str, str | None] | None = None,
     debug_source: Path | None = None,
+    cancellation: CancellationChecker | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
+    if cancellation is not None:
+        cancellation.check("ball reconstruction")
     from services.player_tracker import TrackingRun
 
     typed_run = run if isinstance(run, TrackingRun) else None
@@ -351,8 +362,12 @@ def _completed(
                 if start <= f <= end
             },
         )
+    if cancellation is not None:
+        cancellation.check("movement analysis")
     camera_motion = None
     if debug_source is not None:
+        if cancellation is not None:
+            cancellation.check("camera-motion estimation")
         try:
             camera_motion = CameraMotionEstimator().estimate(
                 debug_source, selection.segment_start_frame or 0, selection.segment_end_frame
@@ -463,16 +478,22 @@ def _completed(
             typed_run.ball_points,
             metadata.fps,
         )
+        if cancellation is not None:
+            cancellation.check("pass and shot detection")
     stage_timing = stage_timing.model_copy(
         update={"ball_processing_time_ms": round((perf_counter() - ball_started) * 1000)}
     )
     movement: MovementResult | None = None
     movement_reason: str | None = None
     if typed_run is not None and typed_run.player_boxes is not None:
+        if cancellation is not None:
+            cancellation.check("movement analysis")
         try:
             movement = movement_analyzer.analyze(
                 typed_run.player_boxes.get(track.track_id, {}), metadata.fps
             )
+        except AnalysisCancelled:
+            raise
         except Exception:
             movement_reason = "Movement analysis failed."
     interaction: InteractionAnalysisResult | None = None
@@ -482,6 +503,8 @@ def _completed(
         and typed_run.player_boxes is not None
         and typed_run.ball_points is not None
     ):
+        if cancellation is not None:
+            cancellation.check("interaction analysis")
         try:
             logger.warning(
                 "interaction_analysis_started analysis_id=%s track_id=%s",
@@ -507,6 +530,8 @@ def _completed(
                 quality,
                 min(1.0, track.visibility_ratio * track.average_confidence),
             )
+            if cancellation is not None:
+                cancellation.check("interaction analysis")
             interaction_reason = interaction.reason
             logger.warning(
                 "interaction_analysis_finished analysis_id=%s track_id=%s processing_time_ms=%s",
@@ -520,6 +545,8 @@ def _completed(
                 track.track_id,
                 interaction.possible_ball_interaction_count,
             )
+        except AnalysisCancelled:
+            raise
         except Exception:
             logger.exception(
                 "interaction_analysis_failed analysis_id=%s track_id=%s stage=analyze",
@@ -538,6 +565,8 @@ def _completed(
     technical_reason: str | None = "Technical-event analysis was unavailable."
     event_started = perf_counter()
     if interaction is not None and movement is not None:
+        if cancellation is not None:
+            cancellation.check("event analysis")
         try:
             technical_events = technical_event_analyzer.analyze(
                 players,
@@ -550,7 +579,11 @@ def _completed(
                 quality,
                 interaction.diagnostics.interaction_analysis_quality,
             )
+            if cancellation is not None:
+                cancellation.check("event analysis")
             technical_reason = technical_events.reason
+        except AnalysisCancelled:
+            raise
         except Exception:
             logger.exception("technical_event_analysis_failed analysis_id=%s", analysis_id)
     event_time_ms = round((perf_counter() - event_started) * 1000)
@@ -578,6 +611,8 @@ def _completed(
     if technical_events is not None:
         warnings.extend(technical_events.warnings)
     physical_started = perf_counter()
+    if cancellation is not None:
+        cancellation.check("scoring")
     physical = None
     try:
         physical = physical_scorer.score(
@@ -598,6 +633,8 @@ def _completed(
         logger.exception("physical_activity_score_failed analysis_id=%s", analysis_id)
     physical_time_ms = round((perf_counter() - physical_started) * 1000)
     technical_score_started = perf_counter()
+    if cancellation is not None:
+        cancellation.check("technical scoring")
     technical_score = TechnicalScorer().score(technical_events)
     technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
     total_time_ms = round((perf_counter() - started) * 1000)
@@ -967,6 +1004,8 @@ def _completed(
         analysis_metadata=analysis_metadata or {},
     )
     if typed_run is not None and debug_source is not None:
+        if cancellation is not None:
+            cancellation.check("debug rendering")
         try:
             response.debug_artifacts = render_debug_video(
                 debug_source,

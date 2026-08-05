@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from threading import Event, Lock
 
+from concurrency.exceptions import AnalysisCancelled
+
 
 class CancellationState(StrEnum):
     """Legal request-scoped cancellation lifecycle states."""
@@ -79,3 +81,14 @@ class CancellationManager:
                 )
             self._state = requested
             self._event.set()
+
+
+class CancellationChecker:
+    """Lightweight stage-boundary guard for synchronous analysis work."""
+
+    def __init__(self, token: CancellationManager) -> None:
+        self._token = token
+
+    def check(self, stage: str) -> None:
+        if self._token.is_cancelled():
+            raise AnalysisCancelled(f"Analysis cancelled before {stage}.")
