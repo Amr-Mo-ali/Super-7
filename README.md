@@ -37,9 +37,10 @@ uv run pre-commit run --all-files
 uv run uvicorn main:app --reload
 ```
 
-Send a multipart request containing only the `video` field.
+Send a multipart request containing only the `video` field. `POST /analyze` always returns the
+Public Rating JSON V2 contract; V1 analysis models are internal pipeline contracts.
 
-`selected_player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
+`player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
 not a permanent player identity and may differ when the same video is analyzed again.
 
 ## Container

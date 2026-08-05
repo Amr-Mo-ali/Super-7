@@ -5,7 +5,14 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from schemas.analysis import FeatureMetric, TechnicalScoreResponse, UnsupportedMetric
+from api.public_rating_mapper import public_rating_v2
+from schemas.analysis import (
+    Diagnostics,
+    FeatureMetric,
+    NonCompletedResponse,
+    TechnicalScoreResponse,
+    UnsupportedMetric,
+)
 from schemas.public_rating_v2 import (
     PublicEvent,
     PublicGameIntelligence,
@@ -92,3 +99,26 @@ def test_v2_game_intelligence_components_preserve_unavailable_contract() -> None
         limitations=["heuristic_estimation"],
     )
     assert game.model_dump(mode="json")["components"]["decision_consistency"]["value"] is None
+
+
+def test_internal_v1_noncompleted_response_maps_to_public_v2_failure() -> None:
+    internal_result = NonCompletedResponse(
+        analysis_id="analysis-1",
+        status="no_valid_tracks",
+        warnings=["No track passed the configured quality thresholds."],
+        diagnostics=Diagnostics(
+            frames_processed=10,
+            frames_with_player_detections=2,
+            total_person_detections=2,
+            tracks_created=1,
+            valid_candidate_tracks=0,
+            ball_detections=0,
+        ),
+    )
+    response = public_rating_v2(internal_result)
+    assert response.analysis == {
+        "id": "analysis-1",
+        "status": "no_valid_tracks",
+        "response_version": "public_rating_v2",
+    }
+    assert response.reason_code == "no_valid_tracks"

@@ -15,8 +15,7 @@ from core.config import Settings
 from diagnostics.artifacts import ArtifactManager
 from main import create_app
 from services.player_tracker import TrackingDiagnostics, TrackingRun
-from services.video_validator import VideoMetadata
-from services.video_validator import VideoValidator
+from services.video_validator import VideoMetadata, VideoValidator
 
 
 class FakeValidator:
@@ -59,7 +58,9 @@ def test_admission_exhaustion_never_starts_second_route_analysis() -> None:
                     "/analyze", files={"video": ("y.avi", b"y", "video/avi")}
                 )
             await held.release()
-            assert second.status_code == 200 and second.json()["status"] == "failed"
+            assert second.status_code == 200
+            assert second.json()["analysis"]["status"] == "failed"
+            assert second.json()["reason_code"] == "failed"
             assert tracker.calls == 0
             metrics = await lifecycle.admission.metrics()
             assert (metrics.active_permits, metrics.rejected_analyses) == (0, 1)

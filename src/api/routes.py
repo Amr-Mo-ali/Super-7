@@ -8,7 +8,7 @@ from time import perf_counter
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 
 from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
@@ -46,6 +46,7 @@ from schemas.analysis import (
     TrackingResponse,
     VideoResponse,
 )
+from schemas.public_rating_v2 import PublicRatingV2Failure, PublicRatingV2Response
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
@@ -92,13 +93,15 @@ def create_router(
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
 
-    @router.post("/analyze", response_model=None)
+    @router.post(
+        "/analyze",
+        response_model=PublicRatingV2Response | PublicRatingV2Failure,
+    )
     async def analyze(
         request: Request,
         video: Annotated[UploadFile, File()],
-        response_version: Literal["v1", "v2"] = Query("v1"),
-    ) -> object:
-        """Validate one video and select exactly one non-ambiguous player track."""
+    ) -> PublicRatingV2Response | PublicRatingV2Failure:
+        """Validate one video and map the internal analysis result to public V2."""
         started = perf_counter()
         analysis_id = str(uuid4())
         detection_started = perf_counter()
@@ -131,15 +134,19 @@ def create_router(
                         artifacts,
                     ),
                 )
-                return public_rating_v2(result) if response_version == "v2" else result
+                return public_rating_v2(result)
         except AdmissionRejectedError as error:
             diagnostics = replace(
                 TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={}
             )
-            return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+            return public_rating_v2(
+                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+            )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
-            return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+            return public_rating_v2(
+                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+            )
         except AnalysisCancelled:
             logger.info("analysis_cancelled analysis_id=%s", analysis_id)
             raise HTTPException(status_code=499, detail={"error": "Analysis cancelled."}) from None

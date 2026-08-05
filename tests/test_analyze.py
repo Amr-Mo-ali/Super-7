@@ -30,15 +30,16 @@ class FakeTracker:
         )
 
 
-def test_analyze_accepts_only_video_and_returns_completed(tmp_path: Path) -> None:
+def test_analyze_accepts_only_video_and_returns_v2_completed(tmp_path: Path) -> None:
     response = asyncio.run(
         _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {})
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
-    assert body["selected_player"]["track_id"] == 4
-    assert "player_id" not in body
+    assert body["analysis"]["status"] == "completed"
+    assert body["analysis"]["response_version"] == "public_rating_v2"
+    assert body["player"]["track_id"] == 4
+    assert "selected_player" not in body
 
 
 def test_analyze_rejects_manual_selection_fields(tmp_path: Path) -> None:
@@ -53,7 +54,31 @@ def test_analyze_returns_documented_ambiguity(tmp_path: Path) -> None:
     )
     response = asyncio.run(_post(_video(tmp_path), FakeTracker(tracks), {}))
     assert response.status_code == 200
-    assert response.json()["status"] == "ambiguous_target"
+    assert response.json()["analysis"]["status"] == "ambiguous_target"
+    assert response.json()["reason_code"] == "ambiguous_target"
+
+
+def test_analyze_ignores_removed_response_version_selection(tmp_path: Path) -> None:
+    response = asyncio.run(
+        _post(
+            _video(tmp_path),
+            FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)),
+            {},
+            "?response_version=v1",
+        )
+    )
+    assert response.status_code == 200
+    assert response.json()["analysis"]["response_version"] == "public_rating_v2"
+
+
+def test_openapi_exposes_only_the_v2_analyze_contract() -> None:
+    operation = create_app(Settings()).openapi()["paths"]["/analyze"]["post"]
+    assert all(item["name"] != "response_version" for item in operation.get("parameters", []))
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema["anyOf"] == [
+        {"$ref": "#/components/schemas/PublicRatingV2Response"},
+        {"$ref": "#/components/schemas/PublicRatingV2Failure"},
+    ]
 
 
 def test_invalid_video_returns_structured_error(tmp_path: Path) -> None:
@@ -65,13 +90,13 @@ def test_invalid_video_returns_structured_error(tmp_path: Path) -> None:
 
 
 async def _post(
-    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, str]
+    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, str], query: str = ""
 ) -> httpx.Response:
     transport = httpx.ASGITransport(app=create_app(Settings(selection_margin=0.01), tracker))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         with path.open("rb") as file:
             return await client.post(
-                "/analyze", data=data, files={"video": (path.name, file, "video/x-msvideo")}
+                f"/analyze{query}", data=data, files={"video": (path.name, file, "video/x-msvideo")}
             )
 
 
