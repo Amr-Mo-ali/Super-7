@@ -53,7 +53,9 @@ def create_app(
         AdmissionController(max_active_analyses=1),
         AnalysisExecutor(),
         ArtifactManager(
-            Path(resolved_settings.debug_output_dir), resolved_settings.max_upload_bytes
+            Path(resolved_settings.debug_output_dir),
+            resolved_settings.max_upload_bytes,
+            retained_sessions=resolved_settings.debug.retained_sessions,
         ),
     )
     app.state.admission_controller = resolved_lifecycle.admission

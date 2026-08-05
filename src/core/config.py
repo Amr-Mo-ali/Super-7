@@ -1,9 +1,20 @@
 """Immutable runtime configuration for the MVP."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import environ
 
 from config.football_profiles import threshold
+
+
+@dataclass(frozen=True, slots=True)
+class DebugSettings:
+    """Explicit request-artifact policy; media capture is disabled by default."""
+
+    enabled: bool = False
+    save_video: bool = False
+    save_frames: bool = False
+    save_on_failure: bool = False
+    retained_sessions: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +193,7 @@ class Settings:
     physical_score_min_accepted_interval_ratio: float = 0.60
     physical_score_raw_image_confidence_cap: float = 0.75
     debug_output_dir: str = "debug"
+    debug: DebugSettings = field(default_factory=DebugSettings)
     pass_possession_proximity_ratio: float = 1.2
     pass_min_possession_frames: int = 3
     pass_max_gap_frames: int = 2
@@ -196,6 +208,7 @@ class Settings:
     @classmethod
     def from_environment(cls) -> "Settings":
         """Load optional operational limits from environment variables."""
+        debug_enabled = environ.get("DEBUG_ARTIFACTS_ENABLED", "false").lower() == "true"
         return cls(
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
@@ -233,5 +246,12 @@ class Settings:
             ),
             segment_ball_min_analysis_quality=float(
                 environ.get("SEGMENT_BALL_MIN_ANALYSIS_QUALITY", 0.45)
+            ),
+            debug=DebugSettings(
+                enabled=debug_enabled,
+                save_video=environ.get("DEBUG_SAVE_VIDEO", "false").lower() == "true",
+                save_frames=environ.get("DEBUG_SAVE_FRAMES", "false").lower() == "true",
+                save_on_failure=environ.get("DEBUG_SAVE_ON_FAILURE", "false").lower() == "true",
+                retained_sessions=int(environ.get("DEBUG_RETAINED_SESSIONS", 0)),
             ),
         )

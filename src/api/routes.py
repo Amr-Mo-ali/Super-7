@@ -11,7 +11,6 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
 
 from api.public_rating_mapper import public_rating_v2
-
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AdmissionRejectedError
@@ -180,11 +179,13 @@ def _analyze_uploaded(
     run = tracker.analyze(video_path, metadata)
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
     request_metadata = reproducibility_metadata(video_path, tracker.model_version)
-    source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
-    debug_source = artifacts.create(source)
-    copyfile(video_path, debug_source)
-    debug_source = artifacts.finalize(source)
-    artifacts.retain()
+    debug_source: Path | None = None
+    if settings.debug.enabled and (settings.debug.save_video or settings.debug.save_frames):
+        source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
+        debug_source = artifacts.create(source)
+        copyfile(video_path, debug_source)
+        debug_source = artifacts.finalize(source)
+        artifacts.retain()
     if run.diagnostics.total_person_detections == 0:
         return _noncompleted(
             analysis_id,
@@ -977,7 +978,10 @@ def _completed(
                 technical_events,
                 pass_detection,
                 shot_detection,
+                save_video=settings.debug.save_video,
+                save_frames=settings.debug.save_frames,
             )
+            response.debug_artifacts = _public_debug_artifact_references(response.debug_artifacts)
         except Exception:
             logger.exception("debug_render_failed analysis_id=%s", analysis_id)
             response.warnings.append(
@@ -985,6 +989,11 @@ def _completed(
             )
     _validate_completed_diagnostics(response)
     return response
+
+
+def _public_debug_artifact_references(artifacts: dict[str, str]) -> dict[str, str]:
+    """Expose opaque artifact names while retaining request-local paths internally."""
+    return {name: Path(path).name for name, path in artifacts.items()}
 
 
 def _interaction_response(

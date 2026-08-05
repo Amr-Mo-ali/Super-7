@@ -23,12 +23,16 @@ def render_debug_video(
     events: TechnicalEventAnalysisResult | None,
     passes: PassDetectionResult | None = None,
     shots: ShotDetectionResult | None = None,
+    *,
+    save_video: bool,
+    save_frames: bool,
 ) -> dict[str, str]:
     """Render overlays into new files; the uploaded source is opened read-only."""
     del interactions, events  # Their ranges are represented by candidate IDs in API diagnostics.
     output_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = output_dir / "debug_frames"
-    frames_dir.mkdir(exist_ok=True)
+    if save_frames:
+        frames_dir.mkdir(exist_ok=True)
     capture = cv2.VideoCapture(str(source))
     fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
     width, height = (
@@ -36,13 +40,10 @@ def render_debug_video(
         int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
     )
     target = output_dir / "debug_video.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
-    writer = cv2.VideoWriter(
-        str(target),
-        fourcc,
-        fps,
-        (width, height),
-    )
+    writer = None
+    if save_video:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
+        writer = cv2.VideoWriter(str(target), fourcc, fps, (width, height))
     frame = 0
     boxes = (player_boxes or {}).get(selection.track.track_id, {})
     trajectory: list[tuple[int, int]] = []
@@ -87,9 +88,15 @@ def render_debug_video(
                 cv2.putText(image, "shot release", (10, 80), 0, 0.5, (0, 0, 255), 1)
             if shot_candidate.release_frame < frame <= shot_candidate.end_frame:
                 cv2.putText(image, "follow-through", (10, 100), 0, 0.5, (255, 255, 0), 1)
-        writer.write(image)
-        cv2.imwrite(str(frames_dir / f"frame_{frame:06d}.jpg"), image)
+        if writer is not None:
+            writer.write(image)
+        if save_frames:
+            cv2.imwrite(str(frames_dir / f"frame_{frame:06d}.jpg"), image)
         frame += 1
-    writer.release()
+    if writer is not None:
+        writer.release()
     capture.release()
-    return {"debug_video": str(target), "debug_frames": str(frames_dir)}
+    return {
+        **({"debug_video": str(target)} if save_video else {}),
+        **({"debug_frames": str(frames_dir)} if save_frames else {}),
+    }
