@@ -1,19 +1,25 @@
 """One-way compact V2 presentation from already completed V1 results."""
 
+from typing import cast
+
 from schemas.analysis import (
     AmbiguousResponse,
     CompletedResponse,
     NonCompletedResponse,
+    PhysicalScoreResponse,
+    TechnicalScoreResponse,
     UnsupportedMetric,
 )
 from schemas.public_rating_v2 import (
     PublicEvent,
     PublicGameIntelligence,
+    PublicRatingStatus,
     PublicRatingV2Failure,
     PublicRatingV2Response,
     PublicRatingValue,
 )
 from services.event_arbitration import EventArbitrator, EventCandidateRef
+from services.event_arbitration.models import ArbitratedEvent, ArbitrationResult, EventType
 from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
@@ -37,7 +43,7 @@ def public_rating_v2(
         )
     technical = result.scores.technical
     physical = result.scores.physical
-    ratings = {
+    ratings: dict[str, PublicRatingValue | PublicGameIntelligence] = {
         "technical_skill": _score(technical, "technical_skill"),
         "physical_activity": _score(physical, "physical_activity"),
         "ball_involvement": PublicRatingValue(
@@ -54,7 +60,7 @@ def public_rating_v2(
     ratings["game_intelligence"] = PublicGameIntelligence(
         value=game_intelligence.value,
         confidence=game_intelligence.confidence,
-        status=game_intelligence.status,
+        status=cast(PublicRatingStatus, game_intelligence.status),
         level=game_intelligence.level,
         reason=game_intelligence.reason,
         version=game_intelligence.version,
@@ -62,10 +68,10 @@ def public_rating_v2(
             item.name: PublicRatingValue(
                 value=item.value,
                 confidence=item.confidence,
-                status=item.status,
+                status=cast(PublicRatingStatus, item.status),
                 level=None,
                 explanation=None,
-                reason=item.evidence.get("reason") if item.value is None else None,
+                reason=(str(item.evidence.get("reason")) if item.value is None else None),
                 limitations=[],
                 version=item.version,
             )
@@ -90,7 +96,7 @@ def public_rating_v2(
             limitations=[],
             version="player_rating_v1",
         )
-    available = [
+    available: list[PublicRatingValue] = [
         item
         for item in ratings.values()
         if isinstance(item, PublicRatingValue) and item.value is not None
@@ -182,7 +188,11 @@ def public_rating_v2(
     )
 
 
-def _score(score: object, name: str) -> PublicRatingValue:
+def _score(
+    score: TechnicalScoreResponse | PhysicalScoreResponse | UnsupportedMetric,
+    name: str,
+) -> PublicRatingValue:
+    del name
     if isinstance(score, UnsupportedMetric):
         return PublicRatingValue(
             value=None,
@@ -194,8 +204,8 @@ def _score(score: object, name: str) -> PublicRatingValue:
         )
     return PublicRatingValue(
         value=score.value,
-        confidence=score.confidence,
-        status=score.status,
+        confidence=score.confidence or 0.0,
+        status=cast(PublicRatingStatus, score.status),
         level=None,
         explanation=None,
         limitations=[],
@@ -203,9 +213,11 @@ def _score(score: object, name: str) -> PublicRatingValue:
     )
 
 
-def _game_evidence(result: CompletedResponse, arbitration: object) -> GameIntelligenceEvidence:
+def _game_evidence(
+    result: CompletedResponse, arbitration: ArbitrationResult
+) -> GameIntelligenceEvidence:
     physical = result.scores.physical
-    physical_evidence = getattr(physical, "evidence", None)
+    physical_evidence = physical.evidence if isinstance(physical, PhysicalScoreResponse) else None
     technical = result.scores.technical
     interaction = result.interaction_analysis
     events = result.technical_event_analysis
@@ -233,9 +245,11 @@ def _game_evidence(result: CompletedResponse, arbitration: object) -> GameIntell
         direction_component=physical_evidence.direction_component if physical_evidence else None,
         direction_changes=result.features.direction_changes.value,
         movement_quality=physical_evidence.movement_analysis_quality if physical_evidence else None,
-        technical_quality=getattr(technical, "evidence", None) is not None
-        and result.diagnostics.technical_event_analysis_quality
-        or None,
+        technical_quality=(
+            result.diagnostics.technical_event_analysis_quality
+            if isinstance(technical, TechnicalScoreResponse)
+            else None
+        ),
         controlled_count=int(events.controlled_movement_candidate_count.value or 0),
         controlled_confidence=events.mean_controlled_movement_confidence.value,
         dribble_count=int(events.dribble_candidate_count.value or 0),
@@ -246,107 +260,103 @@ def _game_evidence(result: CompletedResponse, arbitration: object) -> GameIntell
         pass_confidence=_arbitrated_confidence(passes),
         shot_count=len(shots),
         shot_confidence=_arbitrated_confidence(shots),
-        technical_value=getattr(technical, "value", None),
-        technical_confidence=getattr(technical, "confidence", None),
+        technical_value=technical.value if isinstance(technical, TechnicalScoreResponse) else None,
+        technical_confidence=(
+            technical.confidence if isinstance(technical, TechnicalScoreResponse) else None
+        ),
         pass_shot_overlap_count=arbitration.ambiguous_conflict_count,
     )
 
 
-def _candidate_confidence(candidates: list[object]) -> float | None:
-    values = [getattr(candidate, "confidence", None) for candidate in candidates]
-    usable = [value for value in values if isinstance(value, (int, float))]
-    return sum(usable) / len(usable) if usable else None
-
-
 def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...]:
     candidates: list[EventCandidateRef] = []
-    for item in result.technical_event_analysis.controlled_movement_candidates:
+    for controlled in result.technical_event_analysis.controlled_movement_candidates:
         candidates.append(
             EventCandidateRef(
-                item.event_id,
+                controlled.event_id,
                 "controlled_movement",
-                item.start_frame,
+                controlled.start_frame,
                 None,
-                item.end_frame,
+                controlled.end_frame,
                 result.selected_player.track_id,
                 None,
-                item.confidence,
+                controlled.confidence,
                 None,
                 None,
                 "controlled_movement",
             )
         )
-    for item in result.technical_event_analysis.dribble_candidates:
+    for dribble in result.technical_event_analysis.dribble_candidates:
         candidates.append(
             EventCandidateRef(
-                item.event_id,
+                dribble.event_id,
                 "dribble",
-                item.start_frame,
+                dribble.start_frame,
                 None,
-                item.end_frame,
+                dribble.end_frame,
                 result.selected_player.track_id,
                 None,
-                item.confidence,
+                dribble.confidence,
                 None,
                 None,
                 "dribble",
             )
         )
-    for item in result.technical_event_analysis.ball_loss_candidates:
+    for loss in result.technical_event_analysis.ball_loss_candidates:
         candidates.append(
             EventCandidateRef(
-                item.event_id,
+                loss.event_id,
                 "ball_loss",
-                item.event_frame,
+                loss.event_frame,
                 None,
-                item.event_frame,
+                loss.event_frame,
                 result.selected_player.track_id,
                 None,
-                item.confidence,
+                loss.confidence,
                 None,
                 None,
                 "ball_loss",
             )
         )
-    for item in result.pass_detection.pass_candidates:
+    for passing in result.pass_detection.pass_candidates:
         candidates.append(
             EventCandidateRef(
-                item.pass_id,
+                passing.pass_id,
                 "pass",
-                item.start_frame,
-                item.release_frame,
-                item.end_frame,
-                item.possessor_track_id,
-                item.receiver_track_id,
-                item.confidence,
-                item.trajectory_quality,
-                item.distance,
+                passing.start_frame,
+                passing.release_frame,
+                passing.end_frame,
+                passing.possessor_track_id,
+                passing.receiver_track_id,
+                passing.confidence,
+                passing.trajectory_quality,
+                passing.distance,
                 result.pass_detection.pass_detection_version,
             )
         )
-    for item in result.shot_detection.shot_candidates:
+    for shot in result.shot_detection.shot_candidates:
         candidates.append(
             EventCandidateRef(
-                item.shot_id,
+                shot.shot_id,
                 "shot",
-                item.start_frame,
-                item.release_frame,
-                item.end_frame,
-                item.possessor_track_id,
+                shot.start_frame,
+                shot.release_frame,
+                shot.end_frame,
+                shot.possessor_track_id,
                 None,
-                item.confidence,
-                item.trajectory_quality,
-                item.distance,
+                shot.confidence,
+                shot.trajectory_quality,
+                shot.distance,
                 result.shot_detection.shot_detection_version,
-                item.preparation_confidence,
-                item.release_confidence,
-                item.follow_through_confidence,
+                shot.preparation_confidence,
+                shot.release_confidence,
+                shot.follow_through_confidence,
             )
         )
     return tuple(candidates)
 
 
-def _arbitrated_event(item: object, fps: float) -> PublicEvent:
+def _arbitrated_event(item: ArbitratedEvent, fps: float) -> PublicEvent:
     return PublicEvent(
         id=item.public_event_id,
         type=item.event_type,
@@ -364,106 +374,9 @@ def _arbitrated_event(item: object, fps: float) -> PublicEvent:
     )
 
 
-def _arbitrated_count(arbitration: object, event_type: str) -> int:
+def _arbitrated_count(arbitration: ArbitrationResult, event_type: EventType) -> int:
     return sum(item.event_type == event_type for item in arbitration.events)
 
 
-def _arbitrated_confidence(events: list[object]) -> float | None:
+def _arbitrated_confidence(events: list[ArbitratedEvent]) -> float | None:
     return sum(item.event_confidence for item in events) / len(events) if events else None
-
-
-def _event(
-    item: object,
-    event_type: str,
-    start: float,
-    end: float,
-    duration: float,
-    confidence: float,
-    details: dict[str, float | int | str | bool | None],
-) -> PublicEvent:
-    identifier = getattr(item, "event_id", None) or getattr(item, "pass_id", None) or item.shot_id
-    return PublicEvent(
-        id=identifier,
-        type=event_type,
-        confidence=confidence,
-        start_seconds=start,
-        end_seconds=end,
-        duration_seconds=duration,
-        details=details,
-    )
-
-
-def _controlled(x: object) -> PublicEvent:
-    return _event(
-        x,
-        "controlled_movement",
-        x.start_time_seconds,
-        x.end_time_seconds,
-        x.duration_seconds,
-        x.confidence,
-        {
-            "normalized_player_displacement": x.normalized_player_displacement,
-            "direction_similarity": x.direction_similarity,
-        },
-    )
-
-
-def _dribble(x: object) -> PublicEvent:
-    return _event(
-        x,
-        "dribble",
-        x.start_frame / 30,
-        x.end_frame / 30,
-        x.duration_seconds,
-        x.confidence,
-        {"subtype": x.candidate_subtype, "filtered_direction_changes": x.direction_changes},
-    )
-
-
-def _loss(x: object) -> PublicEvent:
-    return _event(
-        x,
-        "ball_loss",
-        x.event_time_seconds,
-        x.event_time_seconds,
-        0,
-        x.confidence,
-        {
-            "recovery_detected": x.recovered_within_window,
-            "post_evidence_seconds": x.post_evidence_frames / 30,
-        },
-    )
-
-
-def _pass(x: object) -> PublicEvent:
-    return _event(
-        x,
-        "pass",
-        x.start_frame / 30,
-        x.end_frame / 30,
-        x.duration_seconds,
-        x.confidence,
-        {
-            "release_seconds": x.release_frame / 30,
-            "receiver_track_id": x.receiver_track_id,
-            "distance_pixels": x.distance,
-            "trajectory_quality": x.trajectory_quality,
-        },
-    )
-
-
-def _shot(x: object) -> PublicEvent:
-    return _event(
-        x,
-        "shot",
-        x.start_frame / 30,
-        x.end_frame / 30,
-        x.duration_seconds,
-        x.confidence,
-        {
-            "release_seconds": x.release_frame / 30,
-            "trajectory_quality": x.trajectory_quality,
-            "preparation_confidence": x.preparation_confidence,
-            "follow_through_confidence": x.follow_through_confidence,
-        },
-    )
