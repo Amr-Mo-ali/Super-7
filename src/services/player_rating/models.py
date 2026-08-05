@@ -8,6 +8,7 @@ RatingCategory = Literal[
     "technical_skill",
     "physical_activity",
     "ball_involvement",
+    "game_intelligence",
     "soccer_intelligence",
     "tactical_vision",
     "mental_stability",

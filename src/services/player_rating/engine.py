@@ -6,6 +6,7 @@ from math import isfinite
 from core.config import Settings
 from services.interactions.models import InteractionAnalysisResult
 from services.player_rating.config import PlayerRatingConfig
+from services.player_rating.game_intelligence import GameIntelligenceResult
 from services.player_rating.models import PlayerRatingSummary, PlayerRatingValue, RatingCategory
 from services.scoring.models import PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
@@ -37,11 +38,13 @@ class PlayerRatingEngine:
         physical: PhysicalScoreResult | None,
         interactions: InteractionAnalysisResult | None,
         events: TechnicalEventAnalysisResult | None,
+        game_intelligence: GameIntelligenceResult | None = None,
     ) -> PlayerRatingSummary:
         categories = (
             self._technical(technical),
             self._physical(physical),
             self._ball_involvement(interactions, events),
+            *((self._game_intelligence(game_intelligence),) if game_intelligence else ()),
             *(self._unsupported(category) for category in _UNSUPPORTED),
         )
         available = tuple(item for item in categories if item.status == "available")
@@ -53,6 +56,20 @@ class PlayerRatingEngine:
             len(_UNSUPPORTED),
             duration,
             self._config.version,
+        )
+
+    def _game_intelligence(self, result: GameIntelligenceResult) -> PlayerRatingValue:
+        if result.value is None:
+            return self._insufficient(
+                "game_intelligence", result.reason or "insufficient_game_intelligence_evidence"
+            )
+        return self._available(
+            "game_intelligence",
+            result.value,
+            result.confidence,
+            result.explanation,
+            result.limitations,
+            {"available_component_count": result.available_component_count},
         )
 
     def _technical(self, result: TechnicalScoreResult | None) -> PlayerRatingValue:

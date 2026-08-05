@@ -8,9 +8,14 @@ from schemas.analysis import (
 )
 from schemas.public_rating_v2 import (
     PublicEvent,
+    PublicGameIntelligence,
     PublicRatingV2Failure,
     PublicRatingV2Response,
     PublicRatingValue,
+)
+from services.player_rating.game_intelligence import (
+    GameIntelligenceEngine,
+    GameIntelligenceEvidence,
 )
 
 VERSION = "public_rating_v2"
@@ -43,6 +48,30 @@ def public_rating_v2(
             version="player_rating_v1",
         ),
     }
+    game_intelligence = GameIntelligenceEngine().evaluate(_game_evidence(result))
+    ratings["game_intelligence"] = PublicGameIntelligence(
+        value=game_intelligence.value,
+        confidence=game_intelligence.confidence,
+        status=game_intelligence.status,
+        level=game_intelligence.level,
+        reason=game_intelligence.reason,
+        version=game_intelligence.version,
+        components={
+            item.name: PublicRatingValue(
+                value=item.value,
+                confidence=item.confidence,
+                status=item.status,
+                level=None,
+                explanation=None,
+                reason=item.evidence.get("reason") if item.value is None else None,
+                limitations=[],
+                version=item.version,
+            )
+            for item in game_intelligence.components
+        },
+        effective_weights=game_intelligence.effective_weights,
+        limitations=list(game_intelligence.limitations),
+    )
     for name in (
         "soccer_intelligence",
         "tactical_vision",
@@ -59,7 +88,11 @@ def public_rating_v2(
             limitations=[],
             version="player_rating_v1",
         )
-    available = [item for item in ratings.values() if item.value is not None]
+    available = [
+        item
+        for item in ratings.values()
+        if isinstance(item, PublicRatingValue) and item.value is not None
+    ]
     overall = PublicRatingValue(
         value=sum(item.value or 0 for item in available) / len(available)
         if len(available) >= 2
@@ -174,6 +207,68 @@ def _score(score: object, name: str) -> PublicRatingValue:
     )
 
 
+def _game_evidence(result: CompletedResponse) -> GameIntelligenceEvidence:
+    physical = result.scores.physical
+    physical_evidence = getattr(physical, "evidence", None)
+    technical = result.scores.technical
+    interaction = result.interaction_analysis
+    events = result.technical_event_analysis
+    passes = result.pass_detection.pass_candidates
+    shots = result.shot_detection.shot_candidates
+    overlap = sum(
+        1
+        for passing in passes
+        if any(
+            passing.start_frame <= shot.end_frame and shot.start_frame <= passing.end_frame
+            for shot in shots
+        )
+    )
+    return GameIntelligenceEvidence(
+        visible_duration_seconds=result.selected_player.segment_duration_seconds
+        or result.video.duration_seconds,
+        visibility_ratio=result.selected_player.visibility_ratio,
+        continuity_ratio=(
+            result.tracking.longest_continuous_visible_segment
+            / max(result.selected_player.visible_frames, 1)
+        ),
+        ball_proximity_ratio=result.selected_player.ball_proximity_ratio,
+        interaction_time_seconds=interaction.possible_ball_interaction_time_seconds.value,
+        interaction_count=int(interaction.possible_ball_interaction_count.value or 0),
+        longest_interaction_seconds=interaction.longest_possible_ball_interaction_seconds.value,
+        interaction_confidence=interaction.mean_possible_ball_interaction_confidence.value,
+        interaction_coverage=interaction.interaction_evidence_coverage_ratio.value,
+        ball_quality=result.diagnostics.ball_analysis_quality,
+        interaction_quality=result.diagnostics.interaction_analysis_quality,
+        movement_intensity=physical_evidence.movement_intensity if physical_evidence else None,
+        active_time_ratio=physical_evidence.active_time_ratio if physical_evidence else None,
+        direction_component=physical_evidence.direction_component if physical_evidence else None,
+        direction_changes=result.features.direction_changes.value,
+        movement_quality=physical_evidence.movement_analysis_quality if physical_evidence else None,
+        technical_quality=getattr(technical, "evidence", None) is not None
+        and result.diagnostics.technical_event_analysis_quality
+        or None,
+        controlled_count=int(events.controlled_movement_candidate_count.value or 0),
+        controlled_confidence=events.mean_controlled_movement_confidence.value,
+        dribble_count=int(events.dribble_candidate_count.value or 0),
+        dribble_confidence=events.mean_dribble_candidate_confidence.value,
+        loss_count=int(events.ball_loss_candidate_count.value or 0),
+        loss_confidence=events.mean_ball_loss_candidate_confidence.value,
+        pass_count=len(passes),
+        pass_confidence=_candidate_confidence(passes),
+        shot_count=len(shots),
+        shot_confidence=_candidate_confidence(shots),
+        technical_value=getattr(technical, "value", None),
+        technical_confidence=getattr(technical, "confidence", None),
+        pass_shot_overlap_count=overlap,
+    )
+
+
+def _candidate_confidence(candidates: list[object]) -> float | None:
+    values = [getattr(candidate, "confidence", None) for candidate in candidates]
+    usable = [value for value in values if isinstance(value, (int, float))]
+    return sum(usable) / len(usable) if usable else None
+
+
 def _event(
     item: object,
     event_type: str,
@@ -183,11 +278,7 @@ def _event(
     confidence: float,
     details: dict[str, float | int | str | bool | None],
 ) -> PublicEvent:
-    identifier = (
-        getattr(item, "event_id", None)
-        or getattr(item, "pass_id", None)
-        or getattr(item, "shot_id")
-    )
+    identifier = getattr(item, "event_id", None) or getattr(item, "pass_id", None) or item.shot_id
     return PublicEvent(
         id=identifier,
         type=event_type,
