@@ -122,7 +122,7 @@ class GameIntelligenceEngine:
         confidence = min(confidence, MAX_GAME_INTELLIGENCE_CONFIDENCE)
         limitations = _LIMITATIONS + (("short_video",) if duration_factor < 1 else ())
         if evidence.pass_shot_overlap_count:
-            limitations += ("pass_shot_candidate_overlap_not_arbitrated",)
+            limitations += ("ambiguous_pass_shot_event",)
         return GameIntelligenceResult(
             value,
             confidence,

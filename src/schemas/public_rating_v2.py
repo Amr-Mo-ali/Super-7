@@ -1,7 +1,5 @@
 """Compact, dashboard-facing Public Rating JSON V2 schemas."""
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
@@ -30,13 +28,18 @@ class PublicGameIntelligence(BaseModel):
 
 class PublicEvent(BaseModel):
     id: str
-    type: str
-    status: Literal["candidate"] = "candidate"
+    type: str | None
+    status: str = "candidate"
     confidence: float = Field(ge=0, le=1)
+    arbitration_confidence: float | None = Field(default=None, ge=0, le=1)
     start_seconds: float
+    release_seconds: float | None = None
     end_seconds: float
     duration_seconds: float = Field(ge=0)
     details: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
+    candidate_types: list[str] = Field(default_factory=list)
+    source_candidate_ids: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
 
 
 class PublicRatingV2Response(BaseModel):

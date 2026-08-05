@@ -13,6 +13,7 @@ from schemas.public_rating_v2 import (
     PublicRatingV2Response,
     PublicRatingValue,
 )
+from services.event_arbitration import EventArbitrator, EventCandidateRef
 from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
@@ -48,7 +49,8 @@ def public_rating_v2(
             version="player_rating_v1",
         ),
     }
-    game_intelligence = GameIntelligenceEngine().evaluate(_game_evidence(result))
+    arbitration = EventArbitrator().arbitrate(_event_candidates(result))
+    game_intelligence = GameIntelligenceEngine().evaluate(_game_evidence(result, arbitration))
     ratings["game_intelligence"] = PublicGameIntelligence(
         value=game_intelligence.value,
         confidence=game_intelligence.confidence,
@@ -107,16 +109,7 @@ def public_rating_v2(
         version="player_rating_v1",
     )
     events = {
-        "controlled_movements": [
-            _controlled(item)
-            for item in result.technical_event_analysis.controlled_movement_candidates
-        ],
-        "dribbles": [_dribble(item) for item in result.technical_event_analysis.dribble_candidates],
-        "ball_losses": [
-            _loss(item) for item in result.technical_event_analysis.ball_loss_candidates
-        ],
-        "passes": [_pass(item) for item in result.pass_detection.pass_candidates],
-        "shots": [_shot(item) for item in result.shot_detection.shot_candidates],
+        "timeline": [_arbitrated_event(item, result.video.fps) for item in arbitration.events]
     }
     return PublicRatingV2Response(
         analysis={
@@ -143,11 +136,13 @@ def public_rating_v2(
             "possible_ball_interactions": int(
                 result.interaction_analysis.possible_ball_interaction_count.value or 0
             ),
-            "controlled_movements": len(events["controlled_movements"]),
-            "dribbles": len(events["dribbles"]),
-            "ball_losses": len(events["ball_losses"]),
-            "passes": len(events["passes"]),
-            "shots": len(events["shots"]),
+            "controlled_movements": _arbitrated_count(arbitration, "controlled_movement"),
+            "dribbles": _arbitrated_count(arbitration, "dribble"),
+            "ball_losses": _arbitrated_count(arbitration, "ball_loss"),
+            "passes": _arbitrated_count(arbitration, "pass"),
+            "shots": _arbitrated_count(arbitration, "shot"),
+            "ambiguous_events": arbitration.ambiguous_conflict_count,
+            "deduplicated_total_events": arbitration.public_event_count,
         },
         quality={
             "tracking": {
@@ -182,6 +177,7 @@ def public_rating_v2(
             "rating": "player_rating_v1",
             "analysis": result.analysis_version,
             "technical_events": result.algorithm_versions.get("controlled_movement", "unknown"),
+            "event_arbitration": arbitration.version,
         },
     )
 
@@ -207,22 +203,15 @@ def _score(score: object, name: str) -> PublicRatingValue:
     )
 
 
-def _game_evidence(result: CompletedResponse) -> GameIntelligenceEvidence:
+def _game_evidence(result: CompletedResponse, arbitration: object) -> GameIntelligenceEvidence:
     physical = result.scores.physical
     physical_evidence = getattr(physical, "evidence", None)
     technical = result.scores.technical
     interaction = result.interaction_analysis
     events = result.technical_event_analysis
-    passes = result.pass_detection.pass_candidates
-    shots = result.shot_detection.shot_candidates
-    overlap = sum(
-        1
-        for passing in passes
-        if any(
-            passing.start_frame <= shot.end_frame and shot.start_frame <= passing.end_frame
-            for shot in shots
-        )
-    )
+    arbitrated = arbitration.events
+    passes = [item for item in arbitrated if item.event_type == "pass"]
+    shots = [item for item in arbitrated if item.event_type == "shot"]
     return GameIntelligenceEvidence(
         visible_duration_seconds=result.selected_player.segment_duration_seconds
         or result.video.duration_seconds,
@@ -254,12 +243,12 @@ def _game_evidence(result: CompletedResponse) -> GameIntelligenceEvidence:
         loss_count=int(events.ball_loss_candidate_count.value or 0),
         loss_confidence=events.mean_ball_loss_candidate_confidence.value,
         pass_count=len(passes),
-        pass_confidence=_candidate_confidence(passes),
+        pass_confidence=_arbitrated_confidence(passes),
         shot_count=len(shots),
-        shot_confidence=_candidate_confidence(shots),
+        shot_confidence=_arbitrated_confidence(shots),
         technical_value=getattr(technical, "value", None),
         technical_confidence=getattr(technical, "confidence", None),
-        pass_shot_overlap_count=overlap,
+        pass_shot_overlap_count=arbitration.ambiguous_conflict_count,
     )
 
 
@@ -267,6 +256,120 @@ def _candidate_confidence(candidates: list[object]) -> float | None:
     values = [getattr(candidate, "confidence", None) for candidate in candidates]
     usable = [value for value in values if isinstance(value, (int, float))]
     return sum(usable) / len(usable) if usable else None
+
+
+def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...]:
+    candidates: list[EventCandidateRef] = []
+    for item in result.technical_event_analysis.controlled_movement_candidates:
+        candidates.append(
+            EventCandidateRef(
+                item.event_id,
+                "controlled_movement",
+                item.start_frame,
+                None,
+                item.end_frame,
+                result.selected_player.track_id,
+                None,
+                item.confidence,
+                None,
+                None,
+                "controlled_movement",
+            )
+        )
+    for item in result.technical_event_analysis.dribble_candidates:
+        candidates.append(
+            EventCandidateRef(
+                item.event_id,
+                "dribble",
+                item.start_frame,
+                None,
+                item.end_frame,
+                result.selected_player.track_id,
+                None,
+                item.confidence,
+                None,
+                None,
+                "dribble",
+            )
+        )
+    for item in result.technical_event_analysis.ball_loss_candidates:
+        candidates.append(
+            EventCandidateRef(
+                item.event_id,
+                "ball_loss",
+                item.event_frame,
+                None,
+                item.event_frame,
+                result.selected_player.track_id,
+                None,
+                item.confidence,
+                None,
+                None,
+                "ball_loss",
+            )
+        )
+    for item in result.pass_detection.pass_candidates:
+        candidates.append(
+            EventCandidateRef(
+                item.pass_id,
+                "pass",
+                item.start_frame,
+                item.release_frame,
+                item.end_frame,
+                item.possessor_track_id,
+                item.receiver_track_id,
+                item.confidence,
+                item.trajectory_quality,
+                item.distance,
+                result.pass_detection.pass_detection_version,
+            )
+        )
+    for item in result.shot_detection.shot_candidates:
+        candidates.append(
+            EventCandidateRef(
+                item.shot_id,
+                "shot",
+                item.start_frame,
+                item.release_frame,
+                item.end_frame,
+                item.possessor_track_id,
+                None,
+                item.confidence,
+                item.trajectory_quality,
+                item.distance,
+                result.shot_detection.shot_detection_version,
+                item.preparation_confidence,
+                item.release_confidence,
+                item.follow_through_confidence,
+            )
+        )
+    return tuple(candidates)
+
+
+def _arbitrated_event(item: object, fps: float) -> PublicEvent:
+    return PublicEvent(
+        id=item.public_event_id,
+        type=item.event_type,
+        status=item.status,
+        confidence=item.event_confidence,
+        arbitration_confidence=item.arbitration_confidence,
+        start_seconds=item.start_frame / fps,
+        release_seconds=item.release_frame / fps if item.release_frame is not None else None,
+        end_seconds=item.end_frame / fps,
+        duration_seconds=(item.end_frame - item.start_frame + 1) / fps,
+        details={},
+        candidate_types=list(item.candidate_types),
+        source_candidate_ids=list(item.source_candidate_ids),
+        limitations=list(item.limitations),
+    )
+
+
+def _arbitrated_count(arbitration: object, event_type: str) -> int:
+    return sum(item.event_type == event_type for item in arbitration.events)
+
+
+def _arbitrated_confidence(events: list[object]) -> float | None:
+    return sum(item.event_confidence for item in events) / len(events) if events else None
 
 
 def _event(
