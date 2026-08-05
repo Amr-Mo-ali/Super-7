@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from services.event_arbitration.config import VERSION
+from config.arbitration import EVENT_ARBITRATION_VERSION as VERSION
 
 EventType = Literal["controlled_movement", "dribble", "ball_loss", "pass", "shot"]
 ArbitrationStatus = Literal["accepted", "suppressed_duplicate", "ambiguous", "unresolved_conflict"]

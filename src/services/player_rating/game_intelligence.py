@@ -7,7 +7,7 @@ does not inspect trajectories, frames, or invoke an analysis service.
 from dataclasses import dataclass
 from math import isfinite
 
-from services.player_rating.config import (
+from config.scoring import (
     GAME_INTELLIGENCE_WEIGHTS,
     MAX_GAME_INTELLIGENCE_CONFIDENCE,
     MIN_AVAILABLE_GAME_INTELLIGENCE_COMPONENTS,

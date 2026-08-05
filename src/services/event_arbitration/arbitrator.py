@@ -3,7 +3,7 @@
 from collections import defaultdict
 from math import isfinite
 
-from services.event_arbitration.config import (
+from config.arbitration import (
     DECISIVE_EVENT_EVIDENCE_MARGIN,
     MAX_END_FRAME_DIFFERENCE,
     MAX_RELEASE_FRAME_DIFFERENCE,
@@ -256,8 +256,8 @@ def _optional_match(left: float | None, right: float | None) -> bool:
     return (left is None and right is None) or _similar_distance(left, right)
 
 
-def _unit(value: float) -> float:
-    return min(1.0, max(0.0, value)) if isfinite(value) else 0.0
+def _unit(value: float | None) -> float:
+    return min(1.0, max(0.0, value)) if value is not None and isfinite(value) else 0.0
 
 
 def _duplicate_key(item: EventCandidateRef) -> tuple[float, float, int, str]:

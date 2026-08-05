@@ -10,6 +10,7 @@ from api.request_lifecycle import RequestLifecycle
 from api.routes import create_router
 from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
+from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import get_logger
 from diagnostics.artifacts import ArtifactManager
@@ -50,7 +51,7 @@ def create_app(
     )
     app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
     resolved_lifecycle = lifecycle or RequestLifecycle(
-        AdmissionController(max_active_analyses=1),
+        AdmissionController(max_active_analyses=DEFAULT_MAX_ACTIVE_ANALYSES),
         AnalysisExecutor(),
         ArtifactManager(
             Path(resolved_settings.debug_output_dir),
