@@ -1,24 +1,28 @@
 """Response contracts for automatic target selection."""
 
-from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
 class AnalyzeRequest(BaseModel):
-    """Caller-supplied context that is returned without interpretation."""
+    """Backend-owned identifiers and delivery details for one analysis request."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    video_url: HttpUrl
-    metadata: dict[str, Any] | None = None
+    video_id: str = Field(alias="videoId")
+    player_id: str = Field(alias="playerId")
+    video_url: str = Field(alias="videoUrl")
+    callback_url: HttpUrl = Field(alias="callbackUrl")
 
-    @field_validator("metadata")
-    @classmethod
-    def _copy_metadata(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        """Isolate the request from later caller-side mutation without transforming it."""
-        return deepcopy(value)
+
+class AnalyzeAcceptedResponse(BaseModel):
+    """Synchronous acknowledgement of a validated backend request."""
+
+    request_id: str
+    video_id: str
+    player_id: str
+    status: Literal["accepted"] = "accepted"
 
 
 class VideoResponse(BaseModel):

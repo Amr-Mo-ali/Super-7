@@ -37,7 +37,7 @@ class BlockingTracker:
         return TrackingRun((), TrackingDiagnostics(1, 0, 0, 0, 0))
 
 
-def test_admission_exhaustion_never_starts_second_route_analysis() -> None:
+def test_backend_acceptance_does_not_start_route_analysis() -> None:
     async def scenario() -> None:
         with TemporaryDirectory() as directory:
             tracker = BlockingTracker(Event(), Event())
@@ -55,15 +55,20 @@ def test_admission_exhaustion_never_starts_second_route_analysis() -> None:
             assert held is not None
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 second = await client.post(
-                    "/analyze", json={"video_url": "https://cdn.example.com/y.avi"}
+                    "/analyze",
+                    json={
+                        "videoId": "video-123",
+                        "playerId": "player-456",
+                        "videoUrl": "y.avi",
+                        "callbackUrl": "https://backend.example.com/webhook",
+                    },
                 )
             await held.release()
             assert second.status_code == 200
-            assert second.json()["analysis"]["status"] == "failed"
-            assert second.json()["reason_code"] == "failed"
+            assert second.json()["status"] == "accepted"
             assert tracker.calls == 0
             metrics = await lifecycle.admission.metrics()
-            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 1)
+            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 0)
 
     asyncio.run(scenario())
 

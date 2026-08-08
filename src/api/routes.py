@@ -8,24 +8,20 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 from pydantic import HttpUrl
 
-from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
-from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
+from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
-from core.exceptions import (
-    AnalysisError,
-    InternalDiagnosticsError,
-    RealDetectorNotConfiguredError,
-)
+from core.exceptions import InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
 from diagnostics.artifacts import ArtifactSession
 from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
+    AnalyzeAcceptedResponse,
     AnalyzeRequest,
     AnalyzeResponse,
     BallLossCandidateResponse,
@@ -48,7 +44,6 @@ from schemas.analysis import (
     TrackingResponse,
     VideoResponse,
 )
-from schemas.public_rating_v2 import PublicRatingV2Failure, PublicRatingV2Response
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
@@ -99,67 +94,17 @@ def create_router(
 
     @router.post(
         "/analyze",
-        response_model=PublicRatingV2Response | PublicRatingV2Failure,
+        response_model=AnalyzeAcceptedResponse,
     )
     async def analyze(
         payload: AnalyzeRequest,
-    ) -> PublicRatingV2Response | PublicRatingV2Failure:
-        """Validate one video and map the internal analysis result to public V2."""
-        started = perf_counter()
-        analysis_id = str(uuid4())
-        detection_started = perf_counter()
-        request_metadata = payload.metadata or {}
-        try:
-            result = await lifecycle.execute_with_artifacts(
-                analysis_id,
-                lambda cancellation, artifacts: _analyze_downloaded(
-                    settings,
-                    validator,
-                    tracker,
-                    selector,
-                    extractor,
-                    ball_proximity_analyzer,
-                    movement_analyzer,
-                    interaction_analyzer,
-                    technical_event_analyzer,
-                    pass_detector,
-                    shot_detector,
-                    logger,
-                    physical_scorer,
-                    analysis_id,
-                    started,
-                    detection_started,
-                    payload.video_url,
-                    downloader,
-                    cancellation,
-                    artifacts,
-                    request_metadata,
-                ),
-            )
-            return public_rating_v2(result)
-        except AdmissionRejectedError as error:
-            diagnostics = replace(
-                TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={}
-            )
-            return public_rating_v2(
-                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0, request_metadata)
-            )
-        except RealDetectorNotConfiguredError as error:
-            diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
-            return public_rating_v2(
-                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0, request_metadata)
-            )
-        except AnalysisCancelled:
-            logger.info("analysis_cancelled analysis_id=%s", analysis_id)
-            raise HTTPException(status_code=499, detail={"error": "Analysis cancelled."}) from None
-        except AnalysisError as error:
-            logger.warning("analysis_validation_failed: %s", error)
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"error": str(error)}
-            ) from error
-        except Exception as error:
-            logger.exception("analysis_failed")
-            raise HTTPException(status_code=500, detail={"error": "Analysis failed."}) from error
+    ) -> AnalyzeAcceptedResponse:
+        """Validate and acknowledge a backend request without invoking analysis or callbacks."""
+        return AnalyzeAcceptedResponse(
+            request_id=str(uuid4()),
+            video_id=payload.video_id,
+            player_id=payload.player_id,
+        )
 
     return router
 
