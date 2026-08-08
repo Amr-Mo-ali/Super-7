@@ -23,6 +23,7 @@ from core.exceptions import (
 )
 from core.reproducibility import metadata as reproducibility_metadata
 from diagnostics.artifacts import ArtifactSession
+from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
     AnalyzeResponse,
@@ -185,10 +186,22 @@ def _analyze_uploaded(
 ) -> AnalyzeResponse:
     """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
     checker = CancellationChecker(cancellation)
+    profiler = current_collector()
     checker.check("upload validation")
-    metadata = validator.validate(video_path)
+    if profiler is None:
+        metadata = validator.validate(video_path)
+    else:
+        with profiler.stage("video_validation"):
+            metadata = validator.validate(video_path)
     checker.check("detection")
-    run = tracker.analyze(video_path, metadata)
+    if profiler is None:
+        run = tracker.analyze(video_path, metadata)
+    else:
+        with profiler.stage("tracking_total"):
+            run = tracker.analyze(video_path, metadata)
+        profiler.set_video(
+            metadata.duration_seconds, run.diagnostics.frames_processed, metadata.file_size_bytes
+        )
     checker.check("tracking")
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
     request_metadata = reproducibility_metadata(video_path, tracker.model_version)
@@ -224,9 +237,23 @@ def _analyze_uploaded(
         and run.player_boxes is not None
         and run.player_confidences is not None
     ):
-        segments = build_segments(
-            run.player_boxes, run.player_confidences, run.ball_points or {}, metadata.fps, settings
-        )
+        if profiler is None:
+            segments = build_segments(
+                run.player_boxes,
+                run.player_confidences,
+                run.ball_points or {},
+                metadata.fps,
+                settings,
+            )
+        else:
+            with profiler.stage("player_selection"):
+                segments = build_segments(
+                    run.player_boxes,
+                    run.player_confidences,
+                    run.ball_points or {},
+                    metadata.fps,
+                    settings,
+                )
         rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
         selection_diagnostics = replace(
             run.diagnostics,
@@ -236,7 +263,11 @@ def _analyze_uploaded(
         selected = select_segment(segments)
         ranked = (selected,) if selected is not None else ()
     else:
-        ranked = selector.rank(run.tracks)
+        if profiler is None:
+            ranked = selector.rank(run.tracks)
+        else:
+            with profiler.stage("player_selection"):
+                ranked = selector.rank(run.tracks)
     selection_time_ms = round((perf_counter() - selection_started) * 1000)
     if not ranked:
         return _noncompleted(
