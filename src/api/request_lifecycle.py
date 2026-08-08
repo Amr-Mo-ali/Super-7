@@ -46,12 +46,16 @@ class RequestLifecycle:
         permit = await self._admission.admit()
         if permit is None:
             raise AdmissionRejectedError("Analysis capacity is exhausted.")
-        cancellation = CancellationManager(request_id)
+        cancellation: CancellationManager | None = None
         try:
+            cancellation = CancellationManager(request_id)
             return await self._executor.execute(request_id, cancellation, pipeline)
         finally:
-            cancellation.complete()
-            await permit.release()
+            try:
+                if cancellation is not None:
+                    cancellation.complete()
+            finally:
+                await permit.release()
 
     async def execute_with_artifacts(
         self,
@@ -64,13 +68,22 @@ class RequestLifecycle:
         permit = await self._admission.admit()
         if permit is None:
             raise AdmissionRejectedError("Analysis capacity is exhausted.")
-        cancellation = CancellationManager(request_id)
-        artifacts = self._artifacts.create_session(request_id)
+        cancellation: CancellationManager | None = None
+        artifacts: ArtifactSession | None = None
         try:
+            cancellation = CancellationManager(request_id)
+            session = self._artifacts.create_session(request_id)
+            artifacts = session
             return await self._executor.execute(
-                request_id, cancellation, lambda state: pipeline(state, artifacts)
+                request_id, cancellation, lambda state: pipeline(state, session)
             )
         finally:
-            artifacts.cleanup()
-            cancellation.complete()
-            await permit.release()
+            try:
+                if artifacts is not None:
+                    artifacts.cleanup()
+            finally:
+                try:
+                    if cancellation is not None:
+                        cancellation.complete()
+                finally:
+                    await permit.release()

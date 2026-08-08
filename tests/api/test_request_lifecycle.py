@@ -1,6 +1,8 @@
 """Deterministic tests for local analysis lifecycle coordination."""
 
 import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -9,6 +11,25 @@ from concurrency.admission import AdmissionController
 from concurrency.cancellation import CancellationManager, CancellationState
 from concurrency.exceptions import AdmissionRejectedError
 from concurrency.executor import AnalysisExecutor, current_request_id
+from diagnostics.artifacts import ArtifactManager, ArtifactSession, CleanupResult
+
+
+class FailOnceArtifactManager(ArtifactManager):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root, max_session_bytes=1024)
+        self._failed = False
+
+    def create_session(self, request_id: str) -> ArtifactSession:
+        if not self._failed:
+            self._failed = True
+            raise RuntimeError("artifact setup failed")
+        return super().create_session(request_id)
+
+
+class CleanupFailureArtifactManager(ArtifactManager):
+    def _complete_session(self, session: ArtifactSession, retained: bool) -> CleanupResult:
+        del session, retained
+        raise RuntimeError("artifact cleanup failed")
 
 
 def test_successful_execution_preserves_result_and_request_id() -> None:
@@ -148,3 +169,64 @@ def test_lifecycle_matches_direct_pipeline_result() -> None:
         return await lifecycle.execute("analysis-parity", pipeline)
 
     assert asyncio.run(scenario()) == direct
+
+
+def test_artifact_setup_failure_releases_permit_and_next_request_is_admitted() -> None:
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            controller = AdmissionController(1)
+            lifecycle = RequestLifecycle(
+                controller, AnalysisExecutor(), FailOnceArtifactManager(Path(directory))
+            )
+
+            with pytest.raises(RuntimeError, match="artifact setup failed"):
+                await lifecycle.execute_with_artifacts("analysis-setup-failure", lambda _, __: None)
+
+            assert (await controller.metrics()).active_permits == 0
+            assert (
+                await lifecycle.execute_with_artifacts("analysis-after-failure", lambda _, __: 42)
+                == 42
+            )
+            metrics = await controller.metrics()
+            assert metrics.active_permits == 0
+            assert metrics.admitted_analyses == 2
+
+    asyncio.run(scenario())
+
+
+def test_artifact_cleanup_failure_still_releases_permit() -> None:
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            controller = AdmissionController(1)
+            lifecycle = RequestLifecycle(
+                controller, AnalysisExecutor(), CleanupFailureArtifactManager(Path(directory), 1024)
+            )
+
+            with pytest.raises(RuntimeError, match="artifact cleanup failed"):
+                await lifecycle.execute_with_artifacts(
+                    "analysis-cleanup-failure", lambda _, __: None
+                )
+
+            assert (await controller.metrics()).active_permits == 0
+
+    asyncio.run(scenario())
+
+
+def test_cancellation_initialization_failure_releases_permit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_cancellation_creation(_: str) -> CancellationManager:
+        raise RuntimeError("cancellation setup failed")
+
+    monkeypatch.setattr("api.request_lifecycle.CancellationManager", fail_cancellation_creation)
+
+    async def scenario() -> None:
+        controller = AdmissionController(1)
+        lifecycle = RequestLifecycle(controller, AnalysisExecutor())
+
+        with pytest.raises(RuntimeError, match="cancellation setup failed"):
+            await lifecycle.execute("analysis-cancellation-setup-failure", lambda _: None)
+
+        assert (await controller.metrics()).active_permits == 0
+
+    asyncio.run(scenario())
