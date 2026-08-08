@@ -33,3 +33,5 @@ jobs:
         run: uv run mypy src tests
       - name: Test without production model inference
         run: uv run pytest -q
+      - name: Build container image
+        run: docker build --tag football-analysis:ci .

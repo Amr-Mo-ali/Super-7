@@ -10,3 +10,5 @@ dist/
 build/
 *.egg-info/
 debug/
+yolo11n.pt
+models/*.pt
