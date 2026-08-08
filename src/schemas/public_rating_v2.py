@@ -1,6 +1,6 @@
 """Compact, dashboard-facing Public Rating JSON V2 schemas."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,6 +58,7 @@ class PublicEvent(BaseModel):
 
 class PublicRatingV2Response(BaseModel):
     analysis: dict[str, str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
     video: dict[str, float | dict[str, int]]
     player: dict[str, float | int]
     ratings: dict[str, PublicRatingValue | PublicGameIntelligence]
@@ -72,6 +73,7 @@ class PublicRatingV2Response(BaseModel):
 
 class PublicRatingV2Failure(BaseModel):
     analysis: dict[str, str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
     reason: str
     reason_code: str
     warnings: list[str]

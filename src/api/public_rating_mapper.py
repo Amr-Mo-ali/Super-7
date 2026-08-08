@@ -36,6 +36,7 @@ def public_rating_v2(
         warnings = result.warnings
         return PublicRatingV2Failure(
             analysis={"id": result.analysis_id, "status": status, "response_version": VERSION},
+            metadata=result.metadata,
             reason=warnings[0] if warnings else "Analysis did not complete.",
             reason_code=status,
             warnings=warnings,
@@ -124,6 +125,7 @@ def public_rating_v2(
             "response_version": VERSION,
             "rating_version": "player_rating_v1",
         },
+        metadata=result.metadata,
         video={
             "duration_seconds": result.video.duration_seconds,
             "fps": result.video.fps,

@@ -1,6 +1,7 @@
 """API contract tests for automatic target analysis."""
 
 import asyncio
+import json
 from pathlib import Path
 
 import cv2
@@ -9,6 +10,7 @@ import numpy as np
 
 from core.config import Settings
 from main import create_app
+from schemas.analysis import AnalyzeRequest
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
 from services.selection import PlayerTrack
 from services.video_validator import VideoMetadata
@@ -40,6 +42,63 @@ def test_analyze_accepts_only_video_and_returns_v2_completed(tmp_path: Path) -> 
     assert body["analysis"]["response_version"] == "public_rating_v2"
     assert body["player"]["track_id"] == 4
     assert "selected_player" not in body
+
+
+def test_analyze_propagates_metadata_unchanged(tmp_path: Path) -> None:
+    metadata = {"video_id": "video_001", "player_ai_id": "player_123", "team_id": "team_001"}
+    response = asyncio.run(
+        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": metadata})
+    )
+    assert response.status_code == 200
+    assert response.json()["metadata"] == metadata
+    assert list(response.json()["metadata"]) == list(metadata)
+
+
+def test_analyze_request_metadata_is_immutable_from_the_caller(tmp_path: Path) -> None:
+    metadata: dict[str, object] = {
+        "context": {"match_id": "match_001", "tags": ["league", "final"]}
+    }
+    request = AnalyzeRequest(metadata=metadata)
+    caller_context = metadata["context"]
+    assert isinstance(caller_context, dict)
+    caller_tags = caller_context["tags"]
+    assert isinstance(caller_tags, list)
+    caller_tags.append("changed-after-request")
+    assert request.metadata == {
+        "context": {"match_id": "match_001", "tags": ["league", "final"]}
+    }
+    response = asyncio.run(
+        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": request.metadata})
+    )
+    assert response.status_code == 200
+    assert response.json()["metadata"] == {
+        "context": {"match_id": "match_001", "tags": ["league", "final"]}
+    }
+
+
+def test_analyze_returns_empty_metadata(tmp_path: Path) -> None:
+    response = asyncio.run(
+        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": {}})
+    )
+    assert response.status_code == 200
+    assert response.json()["metadata"] == {}
+
+
+def test_analyze_returns_empty_metadata_when_missing(tmp_path: Path) -> None:
+    response = asyncio.run(
+        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {})
+    )
+    assert response.status_code == 200
+    assert response.json()["metadata"] == {}
+
+
+def test_analyze_preserves_nested_metadata(tmp_path: Path) -> None:
+    metadata = {"match": {"id": "match_001", "participants": [{"id": "team_001"}]}}
+    response = asyncio.run(
+        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": metadata})
+    )
+    assert response.status_code == 200
+    assert response.json()["metadata"] == metadata
 
 
 def test_analyze_rejects_manual_selection_fields(tmp_path: Path) -> None:
@@ -90,13 +149,19 @@ def test_invalid_video_returns_structured_error(tmp_path: Path) -> None:
 
 
 async def _post(
-    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, str], query: str = ""
+    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, object], query: str = ""
 ) -> httpx.Response:
     transport = httpx.ASGITransport(app=create_app(Settings(selection_margin=0.01), tracker))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         with path.open("rb") as file:
+            form_data = {
+                key: json.dumps(value) if key == "metadata" else str(value)
+                for key, value in data.items()
+            }
             return await client.post(
-                f"/analyze{query}", data=data, files={"video": (path.name, file, "video/x-msvideo")}
+                f"/analyze{query}",
+                data=form_data,
+                files={"video": (path.name, file, "video/x-msvideo")},
             )
 
 

@@ -1,8 +1,21 @@
 """Response contracts for automatic target selection."""
 
-from typing import Literal
+from copy import deepcopy
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class AnalyzeRequest(BaseModel):
+    """Caller-supplied context that is returned without interpretation."""
+
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def _copy_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        """Isolate the request from later caller-side mutation without transforming it."""
+        return deepcopy(value)
 
 
 class VideoResponse(BaseModel):
@@ -319,6 +332,7 @@ class CompletedResponse(BaseModel):
     algorithm_versions: dict[str, str] = Field(default_factory=dict)
     timing: PipelineTiming = Field(default_factory=PipelineTiming)
     quality_gates: dict[str, StageGate] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     analysis_metadata: dict[str, str | None] = Field(default_factory=dict)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
 
@@ -329,6 +343,7 @@ class AmbiguousResponse(BaseModel):
     selected_player: None = None
     candidate_count: int
     warnings: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Diagnostics(BaseModel):
@@ -475,6 +490,7 @@ class NonCompletedResponse(BaseModel):
     diagnostics: Diagnostics
     pipeline_state: str = "VIDEO"
     quality_gates: dict[str, StageGate] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 AnalyzeResponse = CompletedResponse | AmbiguousResponse | NonCompletedResponse

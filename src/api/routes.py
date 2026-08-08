@@ -5,10 +5,11 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from pydantic import Json
 
 from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
@@ -26,6 +27,7 @@ from diagnostics.artifacts import ArtifactSession
 from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
+    AnalyzeRequest,
     AnalyzeResponse,
     BallLossCandidateResponse,
     CompletedResponse,
@@ -101,15 +103,17 @@ def create_router(
     async def analyze(
         request: Request,
         video: Annotated[UploadFile, File()],
+        metadata: Annotated[Json[dict[str, Any]] | None, Form()] = None,
     ) -> PublicRatingV2Response | PublicRatingV2Failure:
         """Validate one video and map the internal analysis result to public V2."""
         started = perf_counter()
         analysis_id = str(uuid4())
         detection_started = perf_counter()
+        request_metadata = AnalyzeRequest(metadata=metadata or {}).metadata
         try:
-            unexpected_fields = set((await request.form()).keys()) - {"video"}
+            unexpected_fields = set((await request.form()).keys()) - {"video", "metadata"}
             if unexpected_fields:
-                raise InvalidRequestError("Only the video multipart field is accepted.")
+                raise InvalidRequestError("Only the video and metadata multipart fields are accepted.")
             async with temporary_upload(video, settings) as video_path:
                 result = await lifecycle.execute_with_artifacts(
                     analysis_id,
@@ -133,6 +137,7 @@ def create_router(
                         video_path,
                         cancellation,
                         artifacts,
+                        request_metadata,
                     ),
                 )
                 return public_rating_v2(result)
@@ -141,12 +146,12 @@ def create_router(
                 TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={}
             )
             return public_rating_v2(
-                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0, request_metadata)
             )
         except RealDetectorNotConfiguredError as error:
             diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
             return public_rating_v2(
-                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
+                _noncompleted(analysis_id, "failed", str(error), diagnostics, 0, request_metadata)
             )
         except AnalysisCancelled:
             logger.info("analysis_cancelled analysis_id=%s", analysis_id)
@@ -183,6 +188,7 @@ def _analyze_uploaded(
     video_path: Path,
     cancellation: CancellationManager,
     artifacts: ArtifactSession,
+    request_metadata: dict[str, Any],
 ) -> AnalyzeResponse:
     """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
     checker = CancellationChecker(cancellation)
@@ -204,7 +210,7 @@ def _analyze_uploaded(
         )
     checker.check("tracking")
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
-    request_metadata = reproducibility_metadata(video_path, tracker.model_version)
+    reproducibility = reproducibility_metadata(video_path, tracker.model_version)
     debug_source: Path | None = None
     if settings.debug.enabled and (settings.debug.save_video or settings.debug.save_frames):
         source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
@@ -219,6 +225,7 @@ def _analyze_uploaded(
             "No player detections were produced.",
             run.diagnostics,
             0,
+            request_metadata,
         )
     if not run.tracks:
         return _noncompleted(
@@ -227,6 +234,7 @@ def _analyze_uploaded(
             "Player detection completed; multi-object tracking is not available.",
             run.diagnostics,
             0,
+            request_metadata,
         )
     selection_diagnostics = run.diagnostics
     ranked: tuple[Selection, ...]
@@ -276,6 +284,7 @@ def _analyze_uploaded(
             "No track passed the configured quality thresholds.",
             selection_diagnostics,
             0,
+            request_metadata,
         )
     if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
         return AmbiguousResponse(
@@ -285,6 +294,7 @@ def _analyze_uploaded(
             warnings=[
                 "The system could not identify one target player with sufficient confidence."
             ],
+            metadata=request_metadata,
         )
     return _completed(
         settings,
@@ -310,9 +320,10 @@ def _analyze_uploaded(
             tracking_time_ms=detection_tracking_time_ms,
             segment_selection_time_ms=selection_time_ms,
         ),
-        request_metadata,
+        reproducibility,
         debug_source,
         checker,
+        request_metadata,
     )
 
 
@@ -328,6 +339,7 @@ def _noncompleted(
     warning: str,
     diagnostics: TrackingDiagnostics,
     candidates: int,
+    metadata: dict[str, Any] | None = None,
 ) -> NonCompletedResponse:
     """Return a truthful non-completed status with detector/tracker diagnostics."""
     return NonCompletedResponse(
@@ -342,6 +354,7 @@ def _noncompleted(
         quality_gates={
             "pipeline": StageGate(quality=0.0, status="rejected", failure_reasons=[warning])
         },
+        metadata=metadata or {},
     )
 
 
@@ -368,6 +381,7 @@ def _completed(
     analysis_metadata: dict[str, str | None] | None = None,
     debug_source: Path | None = None,
     cancellation: CancellationChecker | None = None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
@@ -1039,6 +1053,7 @@ def _completed(
         quality_gates=_quality_gates(
             track.visibility_ratio, quality, interaction, technical_events, physical, ball_reason
         ),
+        metadata=request_metadata or {},
         analysis_metadata=analysis_metadata or {},
     )
     if typed_run is not None and debug_source is not None:
