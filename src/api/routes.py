@@ -8,14 +8,14 @@ from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from pydantic import HttpUrl
 
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
-from concurrency.exceptions import AnalysisCancelled
+from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
 from core.config import Settings
-from core.exceptions import InternalDiagnosticsError
+from core.exceptions import AnalysisError, InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
 from diagnostics.artifacts import ArtifactSession
 from diagnostics.performance import current_collector
@@ -69,6 +69,7 @@ from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult,
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
 from services.video_downloader import VideoDownloader
+from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
 
 
@@ -88,6 +89,7 @@ def create_router(
     logger: logging.Logger,
     lifecycle: RequestLifecycle,
     downloader: VideoDownloader,
+    path_resolver: VideoPathResolver,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
@@ -99,9 +101,46 @@ def create_router(
     async def analyze(
         payload: AnalyzeRequest,
     ) -> AnalyzeAcceptedResponse:
-        """Validate and acknowledge a backend request without invoking analysis or callbacks."""
+        """Resolve one backend filename and invoke the existing local-file pipeline."""
+        analysis_id = str(uuid4())
+        started = perf_counter()
+        try:
+            video_path = path_resolver.resolve(payload.video_url)
+            await lifecycle.execute_with_artifacts(
+                analysis_id,
+                lambda cancellation, artifacts: _analyze_uploaded(
+                    settings,
+                    validator,
+                    tracker,
+                    selector,
+                    extractor,
+                    ball_proximity_analyzer,
+                    movement_analyzer,
+                    interaction_analyzer,
+                    technical_event_analyzer,
+                    pass_detector,
+                    shot_detector,
+                    logger,
+                    physical_scorer,
+                    analysis_id,
+                    started,
+                    started,
+                    video_path,
+                    cancellation,
+                    artifacts,
+                    {},
+                ),
+            )
+        except AdmissionRejectedError as error:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
+        except AnalysisCancelled:
+            raise HTTPException(status_code=499, detail="Analysis cancelled.") from None
+        except AnalysisError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"error": str(error)}
+            ) from error
         return AnalyzeAcceptedResponse(
-            request_id=str(uuid4()),
+            request_id=analysis_id,
             video_id=payload.video_id,
             player_id=payload.player_id,
         )

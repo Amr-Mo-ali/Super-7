@@ -29,6 +29,22 @@ class DownloadTimeoutError(DownloadError):
     """Raised when the upstream video server does not respond in time."""
 
 
+class VideoStorageRootError(AnalysisError):
+    """Raised when the configured video storage root cannot be used."""
+
+
+class VideoPathResolutionError(AnalysisError):
+    """Raised when a backend video filename is unsafe for storage resolution."""
+
+
+class VideoNotFoundError(VideoPathResolutionError):
+    """Raised when a resolved backend video file does not exist."""
+
+
+class VideoAccessError(VideoPathResolutionError):
+    """Raised when a resolved backend video file cannot be read safely."""
+
+
 class RealDetectorNotConfiguredError(AnalysisError):
     """Raised when production analysis has no real detector/tracker adapter."""
 

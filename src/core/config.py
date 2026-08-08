@@ -13,6 +13,7 @@ class Settings:
 
     max_upload_bytes: int = 100 * 1024 * 1024
     download_timeout_seconds: float = 30.0
+    video_storage_root: str = "/videos"
     max_duration_seconds: float = 15 * 60
     request_deadline_seconds: float = 15 * 60
     min_width: int = 64
@@ -209,6 +210,7 @@ class Settings:
         return cls(
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
             download_timeout_seconds=float(environ.get("DOWNLOAD_TIMEOUT_SECONDS", 30.0)),
+            video_storage_root=environ.get("VIDEO_STORAGE_ROOT", "/videos"),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
             request_deadline_seconds=float(environ.get("REQUEST_DEADLINE_SECONDS", 15 * 60)),
             model_path=environ.get("MODEL_PATH", "yolo11n.pt"),

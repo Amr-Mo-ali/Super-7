@@ -15,6 +15,7 @@ from core.config import Settings
 from diagnostics.artifacts import ArtifactManager
 from main import create_app
 from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
 
 
@@ -37,6 +38,15 @@ class BlockingTracker:
         return TrackingRun((), TrackingDiagnostics(1, 0, 0, 0, 0))
 
 
+class FakeResolver:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def resolve(self, filename: str) -> Path:
+        del filename
+        return self._path
+
+
 def test_backend_acceptance_does_not_start_route_analysis() -> None:
     async def scenario() -> None:
         with TemporaryDirectory() as directory:
@@ -49,6 +59,7 @@ def test_backend_acceptance_does_not_start_route_analysis() -> None:
                 tracker,
                 validator=cast(VideoValidator, FakeValidator()),
                 lifecycle=lifecycle,
+                path_resolver=cast(VideoPathResolver, FakeResolver(Path(__file__))),
             )
             transport = httpx.ASGITransport(app=app)
             held = await lifecycle.admission.admit()
@@ -64,11 +75,10 @@ def test_backend_acceptance_does_not_start_route_analysis() -> None:
                     },
                 )
             await held.release()
-            assert second.status_code == 200
-            assert second.json()["status"] == "accepted"
+            assert second.status_code == 503
             assert tracker.calls == 0
             metrics = await lifecycle.admission.metrics()
-            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 0)
+            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 1)
 
     asyncio.run(scenario())
 

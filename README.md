@@ -38,8 +38,9 @@ uv run uvicorn main:app --reload
 ```
 
 Send a JSON request containing backend-owned `videoId`, `playerId`, `videoUrl`, and `callbackUrl`
-fields. `POST /analyze` validates and acknowledges this contract synchronously; callback delivery
-and analysis execution are not part of this endpoint phase.
+fields. `videoUrl` must be a safe relative filename within `VIDEO_STORAGE_ROOT` (default:
+`/videos`). `POST /analyze` resolves that filename and invokes the existing analysis pipeline
+synchronously; callback delivery is not part of this endpoint phase.
 
 `player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
 not a permanent player identity and may differ when the same video is analyzed again.

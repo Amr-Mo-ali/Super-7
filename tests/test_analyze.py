@@ -1,12 +1,39 @@
 """Backend integration contract tests for the analyze endpoint."""
 
 import asyncio
+from pathlib import Path
+from typing import cast
 
 import httpx
 
 from core.config import Settings
 from main import create_app
 from schemas.analysis import AnalyzeAcceptedResponse, AnalyzeRequest
+from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.video_path_resolver import VideoPathResolver
+from services.video_validator import VideoMetadata, VideoValidator
+
+
+class FakeResolver:
+    def resolve(self, filename: str) -> Path:
+        assert filename == "test-video.mp4"
+        return Path(__file__)
+
+
+class FakeValidator:
+    def validate(self, path: Path) -> VideoMetadata:
+        del path
+        return VideoMetadata("mp4", 1, 1, 64, 64, 10, 10)
+
+
+class FakeTracker:
+    model_version = "fake"
+
+    def analyze(self, path: Path, metadata: VideoMetadata) -> TrackingRun:
+        del path, metadata
+        return TrackingRun(
+            (), TrackingDiagnostics(1, 0, 0, 0, 0, rejected_track_reason_breakdown={})
+        )
 
 
 def test_analyze_accepts_a_valid_backend_request() -> None:
@@ -57,7 +84,13 @@ def test_accepted_response_serializes_the_public_contract() -> None:
 
 
 async def _post(payload: dict[str, str]) -> httpx.Response:
-    transport = httpx.ASGITransport(app=create_app(Settings()))
+    app = create_app(
+        Settings(),
+        tracker=FakeTracker(),
+        validator=cast(VideoValidator, FakeValidator()),
+        path_resolver=cast(VideoPathResolver, FakeResolver()),
+    )
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.post("/analyze", json=payload)
 
