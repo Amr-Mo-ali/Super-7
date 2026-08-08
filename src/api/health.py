@@ -8,12 +8,13 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from api.request_lifecycle import RequestLifecycle
+from services.video_path_resolver import VideoPathResolver
 
 type HealthChecks = dict[str, bool]
 type CombinedHealthChecks = dict[str, HealthChecks]
 
 
-def create_health_router(lifecycle: RequestLifecycle) -> APIRouter:
+def create_health_router(lifecycle: RequestLifecycle, path_resolver: VideoPathResolver) -> APIRouter:
     """Create non-inference health endpoints for one application ownership graph."""
     router = APIRouter()
 
@@ -24,13 +25,13 @@ def create_health_router(lifecycle: RequestLifecycle) -> APIRouter:
 
     @router.get("/health/ready", response_model=None)
     async def ready(request: Request) -> JSONResponse:
-        checks = await _ready_checks(request, lifecycle)
+        checks = await _ready_checks(request, lifecycle, path_resolver)
         return _response("ready", checks)
 
     @router.get("/health", response_model=None)
     async def health(request: Request) -> JSONResponse:
         live_checks = _live_checks(request)
-        ready_checks = await _ready_checks(request, lifecycle)
+        ready_checks = await _ready_checks(request, lifecycle, path_resolver)
         checks: CombinedHealthChecks = {"live": live_checks, "ready": ready_checks}
         return _response("health", checks, all(live_checks.values()) and all(ready_checks.values()))
 
@@ -45,9 +46,12 @@ def _live_checks(request: Request) -> HealthChecks:
     }
 
 
-async def _ready_checks(request: Request, lifecycle: RequestLifecycle) -> HealthChecks:
+async def _ready_checks(
+    request: Request, lifecycle: RequestLifecycle, path_resolver: VideoPathResolver
+) -> HealthChecks:
     metrics = await lifecycle.admission.metrics()
     upload_directory = Path(gettempdir())
+    storage = path_resolver.storage_root_checks()
     return {
         "admission_controller": lifecycle.admission.accepting,
         "admission_capacity": metrics.active_permits < metrics.max_active_analyses,
@@ -55,6 +59,10 @@ async def _ready_checks(request: Request, lifecycle: RequestLifecycle) -> Health
         "artifact_manager": lifecycle.artifacts is not None,
         "models_available": bool(getattr(request.app.state, "models_initialized", False)),
         "upload_directory": upload_directory.is_dir() and access(upload_directory, W_OK),
+        "video_storage_exists": storage["exists"],
+        "video_storage_readable": storage["readable"],
+        "video_storage_accessible": storage["accessible"],
+        "video_storage_read_only": storage["read_only"],
     }
 
 

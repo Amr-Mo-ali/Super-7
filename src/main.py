@@ -70,10 +70,12 @@ def create_app(
         ),
         request_deadline_seconds=resolved_settings.request_deadline_seconds,
     )
+    resolved_path_resolver = path_resolver or VideoPathResolver(resolved_settings.video_storage_root)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
+            resolved_path_resolver.validate_storage_root()
             yield
         finally:
             await resolved_lifecycle.shutdown()
@@ -91,7 +93,7 @@ def create_app(
     app.state.detectors_initialized = True
     app.state.configuration_loaded = True
     app.state.models_initialized = True
-    app.include_router(create_health_router(resolved_lifecycle))
+    app.include_router(create_health_router(resolved_lifecycle, resolved_path_resolver))
     app.include_router(
         create_router(
             resolved_settings,
@@ -109,7 +111,7 @@ def create_app(
             get_logger("football_analysis.api"),
             resolved_lifecycle,
             downloader or VideoDownloader(resolved_settings),
-            path_resolver or VideoPathResolver(resolved_settings.video_storage_root),
+            resolved_path_resolver,
         )
     )
 

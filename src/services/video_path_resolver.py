@@ -1,7 +1,7 @@
 """Safe resolution of backend video filenames within configured shared storage."""
 
 from collections.abc import Callable
-from os import R_OK, X_OK, access
+from os import R_OK, W_OK, X_OK, access
 from pathlib import Path, PureWindowsPath
 from typing import Final
 
@@ -44,6 +44,26 @@ class VideoPathResolver:
         if not self._access_check(resolved, R_OK):
             raise VideoAccessError("Requested video file is not readable.")
         return resolved
+
+    def validate_storage_root(self) -> Path:
+        """Fail fast when the configured shared video storage cannot be used."""
+        return self._resolve_root()
+
+    def storage_root_checks(self) -> dict[str, bool]:
+        """Return non-throwing readiness checks for the configured shared storage root."""
+        try:
+            root = self._storage_root.resolve(strict=True)
+        except OSError:
+            return {"exists": False, "readable": False, "accessible": False, "read_only": False}
+        exists = root.is_dir()
+        readable = exists and self._access_check(root, R_OK)
+        accessible = readable and self._access_check(root, X_OK)
+        return {
+            "exists": exists,
+            "readable": readable,
+            "accessible": accessible,
+            "read_only": accessible and not self._access_check(root, W_OK),
+        }
 
     def _resolve_root(self) -> Path:
         try:
