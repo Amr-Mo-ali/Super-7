@@ -12,6 +12,7 @@ class Settings:
     """Validated operational limits and version labels."""
 
     max_upload_bytes: int = 100 * 1024 * 1024
+    download_timeout_seconds: float = 30.0
     max_duration_seconds: float = 15 * 60
     request_deadline_seconds: float = 15 * 60
     min_width: int = 64
@@ -197,6 +198,8 @@ class Settings:
     pass_receiver_proximity_ratio: float = 1.5
 
     def __post_init__(self) -> None:
+        if self.download_timeout_seconds <= 0:
+            raise ValueError("download_timeout_seconds must be positive.")
         if self.request_deadline_seconds <= 0:
             raise ValueError("request_deadline_seconds must be positive.")
 
@@ -205,6 +208,7 @@ class Settings:
         """Load optional operational limits from environment variables."""
         return cls(
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
+            download_timeout_seconds=float(environ.get("DOWNLOAD_TIMEOUT_SECONDS", 30.0)),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
             request_deadline_seconds=float(environ.get("REQUEST_DEADLINE_SECONDS", 15 * 60)),
             model_path=environ.get("MODEL_PATH", "yolo11n.pt"),

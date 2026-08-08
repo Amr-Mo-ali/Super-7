@@ -57,6 +57,7 @@ class PublicEvent(BaseModel):
 
 
 class PublicRatingV2Response(BaseModel):
+    request_id: str
     analysis: dict[str, str]
     metadata: dict[str, Any] = Field(default_factory=dict)
     video: dict[str, float | dict[str, int]]
@@ -72,6 +73,7 @@ class PublicRatingV2Response(BaseModel):
 
 
 class PublicRatingV2Failure(BaseModel):
+    request_id: str
     analysis: dict[str, str]
     metadata: dict[str, Any] = Field(default_factory=dict)
     reason: str

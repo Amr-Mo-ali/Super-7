@@ -28,6 +28,7 @@ from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelecto
 from services.shot_detection import ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.tracker import ByteTrackTracker
+from services.video_downloader import VideoDownloader
 from services.video_validator import VideoValidator
 
 
@@ -37,6 +38,7 @@ def create_app(
     selector: TargetPlayerSelector | None = None,
     validator: VideoValidator | None = None,
     lifecycle: RequestLifecycle | None = None,
+    downloader: VideoDownloader | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
@@ -104,6 +106,7 @@ def create_app(
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
             resolved_lifecycle,
+            downloader or VideoDownloader(resolved_settings),
         )
     )
 

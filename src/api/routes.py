@@ -5,11 +5,11 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
-from pydantic import Json
+from fastapi import APIRouter, HTTPException, status
+from pydantic import HttpUrl
 
 from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
@@ -19,7 +19,6 @@ from core.config import Settings
 from core.exceptions import (
     AnalysisError,
     InternalDiagnosticsError,
-    InvalidRequestError,
     RealDetectorNotConfiguredError,
 )
 from core.reproducibility import metadata as reproducibility_metadata
@@ -74,7 +73,8 @@ from services.selection import Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
-from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
+from services.video_downloader import VideoDownloader
+from services.video_validator import VideoMetadata, VideoValidator
 
 
 def create_router(
@@ -92,6 +92,7 @@ def create_router(
     physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
     lifecycle: RequestLifecycle,
+    downloader: VideoDownloader,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
@@ -101,46 +102,41 @@ def create_router(
         response_model=PublicRatingV2Response | PublicRatingV2Failure,
     )
     async def analyze(
-        request: Request,
-        video: Annotated[UploadFile, File()],
-        metadata: Annotated[Json[dict[str, Any]] | None, Form()] = None,
+        payload: AnalyzeRequest,
     ) -> PublicRatingV2Response | PublicRatingV2Failure:
         """Validate one video and map the internal analysis result to public V2."""
         started = perf_counter()
         analysis_id = str(uuid4())
         detection_started = perf_counter()
-        request_metadata = AnalyzeRequest(metadata=metadata or {}).metadata
+        request_metadata = payload.metadata or {}
         try:
-            unexpected_fields = set((await request.form()).keys()) - {"video", "metadata"}
-            if unexpected_fields:
-                raise InvalidRequestError("Only the video and metadata multipart fields are accepted.")
-            async with temporary_upload(video, settings) as video_path:
-                result = await lifecycle.execute_with_artifacts(
+            result = await lifecycle.execute_with_artifacts(
+                analysis_id,
+                lambda cancellation, artifacts: _analyze_downloaded(
+                    settings,
+                    validator,
+                    tracker,
+                    selector,
+                    extractor,
+                    ball_proximity_analyzer,
+                    movement_analyzer,
+                    interaction_analyzer,
+                    technical_event_analyzer,
+                    pass_detector,
+                    shot_detector,
+                    logger,
+                    physical_scorer,
                     analysis_id,
-                    lambda cancellation, artifacts: _analyze_uploaded(
-                        settings,
-                        validator,
-                        tracker,
-                        selector,
-                        extractor,
-                        ball_proximity_analyzer,
-                        movement_analyzer,
-                        interaction_analyzer,
-                        technical_event_analyzer,
-                        pass_detector,
-                        shot_detector,
-                        logger,
-                        physical_scorer,
-                        analysis_id,
-                        started,
-                        detection_started,
-                        video_path,
-                        cancellation,
-                        artifacts,
-                        request_metadata,
-                    ),
-                )
-                return public_rating_v2(result)
+                    started,
+                    detection_started,
+                    payload.video_url,
+                    downloader,
+                    cancellation,
+                    artifacts,
+                    request_metadata,
+                ),
+            )
+            return public_rating_v2(result)
         except AdmissionRejectedError as error:
             diagnostics = replace(
                 TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={}
@@ -166,6 +162,55 @@ def create_router(
             raise HTTPException(status_code=500, detail={"error": "Analysis failed."}) from error
 
     return router
+
+
+def _analyze_downloaded(
+    settings: Settings,
+    validator: VideoValidator,
+    tracker: AutomaticPlayerTracker,
+    selector: TargetPlayerSelector,
+    extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
+    pass_detector: PassDetector,
+    shot_detector: ShotDetector,
+    logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
+    analysis_id: str,
+    started: float,
+    detection_started: float,
+    video_url: HttpUrl,
+    downloader: VideoDownloader,
+    cancellation: CancellationManager,
+    artifacts: ArtifactSession,
+    request_metadata: dict[str, Any],
+) -> AnalyzeResponse:
+    """Download one public URL before invoking the unchanged local-file pipeline."""
+    with downloader.download(video_url, cancellation) as video_path:
+        return _analyze_uploaded(
+            settings,
+            validator,
+            tracker,
+            selector,
+            extractor,
+            ball_proximity_analyzer,
+            movement_analyzer,
+            interaction_analyzer,
+            technical_event_analyzer,
+            pass_detector,
+            shot_detector,
+            logger,
+            physical_scorer,
+            analysis_id,
+            started,
+            detection_started,
+            video_path,
+            cancellation,
+            artifacts,
+            request_metadata,
+        )
 
 
 def _analyze_uploaded(

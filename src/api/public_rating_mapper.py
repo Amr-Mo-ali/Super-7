@@ -35,6 +35,7 @@ def public_rating_v2(
         status = result.status
         warnings = result.warnings
         return PublicRatingV2Failure(
+            request_id=result.analysis_id,
             analysis={"id": result.analysis_id, "status": status, "response_version": VERSION},
             metadata=result.metadata,
             reason=warnings[0] if warnings else "Analysis did not complete.",
@@ -119,6 +120,7 @@ def public_rating_v2(
         "timeline": [_arbitrated_event(item, result.video.fps) for item in arbitration.events]
     }
     return PublicRatingV2Response(
+        request_id=result.analysis_id,
         analysis={
             "id": result.analysis_id,
             "status": result.status,

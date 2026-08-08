@@ -37,9 +37,10 @@ uv run pre-commit run --all-files
 uv run uvicorn main:app --reload
 ```
 
-Send a multipart request containing the `video` field and, optionally, a `metadata` field whose
-value is a JSON object. Metadata is returned unchanged in the Public Rating JSON V2 response;
-Super-7 does not interpret or persist it. V1 analysis models are internal pipeline contracts.
+Send a JSON request containing a public HTTP(S) `video_url` and optional `metadata` object.
+Super-7 securely downloads the video into a temporary file, returns metadata unchanged in the
+Public Rating JSON V2 response, and does not interpret or persist metadata. V1 analysis models
+are internal pipeline contracts.
 
 `player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
 not a permanent player identity and may differ when the same video is analyzed again.

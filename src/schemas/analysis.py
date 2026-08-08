@@ -3,17 +3,20 @@
 from copy import deepcopy
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class AnalyzeRequest(BaseModel):
     """Caller-supplied context that is returned without interpretation."""
 
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
+
+    video_url: HttpUrl
+    metadata: dict[str, Any] | None = None
 
     @field_validator("metadata")
     @classmethod
-    def _copy_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+    def _copy_metadata(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         """Isolate the request from later caller-side mutation without transforming it."""
         return deepcopy(value)
 

@@ -55,7 +55,7 @@ def test_admission_exhaustion_never_starts_second_route_analysis() -> None:
             assert held is not None
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 second = await client.post(
-                    "/analyze", files={"video": ("y.avi", b"y", "video/avi")}
+                    "/analyze", json={"video_url": "https://cdn.example.com/y.avi"}
                 )
             await held.release()
             assert second.status_code == 200

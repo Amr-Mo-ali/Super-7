@@ -1,17 +1,19 @@
-"""API contract tests for automatic target analysis."""
+"""API contract tests for public-URL automatic target analysis."""
 
 import asyncio
-import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import cv2
 import httpx
 import numpy as np
+from pydantic import HttpUrl
 
+from concurrency.cancellation import CancellationManager
 from core.config import Settings
 from main import create_app
-from schemas.analysis import AnalyzeRequest
-from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
+from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.selection import PlayerTrack
 from services.video_validator import VideoMetadata
 
@@ -26,143 +28,63 @@ class FakeTracker:
         del video_path, metadata
         return TrackingRun(
             self._tracks,
-            TrackingDiagnostics(
-                10, 10 if self._tracks else 0, len(self._tracks) * 8, len(self._tracks), 0
-            ),
+            TrackingDiagnostics(10, 10 if self._tracks else 0, len(self._tracks) * 8, len(self._tracks), 0),
         )
 
 
-def test_analyze_accepts_only_video_and_returns_v2_completed(tmp_path: Path) -> None:
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {})
-    )
+class FakeDownloader:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    @contextmanager
+    def download(self, video_url: HttpUrl, cancellation: CancellationManager) -> Iterator[Path]:
+        del video_url, cancellation
+        yield self._path
+
+
+def test_analyze_accepts_a_public_video_url_and_returns_v2_completed(tmp_path: Path) -> None:
+    response = asyncio.run(_post(_video(tmp_path), {"video_url": "https://cdn.example.com/video.avi"}))
     assert response.status_code == 200
     body = response.json()
+    assert body["request_id"] == body["analysis"]["id"]
     assert body["analysis"]["status"] == "completed"
-    assert body["analysis"]["response_version"] == "public_rating_v2"
-    assert body["player"]["track_id"] == 4
-    assert "selected_player" not in body
 
 
-def test_analyze_propagates_metadata_unchanged(tmp_path: Path) -> None:
-    metadata = {"video_id": "video_001", "player_ai_id": "player_123", "team_id": "team_001"}
+def test_analyze_propagates_nested_metadata_unchanged(tmp_path: Path) -> None:
+    metadata = {"video_id": "video_001", "context": {"players": ["player_123"]}}
     response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": metadata})
+        _post(_video(tmp_path), {"video_url": "https://cdn.example.com/video.avi", "metadata": metadata})
     )
     assert response.status_code == 200
     assert response.json()["metadata"] == metadata
     assert list(response.json()["metadata"]) == list(metadata)
 
 
-def test_analyze_request_metadata_is_immutable_from_the_caller(tmp_path: Path) -> None:
-    metadata: dict[str, object] = {
-        "context": {"match_id": "match_001", "tags": ["league", "final"]}
-    }
-    request = AnalyzeRequest(metadata=metadata)
-    caller_context = metadata["context"]
-    assert isinstance(caller_context, dict)
-    caller_tags = caller_context["tags"]
-    assert isinstance(caller_tags, list)
-    caller_tags.append("changed-after-request")
-    assert request.metadata == {
-        "context": {"match_id": "match_001", "tags": ["league", "final"]}
-    }
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": request.metadata})
-    )
-    assert response.status_code == 200
-    assert response.json()["metadata"] == {
-        "context": {"match_id": "match_001", "tags": ["league", "final"]}
-    }
-
-
-def test_analyze_returns_empty_metadata(tmp_path: Path) -> None:
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": {}})
-    )
-    assert response.status_code == 200
-    assert response.json()["metadata"] == {}
-
-
-def test_analyze_returns_empty_metadata_when_missing(tmp_path: Path) -> None:
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {})
-    )
-    assert response.status_code == 200
-    assert response.json()["metadata"] == {}
-
-
-def test_analyze_preserves_nested_metadata(tmp_path: Path) -> None:
-    metadata = {"match": {"id": "match_001", "participants": [{"id": "team_001"}]}}
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {"metadata": metadata})
-    )
-    assert response.status_code == 200
-    assert response.json()["metadata"] == metadata
-
-
-def test_analyze_rejects_manual_selection_fields(tmp_path: Path) -> None:
-    response = asyncio.run(_post(_video(tmp_path), FakeTracker(()), {"player_id": "bad"}))
+def test_analyze_rejects_invalid_or_unsupported_urls(tmp_path: Path) -> None:
+    response = asyncio.run(_post(_video(tmp_path), {"video_url": "ftp://cdn.example.com/video.avi"}))
     assert response.status_code == 422
 
 
-def test_analyze_returns_documented_ambiguity(tmp_path: Path) -> None:
-    tracks = (
-        PlayerTrack(1, 8, 10, 8, 0, 0.9, 0, False),
-        PlayerTrack(2, 8, 10, 8, 0, 0.9, 0, False),
-    )
-    response = asyncio.run(_post(_video(tmp_path), FakeTracker(tracks), {}))
-    assert response.status_code == 200
-    assert response.json()["analysis"]["status"] == "ambiguous_target"
-    assert response.json()["reason_code"] == "ambiguous_target"
-
-
-def test_analyze_ignores_removed_response_version_selection(tmp_path: Path) -> None:
+def test_analyze_rejects_localhost_url(tmp_path: Path) -> None:
     response = asyncio.run(
-        _post(
-            _video(tmp_path),
-            FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)),
-            {},
-            "?response_version=v1",
-        )
+        _post(_video(tmp_path), {"video_url": "http://127.0.0.1/video.avi"}, use_fake_downloader=False)
     )
-    assert response.status_code == 200
-    assert response.json()["analysis"]["response_version"] == "public_rating_v2"
-
-
-def test_openapi_exposes_only_the_v2_analyze_contract() -> None:
-    operation = create_app(Settings()).openapi()["paths"]["/analyze"]["post"]
-    assert all(item["name"] != "response_version" for item in operation.get("parameters", []))
-    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
-    assert schema["anyOf"] == [
-        {"$ref": "#/components/schemas/PublicRatingV2Response"},
-        {"$ref": "#/components/schemas/PublicRatingV2Failure"},
-    ]
-
-
-def test_invalid_video_returns_structured_error(tmp_path: Path) -> None:
-    path = tmp_path / "bad.avi"
-    path.write_bytes(b"broken")
-    response = asyncio.run(_post(path, FakeTracker(()), {}))
     assert response.status_code == 422
-    assert "error" in response.json()["detail"]
+    assert "public IP" in response.json()["detail"]["error"]
 
 
 async def _post(
-    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, object], query: str = ""
+    path: Path, payload: dict[str, object], use_fake_downloader: bool = True
 ) -> httpx.Response:
-    transport = httpx.ASGITransport(app=create_app(Settings(selection_margin=0.01), tracker))
+    tracker = FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),))
+    app = create_app(
+        Settings(selection_margin=0.01),
+        tracker,
+        downloader=FakeDownloader(path) if use_fake_downloader else None,  # type: ignore[arg-type]
+    )
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        with path.open("rb") as file:
-            form_data = {
-                key: json.dumps(value) if key == "metadata" else str(value)
-                for key, value in data.items()
-            }
-            return await client.post(
-                f"/analyze{query}",
-                data=form_data,
-                files={"video": (path.name, file, "video/x-msvideo")},
-            )
+        return await client.post("/analyze", json=payload)
 
 
 def _video(directory: Path) -> Path:

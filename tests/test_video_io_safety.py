@@ -1,54 +1,88 @@
-"""Deterministic resource-safety tests for upload persistence."""
+"""Deterministic security and cleanup tests for public video URL downloads."""
 
-import asyncio
-from pathlib import Path
-from tempfile import SpooledTemporaryFile
-from typing import BinaryIO, cast
+from email.message import Message
 
 import pytest
-from fastapi import UploadFile
+from pydantic import HttpUrl, TypeAdapter
 
 from core.config import Settings
-from core.exceptions import InvalidVideoError, UploadTooLargeError
-from services.video_validator import temporary_upload
+from core.exceptions import DownloadError, DownloadTimeoutError, UploadTooLargeError
+from services.video_downloader import VideoDownloader
 
 
-def test_temporary_upload_removes_file_after_context() -> None:
-    temporary = SpooledTemporaryFile()
-    temporary.write(b"tiny-video-payload")
-    temporary.seek(0)
-    upload = UploadFile(cast(BinaryIO, temporary), filename="safe-name.avi")
+class FakeResponse:
+    def __init__(self, chunks: list[bytes], content_type: str = "video/mp4") -> None:
+        self._chunks = iter(chunks)
+        self.headers = Message()
+        self.headers.set_type(content_type)
 
-    async def persist() -> Path:
-        async with temporary_upload(upload, Settings()) as path:
-            assert path.exists()
-            return path
+    def __enter__(self) -> "FakeResponse":
+        return self
 
-    path = asyncio.run(persist())
-    assert not path.exists()
+    def __exit__(self, *args: object) -> None:
+        return None
 
+    def read(self, amount: int = -1) -> bytes:
+        del amount
+        return next(self._chunks, b"")
 
-def test_temporary_upload_rejects_path_like_unsupported_filename() -> None:
-    temporary = SpooledTemporaryFile()
-    upload = UploadFile(cast(BinaryIO, temporary), filename="../../outside.txt")
-
-    async def persist() -> None:
-        async with temporary_upload(upload, Settings()):
-            raise AssertionError("unsupported upload entered context")
-
-    with pytest.raises(InvalidVideoError):
-        asyncio.run(persist())
+    def getcode(self) -> int:
+        return 200
 
 
-def test_temporary_upload_enforces_size_before_context_entry() -> None:
-    temporary = SpooledTemporaryFile()
-    temporary.write(b"12345")
-    temporary.seek(0)
-    upload = UploadFile(cast(BinaryIO, temporary), filename="video.avi")
+def _url(value: str = "https://cdn.example.com/video.mp4") -> HttpUrl:
+    return TypeAdapter(HttpUrl).validate_python(value)
 
-    async def persist() -> None:
-        async with temporary_upload(upload, Settings(max_upload_bytes=4)):
-            raise AssertionError("oversized upload entered context")
 
+def _public_resolver(host: str, port: int, **_: object) -> list[tuple[object, ...]]:
+    del host
+    return [(None, None, None, None, ("8.8.8.8", port))]
+
+
+def test_valid_url_streams_to_a_temporary_file_and_cleans_up() -> None:
+    downloader = VideoDownloader(
+        Settings(), lambda _, __: FakeResponse([b"video-bytes"]), _public_resolver
+    )
+    with downloader.download(_url()) as path:
+        saved_path = path
+        assert path.read_bytes() == b"video-bytes"
+    assert not saved_path.exists()
+
+
+def test_download_timeout_is_translated_to_a_request_error() -> None:
+    def timeout(*_: object) -> FakeResponse:
+        raise TimeoutError
+
+    downloader = VideoDownloader(Settings(), timeout, _public_resolver)
+    with pytest.raises(DownloadTimeoutError):
+        with downloader.download(_url()):
+            raise AssertionError("timeout entered context")
+
+
+def test_download_enforces_the_size_limit() -> None:
+    downloader = VideoDownloader(
+        Settings(max_upload_bytes=4), lambda _, __: FakeResponse([b"12345"]), _public_resolver
+    )
     with pytest.raises(UploadTooLargeError):
-        asyncio.run(persist())
+        with downloader.download(_url()):
+            raise AssertionError("oversized download entered context")
+
+
+def test_download_rejects_unsupported_content_type() -> None:
+    downloader = VideoDownloader(
+        Settings(), lambda _, __: FakeResponse([b"payload"], "text/html"), _public_resolver
+    )
+    with pytest.raises(DownloadError, match="content type"):
+        with downloader.download(_url()):
+            raise AssertionError("unsupported content type entered context")
+
+
+def test_download_rejects_localhost_addresses() -> None:
+    def localhost(host: str, port: int, **_: object) -> list[tuple[object, ...]]:
+        del host
+        return [(None, None, None, None, ("127.0.0.1", port))]
+
+    downloader = VideoDownloader(Settings(), lambda _, __: FakeResponse([]), localhost)
+    with pytest.raises(DownloadError, match="public IP"):
+        with downloader.download(_url("http://localhost/video.mp4")):
+            raise AssertionError("localhost entered context")

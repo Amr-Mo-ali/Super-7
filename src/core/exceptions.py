@@ -21,6 +21,14 @@ class InvalidRequestError(AnalysisError):
     """Raised when a request includes fields outside the public contract."""
 
 
+class DownloadError(AnalysisError):
+    """Raised when a public video URL cannot be fetched safely."""
+
+
+class DownloadTimeoutError(DownloadError):
+    """Raised when the upstream video server does not respond in time."""
+
+
 class RealDetectorNotConfiguredError(AnalysisError):
     """Raised when production analysis has no real detector/tracker adapter."""
 
