@@ -10,13 +10,14 @@ from adapters.yolo_ball_detector import YOLOBallDetector
 from adapters.yolo_player_detector import YOLOPlayerDetector
 from api.health import create_health_router
 from api.request_lifecycle import RequestLifecycle
-from api.routes import create_router
+from api.routes import create_analysis_job_processor, create_router
 from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
 from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import get_logger
 from diagnostics.artifacts import ArtifactManager
+from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.callback_service import CallbackService
 from services.feature_extractor import FeatureExtractor
@@ -43,6 +44,7 @@ def create_app(
     downloader: VideoDownloader | None = None,
     path_resolver: VideoPathResolver | None = None,
     callback_service: CallbackService | None = None,
+    analysis_queue: AnalysisQueue | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
@@ -72,15 +74,46 @@ def create_app(
         ),
         request_deadline_seconds=resolved_settings.request_deadline_seconds,
     )
-    resolved_path_resolver = path_resolver or VideoPathResolver(resolved_settings.video_storage_root)
+    resolved_path_resolver = path_resolver or VideoPathResolver(
+        resolved_settings.video_storage_root
+    )
+    resolved_callback_service = callback_service or CallbackService(
+        resolved_settings.callback_timeout_seconds,
+        get_logger("football_analysis.callback"),
+    )
+    resolved_analysis_queue = analysis_queue or AnalysisQueue(resolved_settings.max_queued_analyses)
+    processor = create_analysis_job_processor(
+        resolved_settings,
+        validator or VideoValidator(resolved_settings),
+        resolved_tracker,
+        selector or WeightedTargetPlayerSelector(resolved_settings),
+        FeatureExtractor(),
+        NormalizedBallProximityAnalyzer(resolved_settings),
+        BottomCenterMovementAnalyzer(resolved_settings),
+        BallInteractionAnalyzer(resolved_settings),
+        TechnicalEventAnalyzer(resolved_settings),
+        PassDetector(resolved_settings),
+        ShotDetector(),
+        get_logger("football_analysis.api"),
+        RuleBasedPhysicalActivityScorer(resolved_settings),
+        resolved_lifecycle,
+        resolved_path_resolver,
+        resolved_callback_service,
+    )
+    worker = AnalysisWorker(
+        resolved_analysis_queue, processor, get_logger("football_analysis.worker")
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
             resolved_path_resolver.validate_storage_root()
+            await worker.start()
             yield
         finally:
+            resolved_analysis_queue.stop_accepting()
             await resolved_lifecycle.shutdown()
+            await worker.shutdown()
 
     app = FastAPI(
         title="Football Analysis MVP",
@@ -91,11 +124,15 @@ def create_app(
     app.state.analysis_executor = resolved_lifecycle.executor
     app.state.artifact_manager = resolved_lifecycle.artifacts
     app.state.request_lifecycle = resolved_lifecycle
+    app.state.analysis_queue = resolved_analysis_queue
+    app.state.analysis_worker = worker
     app.state.startup_completed = True
     app.state.detectors_initialized = True
     app.state.configuration_loaded = True
     app.state.models_initialized = True
-    app.include_router(create_health_router(resolved_lifecycle, resolved_path_resolver))
+    app.include_router(
+        create_health_router(resolved_lifecycle, resolved_path_resolver, resolved_analysis_queue)
+    )
     app.include_router(
         create_router(
             resolved_settings,
@@ -114,11 +151,8 @@ def create_app(
             resolved_lifecycle,
             downloader or VideoDownloader(resolved_settings),
             resolved_path_resolver,
-            callback_service
-            or CallbackService(
-                resolved_settings.callback_timeout_seconds,
-                get_logger("football_analysis.callback"),
-            ),
+            resolved_callback_service,
+            resolved_analysis_queue,
         )
     )
 

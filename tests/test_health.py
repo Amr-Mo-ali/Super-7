@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import HttpUrl, TypeAdapter
 
 from api.request_lifecycle import RequestLifecycle
 from concurrency.admission import AdmissionController
@@ -16,6 +17,7 @@ from core.config import Settings
 from core.exceptions import VideoStorageRootError
 from diagnostics.artifacts import ArtifactManager
 from main import app, create_app
+from services.analysis_queue import AnalysisJob, AnalysisQueue
 from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata
@@ -90,6 +92,30 @@ def test_startup_fails_fast_when_storage_root_is_missing() -> None:
     asyncio.run(scenario())
 
 
+def test_readiness_is_unavailable_when_the_background_queue_is_full() -> None:
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            queue = AnalysisQueue(1)
+            queue.set_worker_running(True)
+            assert await queue.submit(
+                AnalysisJob.create(
+                    "analysis-1",
+                    "video-1",
+                    "player-1",
+                    "video.mp4",
+                    TypeAdapter(HttpUrl).validate_python("http://72.62.28.146/webhook"),
+                )
+            )
+            test_app = _storage_app(Path(directory), analysis_queue=queue)
+            transport = httpx.ASGITransport(app=test_app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.get("/health/ready")
+            assert response.status_code == 503
+            assert response.json()["checks"]["analysis_queue_capacity"] is False
+
+    asyncio.run(scenario())
+
+
 async def _request(path: str) -> httpx.Response:
     """Send an in-process ASGI request without a running web server."""
     transport = httpx.ASGITransport(app=app)
@@ -97,13 +123,20 @@ async def _request(path: str) -> httpx.Response:
         return await client.get(path)
 
 
-def _storage_app(directory: Path, lifecycle: RequestLifecycle | None = None) -> FastAPI:
+def _storage_app(
+    directory: Path,
+    lifecycle: RequestLifecycle | None = None,
+    analysis_queue: AnalysisQueue | None = None,
+) -> FastAPI:
     def read_only(_: Path, mode: int) -> bool:
         return not bool(mode & W_OK)
 
-    return create_app(
+    app = create_app(
         Settings(debug_output_dir=str(directory), video_storage_root=str(directory)),
         tracker=StubTracker(),
         lifecycle=lifecycle,
         path_resolver=VideoPathResolver(directory, read_only),
+        analysis_queue=analysis_queue,
     )
+    app.state.analysis_queue.set_worker_running(True)
+    return app

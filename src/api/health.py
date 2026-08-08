@@ -8,13 +8,18 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from api.request_lifecycle import RequestLifecycle
+from services.analysis_queue import AnalysisQueue
 from services.video_path_resolver import VideoPathResolver
 
 type HealthChecks = dict[str, bool]
 type CombinedHealthChecks = dict[str, HealthChecks]
 
 
-def create_health_router(lifecycle: RequestLifecycle, path_resolver: VideoPathResolver) -> APIRouter:
+def create_health_router(
+    lifecycle: RequestLifecycle,
+    path_resolver: VideoPathResolver,
+    analysis_queue: AnalysisQueue,
+) -> APIRouter:
     """Create non-inference health endpoints for one application ownership graph."""
     router = APIRouter()
 
@@ -25,13 +30,13 @@ def create_health_router(lifecycle: RequestLifecycle, path_resolver: VideoPathRe
 
     @router.get("/health/ready", response_model=None)
     async def ready(request: Request) -> JSONResponse:
-        checks = await _ready_checks(request, lifecycle, path_resolver)
+        checks = await _ready_checks(request, lifecycle, path_resolver, analysis_queue)
         return _response("ready", checks)
 
     @router.get("/health", response_model=None)
     async def health(request: Request) -> JSONResponse:
         live_checks = _live_checks(request)
-        ready_checks = await _ready_checks(request, lifecycle, path_resolver)
+        ready_checks = await _ready_checks(request, lifecycle, path_resolver, analysis_queue)
         checks: CombinedHealthChecks = {"live": live_checks, "ready": ready_checks}
         return _response("health", checks, all(live_checks.values()) and all(ready_checks.values()))
 
@@ -47,14 +52,18 @@ def _live_checks(request: Request) -> HealthChecks:
 
 
 async def _ready_checks(
-    request: Request, lifecycle: RequestLifecycle, path_resolver: VideoPathResolver
+    request: Request,
+    lifecycle: RequestLifecycle,
+    path_resolver: VideoPathResolver,
+    analysis_queue: AnalysisQueue,
 ) -> HealthChecks:
-    metrics = await lifecycle.admission.metrics()
     upload_directory = Path(gettempdir())
     storage = path_resolver.storage_root_checks()
+    queue = analysis_queue.metrics()
     return {
         "admission_controller": lifecycle.admission.accepting,
-        "admission_capacity": metrics.active_permits < metrics.max_active_analyses,
+        "analysis_queue_capacity": queue.accepting and queue.queued < queue.capacity,
+        "analysis_worker": queue.worker_running,
         "cancellation_manager": not lifecycle.shutting_down,
         "artifact_manager": lifecycle.artifacts is not None,
         "models_available": bool(getattr(request.app.state, "models_initialized", False)),

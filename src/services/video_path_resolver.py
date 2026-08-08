@@ -45,6 +45,10 @@ class VideoPathResolver:
             raise VideoAccessError("Requested video file is not readable.")
         return resolved
 
+    def validate_reference(self, filename: str) -> None:
+        """Validate a lightweight queued filename without opening or retaining the file."""
+        self._validate_filename(filename)
+
     def validate_storage_root(self) -> Path:
         """Fail fast when the configured shared video storage cannot be used."""
         return self._resolve_root()
@@ -71,7 +75,9 @@ class VideoPathResolver:
         except FileNotFoundError as error:
             raise VideoStorageRootError("Configured video storage root does not exist.") from error
         except OSError as error:
-            raise VideoStorageRootError("Configured video storage root cannot be resolved.") from error
+            raise VideoStorageRootError(
+                "Configured video storage root cannot be resolved."
+            ) from error
         if not root.is_dir():
             raise VideoStorageRootError("Configured video storage root is not a directory.")
         if not self._access_check(root, R_OK | X_OK):

@@ -1,6 +1,7 @@
 """Thin HTTP orchestration for automatic target-player analysis."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from shutil import copyfile
@@ -14,7 +15,7 @@ from pydantic import HttpUrl
 from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
-from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
+from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
 from core.exceptions import AnalysisError, InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
@@ -22,7 +23,7 @@ from diagnostics.artifacts import ArtifactSession
 from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
-    AnalyzeAcceptedResponse,
+    AnalyzeQueuedResponse,
     AnalyzeRequest,
     AnalyzeResponse,
     BallLossCandidateResponse,
@@ -45,6 +46,7 @@ from schemas.analysis import (
     TrackingResponse,
     VideoResponse,
 )
+from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.callback_service import CallbackPayload, CallbackService
 from services.camera_motion import CameraMotionEstimator
@@ -93,60 +95,56 @@ def create_router(
     downloader: VideoDownloader,
     path_resolver: VideoPathResolver,
     callback_service: CallbackService,
+    analysis_queue: AnalysisQueue,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
 
     @router.post(
         "/analyze",
-        response_model=AnalyzeAcceptedResponse,
+        response_model=AnalyzeQueuedResponse,
+        status_code=status.HTTP_202_ACCEPTED,
     )
     async def analyze(
         payload: AnalyzeRequest,
-    ) -> AnalyzeAcceptedResponse:
-        """Resolve one backend filename and invoke the existing local-file pipeline."""
+    ) -> AnalyzeQueuedResponse:
+        """Validate a lightweight job and enqueue it for the single background worker."""
         analysis_id = str(uuid4())
-        started = perf_counter()
         try:
-            video_path = path_resolver.resolve(payload.video_url)
-            result = await lifecycle.execute_with_artifacts(
-                analysis_id,
-                lambda cancellation, artifacts: _analyze_uploaded(
-                    settings,
-                    validator,
-                    tracker,
-                    selector,
-                    extractor,
-                    ball_proximity_analyzer,
-                    movement_analyzer,
-                    interaction_analyzer,
-                    technical_event_analyzer,
-                    pass_detector,
-                    shot_detector,
-                    logger,
-                    physical_scorer,
-                    analysis_id,
-                    started,
-                    started,
-                    video_path,
-                    cancellation,
-                    artifacts,
-                    {},
-                ),
-            )
-            await callback_service.send_result(
-                payload.callback_url, _callback_payload(payload, result)
-            )
-        except AdmissionRejectedError as error:
-            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
-        except AnalysisCancelled:
-            raise HTTPException(status_code=499, detail="Analysis cancelled.") from None
-        except AnalysisError as error:
+            path_resolver.validate_reference(payload.video_url)
+            callback_service.validate_callback_url(payload.callback_url)
+        except (OSError, ValueError, AnalysisError) as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"error": str(error)}
             ) from error
-        return AnalyzeAcceptedResponse(
-            request_id=analysis_id,
+        job = AnalysisJob.create(
+            analysis_id,
+            payload.video_id,
+            payload.player_id,
+            payload.video_url,
+            payload.callback_url,
+        )
+        if not await analysis_queue.submit(job):
+            logger.warning(
+                "analysis_queue_full analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
+                analysis_id,
+                payload.video_id,
+                payload.player_id,
+                analysis_queue.metrics().queued,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "Analysis queue is full."},
+            )
+        logger.info(
+            "analysis_job_queued analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
+            analysis_id,
+            payload.video_id,
+            payload.player_id,
+            analysis_queue.metrics().queued,
+        )
+        return AnalyzeQueuedResponse(
+            analysis_id=analysis_id,
             video_id=payload.video_id,
             player_id=payload.player_id,
         )
@@ -170,6 +168,101 @@ def _callback_payload(
         ratings=serialized.get("ratings", {}),
         events=serialized.get("events", {}),
     )
+
+
+def create_analysis_job_processor(
+    settings: Settings,
+    validator: VideoValidator,
+    tracker: AutomaticPlayerTracker,
+    selector: TargetPlayerSelector,
+    extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
+    pass_detector: PassDetector,
+    shot_detector: ShotDetector,
+    logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
+    lifecycle: RequestLifecycle,
+    path_resolver: VideoPathResolver,
+    callback_service: CallbackService,
+) -> Callable[[AnalysisJob], Awaitable[AnalysisJobState]]:
+    """Create the one reusable job executor around the established analysis pipeline."""
+
+    async def process(job: AnalysisJob) -> AnalysisJobState:
+        started = perf_counter()
+        request = AnalyzeRequest.model_validate(
+            {
+                "videoId": job.video_id,
+                "playerId": job.player_id,
+                "videoUrl": job.video_reference,
+                "callbackUrl": str(job.callback_url),
+            }
+        )
+        try:
+            video_path = path_resolver.resolve(job.video_reference)
+            result = await lifecycle.execute_with_artifacts(
+                job.analysis_id,
+                lambda cancellation, artifacts: _analyze_uploaded(
+                    settings,
+                    validator,
+                    tracker,
+                    selector,
+                    extractor,
+                    ball_proximity_analyzer,
+                    movement_analyzer,
+                    interaction_analyzer,
+                    technical_event_analyzer,
+                    pass_detector,
+                    shot_detector,
+                    logger,
+                    physical_scorer,
+                    job.analysis_id,
+                    started,
+                    started,
+                    video_path,
+                    cancellation,
+                    artifacts,
+                    {},
+                ),
+            )
+            callback_payload = _callback_payload(request, result)
+        except AnalysisCancelled:
+            return AnalysisJobState.CANCELLED
+        except Exception as error:
+            failure_payload = CallbackPayload(
+                request_id=job.analysis_id,
+                video_id=job.video_id,
+                player_id=job.player_id,
+                status="failed",
+                summary={},
+                ratings={},
+                events={},
+                error={
+                    "code": type(error).__name__,
+                    "message": "Analysis could not be completed.",
+                },
+            )
+            try:
+                delivered = await callback_service.send_result(job.callback_url, failure_payload)
+            except Exception:
+                logger.exception("analysis_failure_callback_error analysis_id=%s", job.analysis_id)
+            else:
+                if not delivered:
+                    logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
+            logger.exception("analysis_job_pipeline_failed analysis_id=%s", job.analysis_id)
+            return AnalysisJobState.FAILED
+        try:
+            delivered = await callback_service.send_result(job.callback_url, callback_payload)
+        except Exception:
+            logger.exception("analysis_callback_error analysis_id=%s", job.analysis_id)
+        else:
+            if not delivered:
+                logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
+        return AnalysisJobState.COMPLETED
+
+    return process
 
 
 def _analyze_downloaded(

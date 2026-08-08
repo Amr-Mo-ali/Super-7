@@ -81,7 +81,10 @@ class VideoDownloader:
                 if not content_type.startswith("video/"):
                     raise DownloadError("Video URL returned an unsupported content type.")
                 content_length = response.headers.get("Content-Length")
-                if content_length is not None and int(content_length) > self._settings.max_upload_bytes:
+                if (
+                    content_length is not None
+                    and int(content_length) > self._settings.max_upload_bytes
+                ):
                     raise UploadTooLargeError("Downloaded video exceeds the configured size limit.")
                 with NamedTemporaryFile(delete=False, suffix=suffix) as temporary_file:
                     temporary_path = Path(temporary_file.name)

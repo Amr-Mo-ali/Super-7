@@ -46,8 +46,11 @@ class FakeResolver:
         del filename
         return self._path
 
+    def validate_reference(self, filename: str) -> None:
+        del filename
 
-def test_backend_acceptance_does_not_start_route_analysis() -> None:
+
+def test_backend_queue_admission_does_not_start_route_analysis() -> None:
     async def scenario() -> None:
         with TemporaryDirectory() as directory:
             tracker = BlockingTracker(Event(), Event())
@@ -71,14 +74,14 @@ def test_backend_acceptance_does_not_start_route_analysis() -> None:
                         "videoId": "video-123",
                         "playerId": "player-456",
                         "videoUrl": "y.avi",
-                        "callbackUrl": "https://backend.example.com/webhook",
+                        "callbackUrl": "http://72.62.28.146/api/video-analysis/webhook",
                     },
                 )
             await held.release()
-            assert second.status_code == 503
+            assert second.status_code == 202
             assert tracker.calls == 0
             metrics = await lifecycle.admission.metrics()
-            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 1)
+            assert (metrics.active_permits, metrics.rejected_analyses) == (0, 0)
 
     asyncio.run(scenario())
 

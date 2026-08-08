@@ -25,6 +25,17 @@ class AnalyzeAcceptedResponse(BaseModel):
     status: Literal["accepted"] = "accepted"
 
 
+class AnalyzeQueuedResponse(BaseModel):
+    """Immediate acknowledgement for an accepted background analysis job."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    analysis_id: str = Field(serialization_alias="analysisId")
+    video_id: str = Field(serialization_alias="videoId")
+    player_id: str = Field(serialization_alias="playerId")
+    status: Literal["queued"] = "queued"
+
+
 class VideoResponse(BaseModel):
     duration_seconds: float
     fps: float

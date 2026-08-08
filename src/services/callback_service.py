@@ -23,6 +23,7 @@ class CallbackPayload(BaseModel):
     summary: dict[str, Any]
     ratings: dict[str, Any]
     events: dict[str, Any]
+    error: dict[str, str] | None = None
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -85,6 +86,10 @@ class CallbackService:
                     break
                 await self._sleep(_RETRY_DELAYS[attempt])
         return False
+
+    def validate_callback_url(self, callback_url: HttpUrl) -> None:
+        """Validate a callback destination before a job is admitted to the queue."""
+        self._validate_url(callback_url)
 
     def _validate_url(self, callback_url: HttpUrl) -> None:
         if callback_url.scheme not in {"http", "https"}:
