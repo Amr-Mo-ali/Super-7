@@ -8,7 +8,8 @@ from api.request_lifecycle import RequestLifecycle
 from api.routes import _public_debug_artifact_references
 from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
-from core.config import DebugSettings, Settings
+from config.debug import DebugSettings
+from core.config import Settings
 from diagnostics.artifacts import ArtifactManager
 
 

@@ -1,30 +1,55 @@
 """Deterministic Event Arbitration V0.1 unit coverage."""
 
-from dataclasses import replace
+from enum import Enum
 
 import pytest
 
 from services.event_arbitration import EventArbitrator, EventCandidateRef
+from services.event_arbitration.models import EventType
 
 
-def _candidate(event_id: str, event_type: str = "pass", **changes: object) -> EventCandidateRef:
-    candidate = EventCandidateRef(
+class _DefaultReceiver(Enum):
+    VALUE = "value"
+
+
+def _candidate(
+    event_id: str,
+    event_type: EventType = "pass",
+    *,
+    start_frame: int = 10,
+    release_frame: int | None = 12,
+    end_frame: int = 20,
+    possessor_track_id: int | None = 7,
+    receiver_track_id: int | None | _DefaultReceiver = _DefaultReceiver.VALUE,
+    confidence: float = 0.8,
+    trajectory_quality: float | None = 0.8,
+    distance_pixels: float | None = 100,
+    source_version: str = "v",
+    preparation_confidence: float | None = None,
+    release_confidence: float | None = None,
+    follow_through_confidence: float | None = None,
+) -> EventCandidateRef:
+    resolved_receiver_track_id: int | None
+    if receiver_track_id is _DefaultReceiver.VALUE:
+        resolved_receiver_track_id = 9 if event_type == "pass" else None
+    else:
+        resolved_receiver_track_id = receiver_track_id
+    return EventCandidateRef(
         event_id,
         event_type,
-        10,
-        12,
-        20,
-        7,
-        9 if event_type == "pass" else None,
-        0.8,
-        0.8,
-        100,
-        "v",
-        0.8 if event_type == "shot" else None,
-        0.8 if event_type == "shot" else None,
-        0.8 if event_type == "shot" else None,
+        start_frame,
+        release_frame,
+        end_frame,
+        possessor_track_id,
+        resolved_receiver_track_id,
+        confidence,
+        trajectory_quality,
+        distance_pixels,
+        source_version,
+        0.8 if event_type == "shot" else preparation_confidence,
+        0.8 if event_type == "shot" else release_confidence,
+        0.8 if event_type == "shot" else follow_through_confidence,
     )
-    return replace(candidate, **changes)
 
 
 def test_empty_single_and_non_overlapping_candidates() -> None:

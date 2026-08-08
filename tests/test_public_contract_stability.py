@@ -17,6 +17,7 @@ from schemas.public_rating_v2 import (
     PublicEvent,
     PublicGameIntelligence,
     PublicRatingStatus,
+    PublicRatingV2Failure,
     PublicRatingValue,
 )
 
@@ -121,4 +122,5 @@ def test_internal_v1_noncompleted_response_maps_to_public_v2_failure() -> None:
         "status": "no_valid_tracks",
         "response_version": "public_rating_v2",
     }
+    assert isinstance(response, PublicRatingV2Failure)
     assert response.reason_code == "no_valid_tracks"
