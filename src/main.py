@@ -18,6 +18,7 @@ from core.config import Settings
 from core.logging import get_logger
 from diagnostics.artifacts import ArtifactManager
 from services.ball_proximity import NormalizedBallProximityAnalyzer
+from services.callback_service import CallbackService
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzer
 from services.movement.analyzer import BottomCenterMovementAnalyzer
@@ -41,6 +42,7 @@ def create_app(
     lifecycle: RequestLifecycle | None = None,
     downloader: VideoDownloader | None = None,
     path_resolver: VideoPathResolver | None = None,
+    callback_service: CallbackService | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
@@ -112,6 +114,11 @@ def create_app(
             resolved_lifecycle,
             downloader or VideoDownloader(resolved_settings),
             resolved_path_resolver,
+            callback_service
+            or CallbackService(
+                resolved_settings.callback_timeout_seconds,
+                get_logger("football_analysis.callback"),
+            ),
         )
     )
 

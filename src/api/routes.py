@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from pydantic import HttpUrl
 
+from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
 from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
@@ -45,6 +46,7 @@ from schemas.analysis import (
     VideoResponse,
 )
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
+from services.callback_service import CallbackPayload, CallbackService
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
@@ -90,6 +92,7 @@ def create_router(
     lifecycle: RequestLifecycle,
     downloader: VideoDownloader,
     path_resolver: VideoPathResolver,
+    callback_service: CallbackService,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
@@ -106,7 +109,7 @@ def create_router(
         started = perf_counter()
         try:
             video_path = path_resolver.resolve(payload.video_url)
-            await lifecycle.execute_with_artifacts(
+            result = await lifecycle.execute_with_artifacts(
                 analysis_id,
                 lambda cancellation, artifacts: _analyze_uploaded(
                     settings,
@@ -131,6 +134,9 @@ def create_router(
                     {},
                 ),
             )
+            await callback_service.send_result(
+                payload.callback_url, _callback_payload(payload, result)
+            )
         except AdmissionRejectedError as error:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(error)) from error
         except AnalysisCancelled:
@@ -146,6 +152,24 @@ def create_router(
         )
 
     return router
+
+
+def _callback_payload(
+    request: AnalyzeRequest,
+    result: AnalyzeResponse,
+) -> CallbackPayload:
+    """Build the backend callback body from an already-finalized analysis result."""
+    public_result = public_rating_v2(result)
+    serialized = public_result.model_dump(mode="json")
+    return CallbackPayload(
+        request_id=result.analysis_id,
+        video_id=request.video_id,
+        player_id=request.player_id,
+        status=result.status,
+        summary=serialized.get("summary", {}),
+        ratings=serialized.get("ratings", {}),
+        events=serialized.get("events", {}),
+    )
 
 
 def _analyze_downloaded(
