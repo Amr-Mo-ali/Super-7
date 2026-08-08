@@ -1,11 +1,14 @@
 """Application entry point."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from adapters.yolo_ball_detector import YOLOBallDetector
 from adapters.yolo_player_detector import YOLOPlayerDetector
+from api.health import create_health_router
 from api.request_lifecycle import RequestLifecycle
 from api.routes import create_router
 from concurrency.admission import AdmissionController
@@ -53,7 +56,6 @@ def create_app(
         resolved_settings.model_path,
         resolved_settings.model_device,
     )
-    app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
     resolved_lifecycle = lifecycle or RequestLifecycle(
         AdmissionController(max_active_analyses=DEFAULT_MAX_ACTIVE_ANALYSES),
         AnalysisExecutor(),
@@ -62,11 +64,30 @@ def create_app(
             resolved_settings.max_upload_bytes,
             retained_sessions=resolved_settings.debug.retained_sessions,
         ),
+        request_deadline_seconds=resolved_settings.request_deadline_seconds,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await resolved_lifecycle.shutdown()
+
+    app = FastAPI(
+        title="Football Analysis MVP",
+        version=resolved_settings.analysis_version,
+        lifespan=lifespan,
     )
     app.state.admission_controller = resolved_lifecycle.admission
     app.state.analysis_executor = resolved_lifecycle.executor
     app.state.artifact_manager = resolved_lifecycle.artifacts
     app.state.request_lifecycle = resolved_lifecycle
+    app.state.startup_completed = True
+    app.state.detectors_initialized = True
+    app.state.configuration_loaded = True
+    app.state.models_initialized = True
+    app.include_router(create_health_router(resolved_lifecycle))
     app.include_router(
         create_router(
             resolved_settings,
@@ -85,6 +106,7 @@ def create_app(
             resolved_lifecycle,
         )
     )
+
     return app
 
 

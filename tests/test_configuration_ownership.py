@@ -27,8 +27,10 @@ def test_environment_overrides_are_owned_by_debug_settings(monkeypatch: pytest.M
     monkeypatch.setenv("DEBUG_ARTIFACTS_ENABLED", "true")
     monkeypatch.setenv("DEBUG_SAVE_VIDEO", "true")
     monkeypatch.setenv("DEBUG_RETAINED_SESSIONS", "2")
+    monkeypatch.setenv("REQUEST_DEADLINE_SECONDS", "120")
     settings = Settings.from_environment()
     assert settings.debug == DebugSettings(enabled=True, save_video=True, retained_sessions=2)
+    assert settings.request_deadline_seconds == 120
 
 
 def test_validation_rejects_invalid_retention() -> None:

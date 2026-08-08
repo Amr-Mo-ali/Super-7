@@ -3,13 +3,14 @@
 import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 
 import pytest
 
 from api.request_lifecycle import RequestLifecycle
 from concurrency.admission import AdmissionController
-from concurrency.cancellation import CancellationManager, CancellationState
-from concurrency.exceptions import AdmissionRejectedError
+from concurrency.cancellation import CancellationChecker, CancellationManager, CancellationState
+from concurrency.exceptions import AdmissionRejectedError, AnalysisCancelled
 from concurrency.executor import AnalysisExecutor, current_request_id
 from diagnostics.artifacts import ArtifactManager, ArtifactSession, CleanupResult
 
@@ -228,5 +229,63 @@ def test_cancellation_initialization_failure_releases_permit(
             await lifecycle.execute("analysis-cancellation-setup-failure", lambda _: None)
 
         assert (await controller.metrics()).active_permits == 0
+
+    asyncio.run(scenario())
+
+
+def test_request_deadline_expiration_cancels_cooperatively_and_releases_permit() -> None:
+    async def scenario() -> None:
+        controller = AdmissionController(1)
+        lifecycle = RequestLifecycle(controller, AnalysisExecutor(), request_deadline_seconds=0.01)
+        states: list[CancellationState] = []
+
+        def pipeline(cancellation: CancellationManager) -> None:
+            while not cancellation.wait(0.01):
+                pass
+            states.append(cancellation.snapshot().state)
+            CancellationChecker(cancellation).check("deadline test")
+
+        with pytest.raises(AnalysisCancelled):
+            await lifecycle.execute("deadline-request", pipeline)
+        assert states == [CancellationState.DEADLINE_EXPIRED]
+        assert (await controller.metrics()).active_permits == 0
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_rejects_new_work_cancels_active_work_and_cleans_artifacts() -> None:
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            controller = AdmissionController(1)
+            lifecycle = RequestLifecycle(
+                controller, AnalysisExecutor(), ArtifactManager(Path(directory), 1024)
+            )
+            started = Event()
+            states: list[CancellationState] = []
+
+            def pipeline(cancellation: CancellationManager, session: ArtifactSession) -> None:
+                assert session.directory.exists()
+                started.set()
+                while not cancellation.wait(0.01):
+                    pass
+                states.append(cancellation.snapshot().state)
+                CancellationChecker(cancellation).check("shutdown test")
+
+            active = asyncio.create_task(
+                lifecycle.execute_with_artifacts("shutdown-request", pipeline)
+            )
+            while not started.is_set():
+                await asyncio.sleep(0)
+            shutdown = asyncio.create_task(lifecycle.shutdown())
+            await asyncio.sleep(0)
+            assert controller.accepting is False
+            with pytest.raises(AdmissionRejectedError):
+                await lifecycle.execute("rejected-after-shutdown", lambda _: None)
+            await shutdown
+            with pytest.raises(AnalysisCancelled):
+                await active
+            assert states == [CancellationState.SHUTDOWN_REQUESTED]
+            assert not (Path(directory) / "shutdown-request").exists()
+            assert (await controller.metrics()).active_permits == 0
 
     asyncio.run(scenario())

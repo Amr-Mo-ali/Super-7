@@ -13,6 +13,7 @@ class Settings:
 
     max_upload_bytes: int = 100 * 1024 * 1024
     max_duration_seconds: float = 15 * 60
+    request_deadline_seconds: float = 15 * 60
     min_width: int = 64
     min_height: int = 64
     min_fps: float = 1.0
@@ -195,12 +196,17 @@ class Settings:
     pass_trajectory_quality_length_pixels: float = 150.0
     pass_receiver_proximity_ratio: float = 1.5
 
+    def __post_init__(self) -> None:
+        if self.request_deadline_seconds <= 0:
+            raise ValueError("request_deadline_seconds must be positive.")
+
     @classmethod
     def from_environment(cls) -> "Settings":
         """Load optional operational limits from environment variables."""
         return cls(
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
+            request_deadline_seconds=float(environ.get("REQUEST_DEADLINE_SECONDS", 15 * 60)),
             model_path=environ.get("MODEL_PATH", "yolo11n.pt"),
             model_device=environ.get("MODEL_DEVICE", "cpu"),
             model_confidence=float(environ.get("MODEL_CONFIDENCE", 0.25)),
