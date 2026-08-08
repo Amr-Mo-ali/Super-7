@@ -12,6 +12,8 @@ COPY --chown=app:app pyproject.toml README.md ./
 COPY --chown=app:app src ./src
 
 RUN pip install --no-cache-dir . \
+    && pip uninstall --yes opencv-python \
+    && pip install --no-cache-dir --force-reinstall --no-deps "opencv-python-headless>=4.10,<5" \
     && mkdir --parents /app/debug /models \
     && chown --recursive app:app /app /models
 
