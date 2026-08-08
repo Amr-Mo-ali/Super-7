@@ -37,9 +37,13 @@ def create_app(
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
+
+    def tracker_factory() -> ByteTrackTracker:
+        return ByteTrackTracker(resolved_settings)
+
     resolved_tracker = tracker or DetectionOnlyPlayerTracker(
         YOLOPlayerDetector(resolved_settings, get_logger("football_analysis.detector")),
-        ByteTrackTracker(resolved_settings),
+        tracker_factory,
         resolved_settings,
         YOLOBallDetector(resolved_settings, get_logger("football_analysis.ball_detector")),
     )

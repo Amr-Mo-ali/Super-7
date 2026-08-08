@@ -1,5 +1,6 @@
 """Automatic player/ball tracking boundary and safe default implementation."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -12,7 +13,7 @@ from services.ball_detector import BallDetection, BallDetector
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
 from services.player_detector import BoundingBox, PlayerDetectorProtocol
 from services.selection import PlayerTrack
-from services.tracker import ByteTrackTracker
+from services.tracker import TrackerProtocol
 from services.video_validator import VideoMetadata
 
 
@@ -71,13 +72,13 @@ class DetectionOnlyPlayerTracker:
     def __init__(
         self,
         detector: PlayerDetectorProtocol,
-        tracker: ByteTrackTracker,
+        tracker_factory: Callable[[], TrackerProtocol],
         settings: Settings,
         ball_detector: BallDetector | None = None,
         ball_tracker_factory: type[NearestNeighborBallTracker] = NearestNeighborBallTracker,
     ) -> None:
         self._detector = detector
-        self._tracker = tracker
+        self._tracker_factory = tracker_factory
         self._ball_detector = ball_detector
         self._settings = settings
         self._ball_tracker_factory = ball_tracker_factory
@@ -85,6 +86,7 @@ class DetectionOnlyPlayerTracker:
 
     def analyze(self, video_path: Path, metadata: VideoMetadata) -> TrackingRun:
         """Decode every frame and accumulate truthful player-detection diagnostics."""
+        tracker = self._tracker_factory()
         capture = cv2.VideoCapture(str(video_path))
         processed = with_people = detections = 0
         observations: dict[int, list[tuple[int, float]]] = {}
@@ -105,7 +107,7 @@ class DetectionOnlyPlayerTracker:
                     break
                 processed += 1
                 found = self._detector.detect(frame, processed - 1, (processed - 1) / metadata.fps)
-                for track in self._tracker.update(found):
+                for track in tracker.update(found):
                     observations.setdefault(track.track_id, []).append(
                         (track.frame_index, track.confidence)
                     )
@@ -152,14 +154,14 @@ class DetectionOnlyPlayerTracker:
                 processed,
                 with_people,
                 detections,
-                self._tracker.tracks_created,
+                tracker.tracks_created,
                 len(ball_confidences),
                 len(ball_confidences),
                 filtered_ball_detections,
                 accepted_ball_observations,
                 multiple_ball_frames,
                 ball_tracker.rejected_candidates if ball_tracker is not None else 0,
-                self._tracker.tracks_created,
+                tracker.tracks_created,
             ),
             boxes,
             confidences_by_track,
