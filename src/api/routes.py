@@ -1,29 +1,30 @@
 """Thin HTTP orchestration for automatic target-player analysis."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
-from typing import Annotated, Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, HTTPException, status
+from pydantic import HttpUrl
 
+from api.public_rating_mapper import public_rating_v2
 from api.request_lifecycle import RequestLifecycle
-from concurrency.cancellation import CancellationManager
-from concurrency.exceptions import AdmissionRejectedError
+from concurrency.cancellation import CancellationChecker, CancellationManager
+from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
-from core.exceptions import (
-    AnalysisError,
-    InternalDiagnosticsError,
-    InvalidRequestError,
-    RealDetectorNotConfiguredError,
-)
+from core.exceptions import AnalysisError, InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
 from diagnostics.artifacts import ArtifactSession
+from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
+    AnalyzeQueuedResponse,
+    AnalyzeRequest,
     AnalyzeResponse,
     BallLossCandidateResponse,
     CompletedResponse,
@@ -45,7 +46,9 @@ from schemas.analysis import (
     TrackingResponse,
     VideoResponse,
 )
+from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
+from services.callback_service import CallbackPayload, CallbackService
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
@@ -69,7 +72,9 @@ from services.selection import Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
-from services.video_validator import VideoMetadata, VideoValidator, temporary_upload
+from services.video_downloader import VideoDownloader
+from services.video_path_resolver import VideoPathResolver
+from services.video_validator import VideoMetadata, VideoValidator
 
 
 def create_router(
@@ -87,63 +92,226 @@ def create_router(
     physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
     lifecycle: RequestLifecycle,
+    downloader: VideoDownloader,
+    path_resolver: VideoPathResolver,
+    callback_service: CallbackService,
+    analysis_queue: AnalysisQueue,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
     router = APIRouter()
 
-    @router.post("/analyze", response_model=AnalyzeResponse)
-    async def analyze(request: Request, video: Annotated[UploadFile, File()]) -> AnalyzeResponse:
-        """Validate one video and select exactly one non-ambiguous player track."""
-        started = perf_counter()
+    @router.post(
+        "/analyze",
+        response_model=AnalyzeQueuedResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def analyze(
+        payload: AnalyzeRequest,
+    ) -> AnalyzeQueuedResponse:
+        """Validate a lightweight job and enqueue it for the single background worker."""
         analysis_id = str(uuid4())
-        detection_started = perf_counter()
         try:
-            unexpected_fields = set((await request.form()).keys()) - {"video"}
-            if unexpected_fields:
-                raise InvalidRequestError("Only the video multipart field is accepted.")
-            async with temporary_upload(video, settings) as video_path:
-                return await lifecycle.execute_with_artifacts(
-                    analysis_id,
-                    lambda cancellation, artifacts: _analyze_uploaded(
-                        settings,
-                        validator,
-                        tracker,
-                        selector,
-                        extractor,
-                        ball_proximity_analyzer,
-                        movement_analyzer,
-                        interaction_analyzer,
-                        technical_event_analyzer,
-                        pass_detector,
-                        shot_detector,
-                        logger,
-                        physical_scorer,
-                        analysis_id,
-                        started,
-                        detection_started,
-                        video_path,
-                        cancellation,
-                        artifacts,
-                    ),
-                )
-        except AdmissionRejectedError as error:
-            diagnostics = replace(TrackingDiagnostics(0, 0, 0, 0, 0), rejected_track_reason_breakdown={})
-            return _noncompleted(
-                analysis_id, "failed", str(error), diagnostics, 0
-            )
-        except RealDetectorNotConfiguredError as error:
-            diagnostics = TrackingDiagnostics(0, 0, 0, 0, 0)
-            return _noncompleted(analysis_id, "failed", str(error), diagnostics, 0)
-        except AnalysisError as error:
-            logger.warning("analysis_validation_failed: %s", error)
+            path_resolver.validate_reference(payload.video_url)
+            callback_service.validate_callback_url(payload.callback_url)
+        except (OSError, ValueError, AnalysisError) as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"error": str(error)}
             ) from error
-        except Exception as error:
-            logger.exception("analysis_failed")
-            raise HTTPException(status_code=500, detail={"error": "Analysis failed."}) from error
+        job = AnalysisJob.create(
+            analysis_id,
+            payload.video_id,
+            payload.player_id,
+            payload.video_url,
+            payload.callback_url,
+        )
+        if not await analysis_queue.submit(job):
+            logger.warning(
+                "analysis_queue_full analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
+                analysis_id,
+                payload.video_id,
+                payload.player_id,
+                analysis_queue.metrics().queued,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "Analysis queue is full."},
+            )
+        logger.info(
+            "analysis_job_queued analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
+            analysis_id,
+            payload.video_id,
+            payload.player_id,
+            analysis_queue.metrics().queued,
+        )
+        return AnalyzeQueuedResponse(
+            analysis_id=analysis_id,
+            video_id=payload.video_id,
+            player_id=payload.player_id,
+        )
 
     return router
+
+
+def _callback_payload(
+    request: AnalyzeRequest,
+    result: AnalyzeResponse,
+) -> CallbackPayload:
+    """Build the backend callback body from an already-finalized analysis result."""
+    public_result = public_rating_v2(result)
+    serialized = public_result.model_dump(mode="json")
+    return CallbackPayload(
+        request_id=result.analysis_id,
+        video_id=request.video_id,
+        player_id=request.player_id,
+        status=result.status,
+        summary=serialized.get("summary", {}),
+        ratings=serialized.get("ratings", {}),
+        events=serialized.get("events", {}),
+    )
+
+
+def create_analysis_job_processor(
+    settings: Settings,
+    validator: VideoValidator,
+    tracker: AutomaticPlayerTracker,
+    selector: TargetPlayerSelector,
+    extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
+    pass_detector: PassDetector,
+    shot_detector: ShotDetector,
+    logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
+    lifecycle: RequestLifecycle,
+    path_resolver: VideoPathResolver,
+    callback_service: CallbackService,
+) -> Callable[[AnalysisJob], Awaitable[AnalysisJobState]]:
+    """Create the one reusable job executor around the established analysis pipeline."""
+
+    async def process(job: AnalysisJob) -> AnalysisJobState:
+        started = perf_counter()
+        request = AnalyzeRequest.model_validate(
+            {
+                "videoId": job.video_id,
+                "playerId": job.player_id,
+                "videoUrl": job.video_reference,
+                "callbackUrl": str(job.callback_url),
+            }
+        )
+        try:
+            video_path = path_resolver.resolve(job.video_reference)
+            result = await lifecycle.execute_with_artifacts(
+                job.analysis_id,
+                lambda cancellation, artifacts: _analyze_uploaded(
+                    settings,
+                    validator,
+                    tracker,
+                    selector,
+                    extractor,
+                    ball_proximity_analyzer,
+                    movement_analyzer,
+                    interaction_analyzer,
+                    technical_event_analyzer,
+                    pass_detector,
+                    shot_detector,
+                    logger,
+                    physical_scorer,
+                    job.analysis_id,
+                    started,
+                    started,
+                    video_path,
+                    cancellation,
+                    artifacts,
+                    {},
+                ),
+            )
+            callback_payload = _callback_payload(request, result)
+        except AnalysisCancelled:
+            return AnalysisJobState.CANCELLED
+        except Exception as error:
+            failure_payload = CallbackPayload(
+                request_id=job.analysis_id,
+                video_id=job.video_id,
+                player_id=job.player_id,
+                status="failed",
+                summary={},
+                ratings={},
+                events={},
+                error={
+                    "code": type(error).__name__,
+                    "message": "Analysis could not be completed.",
+                },
+            )
+            try:
+                delivered = await callback_service.send_result(job.callback_url, failure_payload)
+            except Exception:
+                logger.exception("analysis_failure_callback_error analysis_id=%s", job.analysis_id)
+            else:
+                if not delivered:
+                    logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
+            logger.exception("analysis_job_pipeline_failed analysis_id=%s", job.analysis_id)
+            return AnalysisJobState.FAILED
+        try:
+            delivered = await callback_service.send_result(job.callback_url, callback_payload)
+        except Exception:
+            logger.exception("analysis_callback_error analysis_id=%s", job.analysis_id)
+        else:
+            if not delivered:
+                logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
+        return AnalysisJobState.COMPLETED
+
+    return process
+
+
+def _analyze_downloaded(
+    settings: Settings,
+    validator: VideoValidator,
+    tracker: AutomaticPlayerTracker,
+    selector: TargetPlayerSelector,
+    extractor: FeatureExtractor,
+    ball_proximity_analyzer: BallProximityAnalyzer,
+    movement_analyzer: MovementAnalyzer,
+    interaction_analyzer: BallInteractionAnalyzerProtocol,
+    technical_event_analyzer: TechnicalEventAnalyzer,
+    pass_detector: PassDetector,
+    shot_detector: ShotDetector,
+    logger: logging.Logger,
+    physical_scorer: PhysicalActivityScorerProtocol,
+    analysis_id: str,
+    started: float,
+    detection_started: float,
+    video_url: HttpUrl,
+    downloader: VideoDownloader,
+    cancellation: CancellationManager,
+    artifacts: ArtifactSession,
+    request_metadata: dict[str, Any],
+) -> AnalyzeResponse:
+    """Download one public URL before invoking the unchanged local-file pipeline."""
+    with downloader.download(video_url, cancellation) as video_path:
+        return _analyze_uploaded(
+            settings,
+            validator,
+            tracker,
+            selector,
+            extractor,
+            ball_proximity_analyzer,
+            movement_analyzer,
+            interaction_analyzer,
+            technical_event_analyzer,
+            pass_detector,
+            shot_detector,
+            logger,
+            physical_scorer,
+            analysis_id,
+            started,
+            detection_started,
+            video_path,
+            cancellation,
+            artifacts,
+            request_metadata,
+        )
 
 
 def _analyze_uploaded(
@@ -166,18 +334,36 @@ def _analyze_uploaded(
     video_path: Path,
     cancellation: CancellationManager,
     artifacts: ArtifactSession,
+    request_metadata: dict[str, Any],
 ) -> AnalyzeResponse:
     """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
-    del cancellation
-    metadata = validator.validate(video_path)
-    run = tracker.analyze(video_path, metadata)
+    checker = CancellationChecker(cancellation)
+    profiler = current_collector()
+    checker.check("upload validation")
+    if profiler is None:
+        metadata = validator.validate(video_path)
+    else:
+        with profiler.stage("video_validation"):
+            metadata = validator.validate(video_path)
+    checker.check("detection")
+    if profiler is None:
+        run = tracker.analyze(video_path, metadata)
+    else:
+        with profiler.stage("tracking_total"):
+            run = tracker.analyze(video_path, metadata)
+        profiler.set_video(
+            metadata.duration_seconds, run.diagnostics.frames_processed, metadata.file_size_bytes
+        )
+    checker.check("tracking")
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
-    request_metadata = reproducibility_metadata(video_path, tracker.model_version)
-    source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
-    debug_source = artifacts.create(source)
-    copyfile(video_path, debug_source)
-    debug_source = artifacts.finalize(source)
-    artifacts.retain()
+    reproducibility = reproducibility_metadata(video_path, tracker.model_version)
+    debug_source: Path | None = None
+    if settings.debug.enabled and (settings.debug.save_video or settings.debug.save_frames):
+        source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
+        debug_source = artifacts.create(source)
+        copyfile(video_path, debug_source)
+        debug_source = artifacts.finalize(source)
+        artifacts.retain()
     if run.diagnostics.total_person_detections == 0:
         return _noncompleted(
             analysis_id,
@@ -185,6 +371,7 @@ def _analyze_uploaded(
             "No player detections were produced.",
             run.diagnostics,
             0,
+            request_metadata,
         )
     if not run.tracks:
         return _noncompleted(
@@ -193,18 +380,34 @@ def _analyze_uploaded(
             "Player detection completed; multi-object tracking is not available.",
             run.diagnostics,
             0,
+            request_metadata,
         )
     selection_diagnostics = run.diagnostics
     ranked: tuple[Selection, ...]
     selection_started = perf_counter()
+    checker.check("player selection")
     if (
         settings.target_selection_mode == "segment"
         and run.player_boxes is not None
         and run.player_confidences is not None
     ):
-        segments = build_segments(
-            run.player_boxes, run.player_confidences, run.ball_points or {}, metadata.fps, settings
-        )
+        if profiler is None:
+            segments = build_segments(
+                run.player_boxes,
+                run.player_confidences,
+                run.ball_points or {},
+                metadata.fps,
+                settings,
+            )
+        else:
+            with profiler.stage("player_selection"):
+                segments = build_segments(
+                    run.player_boxes,
+                    run.player_confidences,
+                    run.ball_points or {},
+                    metadata.fps,
+                    settings,
+                )
         rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
         selection_diagnostics = replace(
             run.diagnostics,
@@ -214,7 +417,11 @@ def _analyze_uploaded(
         selected = select_segment(segments)
         ranked = (selected,) if selected is not None else ()
     else:
-        ranked = selector.rank(run.tracks)
+        if profiler is None:
+            ranked = selector.rank(run.tracks)
+        else:
+            with profiler.stage("player_selection"):
+                ranked = selector.rank(run.tracks)
     selection_time_ms = round((perf_counter() - selection_started) * 1000)
     if not ranked:
         return _noncompleted(
@@ -223,6 +430,7 @@ def _analyze_uploaded(
             "No track passed the configured quality thresholds.",
             selection_diagnostics,
             0,
+            request_metadata,
         )
     if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
         return AmbiguousResponse(
@@ -232,6 +440,7 @@ def _analyze_uploaded(
             warnings=[
                 "The system could not identify one target player with sufficient confidence."
             ],
+            metadata=request_metadata,
         )
     return _completed(
         settings,
@@ -257,8 +466,10 @@ def _analyze_uploaded(
             tracking_time_ms=detection_tracking_time_ms,
             segment_selection_time_ms=selection_time_ms,
         ),
-        request_metadata,
+        reproducibility,
         debug_source,
+        checker,
+        request_metadata,
     )
 
 
@@ -274,6 +485,7 @@ def _noncompleted(
     warning: str,
     diagnostics: TrackingDiagnostics,
     candidates: int,
+    metadata: dict[str, Any] | None = None,
 ) -> NonCompletedResponse:
     """Return a truthful non-completed status with detector/tracker diagnostics."""
     return NonCompletedResponse(
@@ -288,6 +500,7 @@ def _noncompleted(
         quality_gates={
             "pipeline": StageGate(quality=0.0, status="rejected", failure_reasons=[warning])
         },
+        metadata=metadata or {},
     )
 
 
@@ -313,9 +526,13 @@ def _completed(
     timing: PipelineTiming | None = None,
     analysis_metadata: dict[str, str | None] | None = None,
     debug_source: Path | None = None,
+    cancellation: CancellationChecker | None = None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
+    if cancellation is not None:
+        cancellation.check("ball reconstruction")
     from services.player_tracker import TrackingRun
 
     typed_run = run if isinstance(run, TrackingRun) else None
@@ -343,8 +560,12 @@ def _completed(
                 if start <= f <= end
             },
         )
+    if cancellation is not None:
+        cancellation.check("movement analysis")
     camera_motion = None
     if debug_source is not None:
+        if cancellation is not None:
+            cancellation.check("camera-motion estimation")
         try:
             camera_motion = CameraMotionEstimator().estimate(
                 debug_source, selection.segment_start_frame or 0, selection.segment_end_frame
@@ -455,16 +676,22 @@ def _completed(
             typed_run.ball_points,
             metadata.fps,
         )
+        if cancellation is not None:
+            cancellation.check("pass and shot detection")
     stage_timing = stage_timing.model_copy(
         update={"ball_processing_time_ms": round((perf_counter() - ball_started) * 1000)}
     )
     movement: MovementResult | None = None
     movement_reason: str | None = None
     if typed_run is not None and typed_run.player_boxes is not None:
+        if cancellation is not None:
+            cancellation.check("movement analysis")
         try:
             movement = movement_analyzer.analyze(
                 typed_run.player_boxes.get(track.track_id, {}), metadata.fps
             )
+        except AnalysisCancelled:
+            raise
         except Exception:
             movement_reason = "Movement analysis failed."
     interaction: InteractionAnalysisResult | None = None
@@ -474,6 +701,8 @@ def _completed(
         and typed_run.player_boxes is not None
         and typed_run.ball_points is not None
     ):
+        if cancellation is not None:
+            cancellation.check("interaction analysis")
         try:
             logger.warning(
                 "interaction_analysis_started analysis_id=%s track_id=%s",
@@ -499,6 +728,8 @@ def _completed(
                 quality,
                 min(1.0, track.visibility_ratio * track.average_confidence),
             )
+            if cancellation is not None:
+                cancellation.check("interaction analysis")
             interaction_reason = interaction.reason
             logger.warning(
                 "interaction_analysis_finished analysis_id=%s track_id=%s processing_time_ms=%s",
@@ -512,6 +743,8 @@ def _completed(
                 track.track_id,
                 interaction.possible_ball_interaction_count,
             )
+        except AnalysisCancelled:
+            raise
         except Exception:
             logger.exception(
                 "interaction_analysis_failed analysis_id=%s track_id=%s stage=analyze",
@@ -530,6 +763,8 @@ def _completed(
     technical_reason: str | None = "Technical-event analysis was unavailable."
     event_started = perf_counter()
     if interaction is not None and movement is not None:
+        if cancellation is not None:
+            cancellation.check("event analysis")
         try:
             technical_events = technical_event_analyzer.analyze(
                 players,
@@ -542,7 +777,11 @@ def _completed(
                 quality,
                 interaction.diagnostics.interaction_analysis_quality,
             )
+            if cancellation is not None:
+                cancellation.check("event analysis")
             technical_reason = technical_events.reason
+        except AnalysisCancelled:
+            raise
         except Exception:
             logger.exception("technical_event_analysis_failed analysis_id=%s", analysis_id)
     event_time_ms = round((perf_counter() - event_started) * 1000)
@@ -570,6 +809,8 @@ def _completed(
     if technical_events is not None:
         warnings.extend(technical_events.warnings)
     physical_started = perf_counter()
+    if cancellation is not None:
+        cancellation.check("scoring")
     physical = None
     try:
         physical = physical_scorer.score(
@@ -590,6 +831,8 @@ def _completed(
         logger.exception("physical_activity_score_failed analysis_id=%s", analysis_id)
     physical_time_ms = round((perf_counter() - physical_started) * 1000)
     technical_score_started = perf_counter()
+    if cancellation is not None:
+        cancellation.check("technical scoring")
     technical_score = TechnicalScorer().score(technical_events)
     technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
     total_time_ms = round((perf_counter() - started) * 1000)
@@ -956,9 +1199,12 @@ def _completed(
         quality_gates=_quality_gates(
             track.visibility_ratio, quality, interaction, technical_events, physical, ball_reason
         ),
+        metadata=request_metadata or {},
         analysis_metadata=analysis_metadata or {},
     )
     if typed_run is not None and debug_source is not None:
+        if cancellation is not None:
+            cancellation.check("debug rendering")
         try:
             response.debug_artifacts = render_debug_video(
                 debug_source,
@@ -970,7 +1216,10 @@ def _completed(
                 technical_events,
                 pass_detection,
                 shot_detection,
+                save_video=settings.debug.save_video,
+                save_frames=settings.debug.save_frames,
             )
+            response.debug_artifacts = _public_debug_artifact_references(response.debug_artifacts)
         except Exception:
             logger.exception("debug_render_failed analysis_id=%s", analysis_id)
             response.warnings.append(
@@ -978,6 +1227,11 @@ def _completed(
             )
     _validate_completed_diagnostics(response)
     return response
+
+
+def _public_debug_artifact_references(artifacts: dict[str, str]) -> dict[str, str]:
+    """Expose opaque artifact names while retaining request-local paths internally."""
+    return {name: Path(path).name for name, path in artifacts.items()}
 
 
 def _interaction_response(

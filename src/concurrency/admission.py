@@ -45,12 +45,19 @@ class AdmissionController:
         self._active_permits = 0
         self._admitted_analyses = 0
         self._rejected_analyses = 0
+        self._accepting = True
         self._lock = Lock()
+
+    @property
+    def accepting(self) -> bool:
+        """Return whether this process will admit a new analysis."""
+        with self._lock:
+            return self._accepting
 
     async def admit(self) -> AdmissionPermit | None:
         """Return a permit when capacity is available, otherwise reject immediately."""
         with self._lock:
-            if self._active_permits >= self._max_active_analyses:
+            if not self._accepting or self._active_permits >= self._max_active_analyses:
                 self._rejected_analyses += 1
                 return None
             self._active_permits += 1
@@ -72,3 +79,8 @@ class AdmissionController:
             if self._active_permits <= 0:
                 raise RuntimeError("Admission permit release would make active permits negative.")
             self._active_permits -= 1
+
+    async def close(self) -> None:
+        """Reject subsequent admissions without disturbing already admitted work."""
+        with self._lock:
+            self._accepting = False

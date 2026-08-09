@@ -1,8 +1,39 @@
 """Response contracts for automatic target selection."""
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+
+
+class AnalyzeRequest(BaseModel):
+    """Backend-owned identifiers and delivery details for one analysis request."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    video_id: str = Field(alias="videoId")
+    player_id: str = Field(alias="playerId")
+    video_url: str = Field(alias="videoUrl")
+    callback_url: HttpUrl = Field(alias="callbackUrl")
+
+
+class AnalyzeAcceptedResponse(BaseModel):
+    """Synchronous acknowledgement of a validated backend request."""
+
+    request_id: str
+    video_id: str
+    player_id: str
+    status: Literal["accepted"] = "accepted"
+
+
+class AnalyzeQueuedResponse(BaseModel):
+    """Immediate acknowledgement for an accepted background analysis job."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    analysis_id: str = Field(serialization_alias="analysisId")
+    video_id: str = Field(serialization_alias="videoId")
+    player_id: str = Field(serialization_alias="playerId")
+    status: Literal["queued"] = "queued"
 
 
 class VideoResponse(BaseModel):
@@ -319,6 +350,7 @@ class CompletedResponse(BaseModel):
     algorithm_versions: dict[str, str] = Field(default_factory=dict)
     timing: PipelineTiming = Field(default_factory=PipelineTiming)
     quality_gates: dict[str, StageGate] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     analysis_metadata: dict[str, str | None] = Field(default_factory=dict)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
 
@@ -329,6 +361,7 @@ class AmbiguousResponse(BaseModel):
     selected_player: None = None
     candidate_count: int
     warnings: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Diagnostics(BaseModel):
@@ -475,6 +508,7 @@ class NonCompletedResponse(BaseModel):
     diagnostics: Diagnostics
     pipeline_state: str = "VIDEO"
     quality_gates: dict[str, StageGate] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 AnalyzeResponse = CompletedResponse | AmbiguousResponse | NonCompletedResponse

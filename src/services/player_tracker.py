@@ -1,5 +1,6 @@
 """Automatic player/ball tracking boundary and safe default implementation."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -8,11 +9,12 @@ import cv2
 
 from core.config import Settings
 from core.exceptions import RealDetectorNotConfiguredError
+from diagnostics.performance import current_collector
 from services.ball_detector import BallDetection, BallDetector
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
 from services.player_detector import BoundingBox, PlayerDetectorProtocol
 from services.selection import PlayerTrack
-from services.tracker import ByteTrackTracker
+from services.tracker import TrackerProtocol
 from services.video_validator import VideoMetadata
 
 
@@ -71,13 +73,13 @@ class DetectionOnlyPlayerTracker:
     def __init__(
         self,
         detector: PlayerDetectorProtocol,
-        tracker: ByteTrackTracker,
+        tracker_factory: Callable[[], TrackerProtocol],
         settings: Settings,
         ball_detector: BallDetector | None = None,
         ball_tracker_factory: type[NearestNeighborBallTracker] = NearestNeighborBallTracker,
     ) -> None:
         self._detector = detector
-        self._tracker = tracker
+        self._tracker_factory = tracker_factory
         self._ball_detector = ball_detector
         self._settings = settings
         self._ball_tracker_factory = ball_tracker_factory
@@ -85,7 +87,9 @@ class DetectionOnlyPlayerTracker:
 
     def analyze(self, video_path: Path, metadata: VideoMetadata) -> TrackingRun:
         """Decode every frame and accumulate truthful player-detection diagnostics."""
+        tracker = self._tracker_factory()
         capture = cv2.VideoCapture(str(video_path))
+        profiler = current_collector()
         processed = with_people = detections = 0
         observations: dict[int, list[tuple[int, float]]] = {}
         boxes: dict[int, dict[int, BoundingBox]] = {}
@@ -100,12 +104,29 @@ class DetectionOnlyPlayerTracker:
         )
         try:
             while True:
-                ok, frame = capture.read()
+                if profiler is None:
+                    ok, frame = capture.read()
+                else:
+                    with profiler.stage("frame_decode"):
+                        ok, frame = capture.read()
                 if not ok:
                     break
                 processed += 1
-                found = self._detector.detect(frame, processed - 1, (processed - 1) / metadata.fps)
-                for track in self._tracker.update(found):
+                if profiler is None:
+                    found = self._detector.detect(
+                        frame, processed - 1, (processed - 1) / metadata.fps
+                    )
+                else:
+                    with profiler.stage("player_detection"):
+                        found = self._detector.detect(
+                            frame, processed - 1, (processed - 1) / metadata.fps
+                        )
+                if profiler is None:
+                    tracks = tracker.update(found)
+                else:
+                    with profiler.stage("bytetrack_update"):
+                        tracks = tracker.update(found)
+                for track in tracks:
                     observations.setdefault(track.track_id, []).append(
                         (track.frame_index, track.confidence)
                     )
@@ -120,9 +141,15 @@ class DetectionOnlyPlayerTracker:
                     with_people += 1
                 if self._ball_detector is not None and ball_tracker is not None:
                     try:
-                        found_balls = self._ball_detector.detect(
-                            frame, processed - 1, (processed - 1) / metadata.fps
-                        )
+                        if profiler is None:
+                            found_balls = self._ball_detector.detect(
+                                frame, processed - 1, (processed - 1) / metadata.fps
+                            )
+                        else:
+                            with profiler.stage("ball_detection"):
+                                found_balls = self._ball_detector.detect(
+                                    frame, processed - 1, (processed - 1) / metadata.fps
+                                )
                         ball_confidences.extend(item.confidence for item in found_balls)
                         ball_candidates[processed - 1] = tuple(found_balls)
                         filtered = tuple(
@@ -133,9 +160,15 @@ class DetectionOnlyPlayerTracker:
                         filtered_ball_detections += len(filtered)
                         if len(filtered) > 1:
                             multiple_ball_frames += 1
-                        point = ball_tracker.update(
-                            processed - 1, (processed - 1) / metadata.fps, found_balls
-                        )
+                        if profiler is None:
+                            point = ball_tracker.update(
+                                processed - 1, (processed - 1) / metadata.fps, found_balls
+                            )
+                        else:
+                            with profiler.stage("ball_tracking"):
+                                point = ball_tracker.update(
+                                    processed - 1, (processed - 1) / metadata.fps, found_balls
+                                )
                         ball_points[processed - 1] = point
                         accepted_ball_observations += int(point.visible)
                     except Exception:
@@ -146,20 +179,22 @@ class DetectionOnlyPlayerTracker:
         summaries = tuple(
             self._summary(track_id, values, processed) for track_id, values in observations.items()
         )
+        if profiler is not None:
+            profiler.add_counter("frames_processed", processed)
         return TrackingRun(
             summaries,
             TrackingDiagnostics(
                 processed,
                 with_people,
                 detections,
-                self._tracker.tracks_created,
+                tracker.tracks_created,
                 len(ball_confidences),
                 len(ball_confidences),
                 filtered_ball_detections,
                 accepted_ball_observations,
                 multiple_ball_frames,
                 ball_tracker.rejected_candidates if ball_tracker is not None else 0,
-                self._tracker.tracks_created,
+                tracker.tracks_created,
             ),
             boxes,
             confidences_by_track,

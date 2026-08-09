@@ -59,6 +59,15 @@ class ByteTrackDetections:
 
 
 class TrackerProtocol(Protocol):
+    @property
+    def tracks_created(self) -> int: ...
+
+    @property
+    def lost_tracks(self) -> int: ...
+
+    @property
+    def track_switches(self) -> int: ...
+
     def update(self, detections: Sequence[Detection]) -> Sequence[Track]: ...
 
 

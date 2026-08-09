@@ -37,18 +37,39 @@ uv run pre-commit run --all-files
 uv run uvicorn main:app --reload
 ```
 
-Send a multipart request containing only the `video` field.
+Send a JSON request containing backend-owned `videoId`, `playerId`, `videoUrl`, and `callbackUrl`
+fields. `videoUrl` must be a safe relative filename within `VIDEO_STORAGE_ROOT` (default:
+`/videos`). `POST /analyze` queues that filename for one background analysis worker and returns
+HTTP 202; the final result is delivered to `callbackUrl`.
 
-`selected_player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
+`player.track_id` is a ByteTrack identifier scoped to one analysis request. It is
 not a permanent player identity and may differ when the same video is analyzed again.
 
 ## Container
 
-The project is a single modular monolith, so Docker Compose is not needed. Build the skeleton image with:
+The container does not embed ML models. Docker Compose uses a read-only host volume for explicit
+model provisioning, so keep model binaries out of Git and the image build context.
+
+1. Create a local deployment environment file:
 
 ```powershell
-docker build -t football-analysis .
+Copy-Item .env.example .env
 ```
+
+2. Place the configured models in `models/`. The default configuration requires:
+
+```text
+models/yolo11n.pt
+```
+
+3. Build and start the service:
+
+```powershell
+docker compose up --build
+```
+
+The service listens on `http://localhost:8000`. The container health check verifies that the
+existing OpenAPI document responds at `/openapi.json`; this does not add a health endpoint.
 
 ## Layout
 
