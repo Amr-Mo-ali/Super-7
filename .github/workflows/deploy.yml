@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  # Run only after the existing CI workflow completes for main.
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Pull, build, and restart production service
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+
+            project_dir=/opt/Super-7
+            health_url=http://127.0.0.1:8000/health/ready
+            max_attempts=20
+            retry_delay_seconds=3
+
+            deployment_failed() {
+              echo "Deployment failed. Current Compose status and recent logs follow."
+              docker compose ps || true
+              docker compose logs --tail=100 || true
+            }
+
+            trap deployment_failed ERR
+
+            if [ ! -d "$project_dir" ]; then
+              echo "Deployment failed: $project_dir does not exist."
+              deployment_failed
+              exit 1
+            fi
+
+            cd "$project_dir"
+
+            if [ ! -d .git ]; then
+              echo "Deployment failed: $project_dir is not a Git working tree."
+              deployment_failed
+              exit 1
+            fi
+
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Deployment failed: production Git working tree has uncommitted changes."
+              git status --short
+              deployment_failed
+              exit 1
+            fi
+
+            if [ "$(git branch --show-current)" != "main" ]; then
+              echo "Deployment failed: production Git branch is not main."
+              deployment_failed
+              exit 1
+            fi
+
+            git pull --ff-only origin main
+            docker compose config --quiet
+            docker compose build
+            docker compose up -d
+
+            for attempt in $(seq 1 "$max_attempts"); do
+              if curl --fail --silent --show-error --max-time 5 "$health_url" >/dev/null; then
+                echo "Health check passed on attempt $attempt."
+                docker compose ps
+                exit 0
+              fi
+
+              echo "Health check attempt $attempt/$max_attempts failed."
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                sleep "$retry_delay_seconds"
+              fi
+            done
+
+            echo "Deployment failed: $health_url did not return HTTP 2xx within $((max_attempts * retry_delay_seconds)) seconds."
+            deployment_failed
+            exit 1

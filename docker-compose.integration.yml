@@ -24,8 +24,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./models:/models:ro
-      - /data/videos:/videos:ro
+      - /opt/Super-7/models:/models
+      - /var/www/apex-backend/uploads/videos:/videos
     depends_on:
       backend-mock:
         condition: service_healthy
