@@ -1,0 +1,116 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MODEL_PATH: ci-model-must-not-be-loaded.pt
+      BALL_MODEL_PATH: ci-ball-model-must-not-be-loaded.pt
+      ULTRALYTICS_OFFLINE: "True"
+      YOLO_CONFIG_DIR: ${{ runner.temp }}/ultralytics
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy src tests
+
+      - name: Test
+        run: uv run pytest -q
+
+  deploy:
+    name: Deploy to production
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Pull, build, and restart production service
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+
+            project_dir=/opt/Super-7
+            health_url=http://127.0.0.1:8000/health/ready
+            max_attempts=20
+            retry_delay_seconds=3
+
+            if [ ! -d "$project_dir" ]; then
+              echo "Deployment failed: $project_dir does not exist."
+              exit 1
+            fi
+
+            cd "$project_dir"
+
+            if [ ! -d .git ]; then
+              echo "Deployment failed: $project_dir is not a Git working tree."
+              exit 1
+            fi
+
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "Deployment failed: production Git working tree has uncommitted changes."
+              exit 1
+            fi
+
+            if [ "$(git branch --show-current)" != "main" ]; then
+              echo "Deployment failed: production Git branch is not main."
+              exit 1
+            fi
+
+            git pull --ff-only origin main
+            docker compose config --quiet
+            docker compose build
+            docker compose up -d
+
+            for attempt in $(seq 1 "$max_attempts"); do
+              if curl --fail --silent --show-error --max-time 5 "$health_url" >/dev/null; then
+                echo "Health check passed on attempt $attempt."
+                docker compose ps
+                exit 0
+              fi
+
+              echo "Health check attempt $attempt/$max_attempts failed."
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                sleep "$retry_delay_seconds"
+              fi
+            done
+
+            echo "Deployment failed: $health_url did not return HTTP 2xx within $((max_attempts * retry_delay_seconds)) seconds."
+            docker compose ps
+            exit 1
