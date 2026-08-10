@@ -1,84 +1,208 @@
-"""API contract tests for automatic target analysis."""
+"""Backend integration contract tests for the analyze endpoint."""
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
-import cv2
 import httpx
-import numpy as np
+from fastapi import FastAPI
+from pydantic import HttpUrl
 
 from core.config import Settings
 from main import create_app
-from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
-from services.selection import PlayerTrack
-from services.video_validator import VideoMetadata
+from schemas.analysis import AnalyzeAcceptedResponse, AnalyzeRequest
+from services.analysis_queue import AnalysisQueue
+from services.callback_service import CallbackPayload, CallbackService
+from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.video_path_resolver import VideoPathResolver
+from services.video_validator import VideoMetadata, VideoValidator
+
+
+class FakeResolver:
+    def resolve(self, filename: str) -> Path:
+        assert filename == "test-video.mp4"
+        return Path(__file__)
+
+    def validate_reference(self, filename: str) -> None:
+        assert filename == "test-video.mp4"
+
+    def validate_storage_root(self) -> Path:
+        return Path(__file__).parent
+
+    def storage_root_checks(self) -> dict[str, bool]:
+        return {"exists": True, "readable": True, "accessible": True, "read_only": True}
+
+
+class FakeValidator:
+    def validate(self, path: Path) -> VideoMetadata:
+        del path
+        return VideoMetadata("mp4", 1, 1, 64, 64, 10, 10)
 
 
 class FakeTracker:
-    model_version = "fake-1"
+    model_version = "fake"
 
-    def __init__(self, tracks: tuple[PlayerTrack, ...]) -> None:
-        self._tracks = tracks
-
-    def analyze(self, video_path: Path, metadata: VideoMetadata) -> TrackingRun:
-        del video_path, metadata
+    def analyze(self, path: Path, metadata: VideoMetadata) -> TrackingRun:
+        del path, metadata
         return TrackingRun(
-            self._tracks,
-            TrackingDiagnostics(
-                10, 10 if self._tracks else 0, len(self._tracks) * 8, len(self._tracks), 0
-            ),
+            (), TrackingDiagnostics(1, 0, 0, 0, 0, rejected_track_reason_breakdown={})
         )
 
 
-def test_analyze_accepts_only_video_and_returns_completed(tmp_path: Path) -> None:
-    response = asyncio.run(
-        _post(_video(tmp_path), FakeTracker((PlayerTrack(4, 8, 10, 8, 1, 0.9, 2, True),)), {})
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "completed"
-    assert body["selected_player"]["track_id"] == 4
-    assert "player_id" not in body
+class FailingTracker:
+    model_version = "fake"
+
+    def analyze(self, path: Path, metadata: VideoMetadata) -> TrackingRun:
+        del path, metadata
+        raise RuntimeError("simulated analysis failure")
 
 
-def test_analyze_rejects_manual_selection_fields(tmp_path: Path) -> None:
-    response = asyncio.run(_post(_video(tmp_path), FakeTracker(()), {"player_id": "bad"}))
+class FakeCallbackService:
+    def __init__(self) -> None:
+        self.payloads: list[CallbackPayload] = []
+
+    async def send_result(self, callback_url: HttpUrl, payload: CallbackPayload) -> bool:
+        del callback_url
+        self.payloads.append(payload)
+        return True
+
+    def validate_callback_url(self, callback_url: HttpUrl) -> None:
+        del callback_url
+
+
+def test_analyze_accepts_a_valid_backend_request() -> None:
+    callback = FakeCallbackService()
+    response = asyncio.run(_post(_payload(), callback))
+    assert response.status_code == 202
+    assert response.json() == {
+        "analysisId": response.json()["analysisId"],
+        "videoId": "video-123",
+        "playerId": "player-456",
+        "status": "queued",
+    }
+    assert callback.payloads == []
+
+
+def test_analyze_rejects_missing_required_fields() -> None:
+    response = asyncio.run(_post({"videoId": "video-123"}))
     assert response.status_code == 422
 
 
-def test_analyze_returns_documented_ambiguity(tmp_path: Path) -> None:
-    tracks = (
-        PlayerTrack(1, 8, 10, 8, 0, 0.9, 0, False),
-        PlayerTrack(2, 8, 10, 8, 0, 0.9, 0, False),
-    )
-    response = asyncio.run(_post(_video(tmp_path), FakeTracker(tracks), {}))
-    assert response.status_code == 200
-    assert response.json()["status"] == "ambiguous_target"
-
-
-def test_invalid_video_returns_structured_error(tmp_path: Path) -> None:
-    path = tmp_path / "bad.avi"
-    path.write_bytes(b"broken")
-    response = asyncio.run(_post(path, FakeTracker(()), {}))
+def test_analyze_rejects_an_invalid_callback_url() -> None:
+    payload = _payload()
+    payload["callbackUrl"] = "not-a-url"
+    response = asyncio.run(_post(payload))
     assert response.status_code == 422
-    assert "error" in response.json()["detail"]
+
+
+def test_analyze_rejects_explicitly_when_the_queue_is_full() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(1)
+        first = await _post(_payload(), analysis_queue=queue)
+        second = await _post(_payload(), analysis_queue=queue)
+        assert first.status_code == 202
+        assert second.status_code == 503
+        assert second.json()["detail"]["error"] == "Analysis queue is full."
+
+    asyncio.run(scenario())
+
+
+def test_lifespan_worker_delivers_one_final_callback() -> None:
+    async def scenario() -> None:
+        callback = FakeCallbackService()
+        app = _app(callback)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+            assert response.status_code == 202
+            await _wait_for(lambda: len(callback.payloads) == 1)
+        assert callback.payloads[0].status == "no_players_detected"
+
+    asyncio.run(scenario())
+
+
+def test_lifespan_worker_delivers_failure_callback() -> None:
+    async def scenario() -> None:
+        callback = FakeCallbackService()
+        app = _app(callback, FailingTracker())
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+            assert response.status_code == 202
+            await _wait_for(lambda: len(callback.payloads) == 1)
+        assert callback.payloads[0].status == "failed"
+        assert callback.payloads[0].error == {
+            "code": "RuntimeError",
+            "message": "Analysis could not be completed.",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_request_aliases_normalize_to_snake_case_fields() -> None:
+    payload = _payload()
+    request = AnalyzeRequest.model_validate(payload)
+    assert request.model_dump(mode="json") == {
+        "video_id": "video-123",
+        "player_id": "player-456",
+        "video_url": "test-video.mp4",
+        "callback_url": "http://72.62.28.146/api/video-analysis/webhook",
+    }
+    assert request.model_dump(mode="json", by_alias=True) == payload
+
+
+def test_accepted_response_serializes_the_public_contract() -> None:
+    response = AnalyzeAcceptedResponse(
+        request_id="request-789", video_id="video-123", player_id="player-456"
+    )
+    assert response.model_dump(mode="json") == {
+        "request_id": "request-789",
+        "video_id": "video-123",
+        "player_id": "player-456",
+        "status": "accepted",
+    }
 
 
 async def _post(
-    path: Path, tracker: AutomaticPlayerTracker, data: dict[str, str]
+    payload: dict[str, str],
+    callback: FakeCallbackService | None = None,
+    analysis_queue: AnalysisQueue | None = None,
 ) -> httpx.Response:
-    transport = httpx.ASGITransport(app=create_app(Settings(selection_margin=0.01), tracker))
+    app = _app(callback or FakeCallbackService(), analysis_queue=analysis_queue)
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        with path.open("rb") as file:
-            return await client.post(
-                "/analyze", data=data, files={"video": (path.name, file, "video/x-msvideo")}
-            )
+        return await client.post("/analyze", json=payload)
 
 
-def _video(directory: Path) -> Path:
-    path = directory / "video.avi"
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10, (64, 64))  # type: ignore[attr-defined]
-    for value in (0, 1, 2):
-        writer.write(np.full((64, 64, 3), value, np.uint8))
-    writer.release()
-    return path
+def _app(
+    callback: FakeCallbackService,
+    tracker: FakeTracker | FailingTracker | None = None,
+    analysis_queue: AnalysisQueue | None = None,
+) -> FastAPI:
+    return create_app(
+        Settings(),
+        tracker=tracker or FakeTracker(),
+        validator=cast(VideoValidator, FakeValidator()),
+        path_resolver=cast(VideoPathResolver, FakeResolver()),
+        callback_service=cast(CallbackService, callback),
+        analysis_queue=analysis_queue,
+    )
+
+
+async def _wait_for(predicate: object) -> None:
+    for _ in range(100):
+        if callable(predicate) and predicate():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("background worker did not finish")
+
+
+def _payload() -> dict[str, str]:
+    return {
+        "videoId": "video-123",
+        "playerId": "player-456",
+        "videoUrl": "test-video.mp4",
+        "callbackUrl": "http://72.62.28.146/api/video-analysis/webhook",
+    }

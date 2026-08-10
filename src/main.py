@@ -1,13 +1,25 @@
 """Application entry point."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 
 from adapters.yolo_ball_detector import YOLOBallDetector
 from adapters.yolo_player_detector import YOLOPlayerDetector
-from api.routes import create_router
+from api.health import create_health_router
+from api.request_lifecycle import RequestLifecycle
+from api.routes import create_analysis_job_processor, create_router
+from concurrency.admission import AdmissionController
+from concurrency.executor import AnalysisExecutor
+from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import get_logger
+from diagnostics.artifacts import ArtifactManager
+from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.ball_proximity import NormalizedBallProximityAnalyzer
+from services.callback_service import CallbackService
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzer
 from services.movement.analyzer import BottomCenterMovementAnalyzer
@@ -18,6 +30,8 @@ from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelecto
 from services.shot_detection import ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.tracker import ByteTrackTracker
+from services.video_downloader import VideoDownloader
+from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
 
 
@@ -25,12 +39,22 @@ def create_app(
     settings: Settings | None = None,
     tracker: AutomaticPlayerTracker | None = None,
     selector: TargetPlayerSelector | None = None,
+    validator: VideoValidator | None = None,
+    lifecycle: RequestLifecycle | None = None,
+    downloader: VideoDownloader | None = None,
+    path_resolver: VideoPathResolver | None = None,
+    callback_service: CallbackService | None = None,
+    analysis_queue: AnalysisQueue | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     resolved_settings = settings or Settings.from_environment()
+
+    def tracker_factory() -> ByteTrackTracker:
+        return ByteTrackTracker(resolved_settings)
+
     resolved_tracker = tracker or DetectionOnlyPlayerTracker(
         YOLOPlayerDetector(resolved_settings, get_logger("football_analysis.detector")),
-        ByteTrackTracker(resolved_settings),
+        tracker_factory,
         resolved_settings,
         YOLOBallDetector(resolved_settings, get_logger("football_analysis.ball_detector")),
     )
@@ -40,11 +64,79 @@ def create_app(
         resolved_settings.model_path,
         resolved_settings.model_device,
     )
-    app = FastAPI(title="Football Analysis MVP", version=resolved_settings.analysis_version)
+    resolved_lifecycle = lifecycle or RequestLifecycle(
+        AdmissionController(max_active_analyses=DEFAULT_MAX_ACTIVE_ANALYSES),
+        AnalysisExecutor(),
+        ArtifactManager(
+            Path(resolved_settings.debug_output_dir),
+            resolved_settings.max_upload_bytes,
+            retained_sessions=resolved_settings.debug.retained_sessions,
+        ),
+        request_deadline_seconds=resolved_settings.request_deadline_seconds,
+    )
+    resolved_path_resolver = path_resolver or VideoPathResolver(
+        resolved_settings.video_storage_root
+    )
+    resolved_callback_service = callback_service or CallbackService(
+        resolved_settings.callback_timeout_seconds,
+        get_logger("football_analysis.callback"),
+    )
+    resolved_analysis_queue = analysis_queue or AnalysisQueue(resolved_settings.max_queued_analyses)
+    processor = create_analysis_job_processor(
+        resolved_settings,
+        validator or VideoValidator(resolved_settings),
+        resolved_tracker,
+        selector or WeightedTargetPlayerSelector(resolved_settings),
+        FeatureExtractor(),
+        NormalizedBallProximityAnalyzer(resolved_settings),
+        BottomCenterMovementAnalyzer(resolved_settings),
+        BallInteractionAnalyzer(resolved_settings),
+        TechnicalEventAnalyzer(resolved_settings),
+        PassDetector(resolved_settings),
+        ShotDetector(),
+        get_logger("football_analysis.api"),
+        RuleBasedPhysicalActivityScorer(resolved_settings),
+        resolved_lifecycle,
+        resolved_path_resolver,
+        resolved_callback_service,
+    )
+    worker = AnalysisWorker(
+        resolved_analysis_queue, processor, get_logger("football_analysis.worker")
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        try:
+            resolved_path_resolver.validate_storage_root()
+            await worker.start()
+            yield
+        finally:
+            resolved_analysis_queue.stop_accepting()
+            await resolved_lifecycle.shutdown()
+            await worker.shutdown()
+
+    app = FastAPI(
+        title="Football Analysis MVP",
+        version=resolved_settings.analysis_version,
+        lifespan=lifespan,
+    )
+    app.state.admission_controller = resolved_lifecycle.admission
+    app.state.analysis_executor = resolved_lifecycle.executor
+    app.state.artifact_manager = resolved_lifecycle.artifacts
+    app.state.request_lifecycle = resolved_lifecycle
+    app.state.analysis_queue = resolved_analysis_queue
+    app.state.analysis_worker = worker
+    app.state.startup_completed = True
+    app.state.detectors_initialized = True
+    app.state.configuration_loaded = True
+    app.state.models_initialized = True
+    app.include_router(
+        create_health_router(resolved_lifecycle, resolved_path_resolver, resolved_analysis_queue)
+    )
     app.include_router(
         create_router(
             resolved_settings,
-            VideoValidator(resolved_settings),
+            validator or VideoValidator(resolved_settings),
             resolved_tracker,
             selector or WeightedTargetPlayerSelector(resolved_settings),
             FeatureExtractor(),
@@ -56,8 +148,14 @@ def create_app(
             ShotDetector(),
             RuleBasedPhysicalActivityScorer(resolved_settings),
             get_logger("football_analysis.api"),
+            resolved_lifecycle,
+            downloader or VideoDownloader(resolved_settings),
+            resolved_path_resolver,
+            resolved_callback_service,
+            resolved_analysis_queue,
         )
     )
+
     return app
 
 

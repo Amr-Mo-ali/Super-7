@@ -1,8 +1,9 @@
 """Immutable runtime configuration for the MVP."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import environ
 
+from config.debug import DebugSettings
 from config.football_profiles import threshold
 
 
@@ -11,7 +12,12 @@ class Settings:
     """Validated operational limits and version labels."""
 
     max_upload_bytes: int = 100 * 1024 * 1024
+    download_timeout_seconds: float = 30.0
+    callback_timeout_seconds: float = 10.0
+    max_queued_analyses: int = 10
+    video_storage_root: str = "/videos"
     max_duration_seconds: float = 15 * 60
+    request_deadline_seconds: float = 15 * 60
     min_width: int = 64
     min_height: int = 64
     min_fps: float = 1.0
@@ -182,6 +188,7 @@ class Settings:
     physical_score_min_accepted_interval_ratio: float = 0.60
     physical_score_raw_image_confidence_cap: float = 0.75
     debug_output_dir: str = "debug"
+    debug: DebugSettings = field(default_factory=DebugSettings)
     pass_possession_proximity_ratio: float = 1.2
     pass_min_possession_frames: int = 3
     pass_max_gap_frames: int = 2
@@ -193,12 +200,27 @@ class Settings:
     pass_trajectory_quality_length_pixels: float = 150.0
     pass_receiver_proximity_ratio: float = 1.5
 
+    def __post_init__(self) -> None:
+        if self.download_timeout_seconds <= 0:
+            raise ValueError("download_timeout_seconds must be positive.")
+        if self.callback_timeout_seconds <= 0:
+            raise ValueError("callback_timeout_seconds must be positive.")
+        if self.max_queued_analyses <= 0:
+            raise ValueError("max_queued_analyses must be positive.")
+        if self.request_deadline_seconds <= 0:
+            raise ValueError("request_deadline_seconds must be positive.")
+
     @classmethod
     def from_environment(cls) -> "Settings":
         """Load optional operational limits from environment variables."""
         return cls(
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
+            download_timeout_seconds=float(environ.get("DOWNLOAD_TIMEOUT_SECONDS", 30.0)),
+            callback_timeout_seconds=float(environ.get("CALLBACK_TIMEOUT_SECONDS", 10.0)),
+            max_queued_analyses=int(environ.get("MAX_QUEUED_ANALYSES", 10)),
+            video_storage_root=environ.get("VIDEO_STORAGE_ROOT", "/videos"),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
+            request_deadline_seconds=float(environ.get("REQUEST_DEADLINE_SECONDS", 15 * 60)),
             model_path=environ.get("MODEL_PATH", "yolo11n.pt"),
             model_device=environ.get("MODEL_DEVICE", "cpu"),
             model_confidence=float(environ.get("MODEL_CONFIDENCE", 0.25)),
@@ -234,4 +256,5 @@ class Settings:
             segment_ball_min_analysis_quality=float(
                 environ.get("SEGMENT_BALL_MIN_ANALYSIS_QUALITY", 0.45)
             ),
+            debug=DebugSettings.from_environment(),
         )

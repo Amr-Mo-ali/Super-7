@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MODEL_PATH: ci-model-must-not-be-loaded.pt
+      BALL_MODEL_PATH: ci-ball-model-must-not-be-loaded.pt
+      ULTRALYTICS_OFFLINE: "True"
+      YOLO_CONFIG_DIR: ${{ runner.temp }}/ultralytics
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-groups
+      - name: Lint
+        run: uv run ruff check .
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy src tests
+      - name: Test without production model inference
+        run: uv run pytest -q
+      - name: Build container image
+        run: docker build --tag football-analysis:ci .

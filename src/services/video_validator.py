@@ -1,20 +1,14 @@
-"""Upload persistence and OpenCV-backed video validation."""
+"""OpenCV-backed validation for downloaded video files."""
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Final
 
 import cv2
-from fastapi import UploadFile
 
 from core.config import Settings
-from core.exceptions import InvalidVideoError, UploadTooLargeError
+from core.exceptions import InvalidVideoError
 
-_CHUNK_SIZE: Final = 1024 * 1024
-_SUPPORTED_SUFFIXES: Final = frozenset({".avi", ".mkv", ".mov", ".mp4"})
+_SUPPORTED_SUFFIXES = frozenset({".avi", ".mkv", ".mov", ".mp4"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,29 +24,6 @@ class VideoMetadata:
     frame_count: int
 
 
-@asynccontextmanager
-async def temporary_upload(upload: UploadFile, settings: Settings) -> AsyncIterator[Path]:
-    """Persist an upload with a size limit and always remove its temporary file."""
-    suffix = Path(upload.filename or "").suffix.lower()
-    if suffix not in _SUPPORTED_SUFFIXES:
-        raise InvalidVideoError("Unsupported video format. Use MP4, MOV, AVI, or MKV.")
-    temporary_path: Path | None = None
-    try:
-        with NamedTemporaryFile(delete=False, suffix=suffix) as temporary_file:
-            temporary_path = Path(temporary_file.name)
-            size = 0
-            while chunk := await upload.read(_CHUNK_SIZE):
-                size += len(chunk)
-                if size > settings.max_upload_bytes:
-                    raise UploadTooLargeError("Uploaded video exceeds the configured size limit.")
-                temporary_file.write(chunk)
-        yield temporary_path
-    finally:
-        await upload.close()
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-
-
 class VideoValidator:
     """Validates video format, decodability, timing, and image properties."""
 
@@ -65,7 +36,7 @@ class VideoValidator:
         if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
             raise InvalidVideoError("Unsupported video format.")
         if not path.is_file() or path.stat().st_size == 0:
-            raise InvalidVideoError("Uploaded video is empty or unavailable.")
+            raise InvalidVideoError("Downloaded video is empty or unavailable.")
         capture = cv2.VideoCapture(str(path))
         try:
             if not capture.isOpened():

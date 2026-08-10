@@ -8,4 +8,6 @@ __pycache__
 *.py[cod]
 dataset
 tests
+models
+yolo11n.pt
 .env
