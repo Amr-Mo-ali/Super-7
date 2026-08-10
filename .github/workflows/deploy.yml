@@ -1,7 +1,11 @@
 name: Deploy
 
 on:
-  push:
+  # Run only after the existing CI workflow completes for main.
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
     branches:
       - main
 
@@ -13,44 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ci:
-    name: CI
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      MODEL_PATH: ci-model-must-not-be-loaded.pt
-      BALL_MODEL_PATH: ci-ball-model-must-not-be-loaded.pt
-      ULTRALYTICS_OFFLINE: "True"
-      YOLO_CONFIG_DIR: ${{ runner.temp }}/ultralytics
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python and uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.12"
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Install locked dependencies
-        run: uv sync --frozen --all-groups
-
-      - name: Check formatting
-        run: uv run ruff format --check .
-
-      - name: Lint
-        run: uv run ruff check .
-
-      - name: Type check
-        run: uv run mypy src tests
-
-      - name: Test
-        run: uv run pytest -q
-
   deploy:
     name: Deploy to production
-    needs: ci
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
@@ -71,8 +40,17 @@ jobs:
             max_attempts=20
             retry_delay_seconds=3
 
+            deployment_failed() {
+              echo "Deployment failed. Current Compose status and recent logs follow."
+              docker compose ps || true
+              docker compose logs --tail=100 || true
+            }
+
+            trap deployment_failed ERR
+
             if [ ! -d "$project_dir" ]; then
               echo "Deployment failed: $project_dir does not exist."
+              deployment_failed
               exit 1
             fi
 
@@ -80,16 +58,20 @@ jobs:
 
             if [ ! -d .git ]; then
               echo "Deployment failed: $project_dir is not a Git working tree."
+              deployment_failed
               exit 1
             fi
 
             if [ -n "$(git status --porcelain)" ]; then
               echo "Deployment failed: production Git working tree has uncommitted changes."
+              git status --short
+              deployment_failed
               exit 1
             fi
 
             if [ "$(git branch --show-current)" != "main" ]; then
               echo "Deployment failed: production Git branch is not main."
+              deployment_failed
               exit 1
             fi
 
@@ -112,5 +94,5 @@ jobs:
             done
 
             echo "Deployment failed: $health_url did not return HTTP 2xx within $((max_attempts * retry_delay_seconds)) seconds."
-            docker compose ps
+            deployment_failed
             exit 1
