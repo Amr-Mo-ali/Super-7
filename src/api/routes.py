@@ -64,12 +64,13 @@ from services.movement.schemas import MovementResult
 from services.pass_detection import PASS_DETECTION_VERSION, PassDetectionResult, PassDetector
 from services.player_rating.engine import PlayerRatingEngine
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
+from services.scoring.models import PhysicalScoreResult
 from services.scoring.protocols import PhysicalActivityScorerProtocol
-from services.scoring.technical import TechnicalScorer
+from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
 from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import build_segments, rejection_diagnostics, select_segment
-from services.selection import Selection, TargetPlayerSelector
+from services.selection import PlayerTrack, Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
@@ -506,6 +507,78 @@ def _noncompleted(
     )
 
 
+def _log_rating_evidence(
+    logger: logging.Logger,
+    analysis_id: str,
+    settings: Settings,
+    track: PlayerTrack,
+    quality: float,
+    interaction: InteractionAnalysisResult | None,
+    movement: MovementResult | None,
+    physical: PhysicalScoreResult | None,
+    technical_events: TechnicalEventAnalysisResult | None,
+    technical_score: TechnicalScoreResult,
+) -> None:
+    """Emit a best-effort, non-sensitive snapshot of rating inputs and outputs."""
+    try:
+        movement_quality = (
+            min(
+                settings.movement_raw_image_space_quality_cap,
+                len(movement.trajectory) / max(track.visible_frames, 1),
+            )
+            if movement
+            else None
+        )
+        movement_duration_seconds = (
+            movement.trajectory[-1].timestamp_seconds - movement.trajectory[0].timestamp_seconds
+            if movement is not None and len(movement.trajectory) >= 2
+            else None
+        )
+        diagnostics = interaction.diagnostics if interaction is not None else None
+        logger.info(
+            "rating_evidence analysis_id=%s player_track_quality=%s ball_analysis_quality=%s "
+            "interaction_analysis_quality=%s interaction_evidence_coverage_ratio=%s "
+            "possible_ball_interaction_count=%s accepted_interaction_segments=%s "
+            "track_visibility_ratio=%s track_visible_frames=%s track_average_confidence=%s "
+            "movement_available=%s movement_quality=%s movement_observations=%s "
+            "movement_duration_seconds=%s rejected_position_jumps=%s physical_value=%s "
+            "physical_confidence=%s physical_status=%s physical_reason=%s "
+            "technical_events_available=%s controlled_movement_candidate_count=%s "
+            "dribble_candidate_count=%s technical_score_value=%s "
+            "technical_score_confidence=%s technical_score_status=%s technical_score_reason=%s",
+            analysis_id,
+            min(1.0, track.visibility_ratio * track.average_confidence),
+            quality,
+            diagnostics.interaction_analysis_quality if diagnostics is not None else None,
+            interaction.interaction_evidence_coverage_ratio if interaction is not None else None,
+            interaction.possible_ball_interaction_count if interaction is not None else None,
+            diagnostics.accepted_interaction_segments if diagnostics is not None else None,
+            track.visibility_ratio,
+            track.visible_frames,
+            track.average_confidence,
+            movement is not None,
+            movement_quality,
+            len(movement.trajectory) if movement is not None else None,
+            movement_duration_seconds,
+            movement.rejected_position_jumps if movement is not None else None,
+            physical.value if physical is not None else None,
+            physical.confidence if physical is not None else None,
+            physical.status if physical is not None else None,
+            physical.reason if physical is not None else None,
+            technical_events is not None,
+            len(technical_events.controlled_movement_candidates)
+            if technical_events is not None
+            else None,
+            len(technical_events.dribble_candidates) if technical_events is not None else None,
+            technical_score.value,
+            technical_score.confidence,
+            technical_score.status,
+            technical_score.reason,
+        )
+    except Exception:
+        pass
+
+
 def _completed(
     settings: Settings,
     model_version: str,
@@ -837,6 +910,18 @@ def _completed(
         cancellation.check("technical scoring")
     technical_score = TechnicalScorer().score(technical_events)
     technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
+    _log_rating_evidence(
+        logger,
+        analysis_id,
+        settings,
+        track,
+        quality,
+        interaction,
+        movement,
+        physical,
+        technical_events,
+        technical_score,
+    )
     player_rating_summary = PlayerRatingEngine(settings=settings).summarize(
         technical=technical_score,
         physical=physical,
