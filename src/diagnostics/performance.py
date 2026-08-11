@@ -189,10 +189,12 @@ def _snapshot(device: str) -> ResourceSnapshot:
 
 
 def _rss_bytes() -> int | None:
+    if sys.platform == "win32":
+        return None
     try:
         import resource
 
-        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # type: ignore[attr-defined]
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return int(value * 1024 if sys.platform != "darwin" else value)
     except ImportError:
         return None
