@@ -15,7 +15,7 @@ from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
 from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
-from core.logging import get_logger
+from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.ball_proximity import NormalizedBallProximityAnalyzer
@@ -47,6 +47,7 @@ def create_app(
     analysis_queue: AnalysisQueue | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
+    configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
     def tracker_factory() -> ByteTrackTracker:
