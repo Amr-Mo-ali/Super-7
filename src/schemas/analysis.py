@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
+from services.player_rating.models import PlayerRatingSummary
+
 
 class AnalyzeRequest(BaseModel):
     """Backend-owned identifiers and delivery details for one analysis request."""
@@ -341,6 +343,7 @@ class CompletedResponse(BaseModel):
     pass_detection: PassDetectionResponse = Field(default_factory=PassDetectionResponse)
     shot_detection: ShotDetectionResponse = Field(default_factory=ShotDetectionResponse)
     scores: ScoresResponse
+    player_rating_summary: PlayerRatingSummary | None = None
     diagnostics: "Diagnostics"
     warnings: list[str]
     analysis_version: str

@@ -62,6 +62,7 @@ from services.interactions.models import (
 from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.pass_detection import PASS_DETECTION_VERSION, PassDetectionResult, PassDetector
+from services.player_rating.engine import PlayerRatingEngine
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
 from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.scoring.technical import TechnicalScorer
@@ -835,6 +836,12 @@ def _completed(
         cancellation.check("technical scoring")
     technical_score = TechnicalScorer().score(technical_events)
     technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
+    player_rating_summary = PlayerRatingEngine(settings=settings).summarize(
+        technical=technical_score,
+        physical=physical,
+        interactions=interaction,
+        events=technical_events,
+    )
     total_time_ms = round((perf_counter() - started) * 1000)
     stage_timing = stage_timing.model_copy(
         update={
@@ -883,6 +890,7 @@ def _completed(
         pass_detection=_pass_detection_response(pass_detection),
         shot_detection=_shot_detection_response(shot_detection),
         scores=extractor.scores(physical, technical_score),
+        player_rating_summary=player_rating_summary,
         diagnostics=Diagnostics(
             frames_processed=(
                 typed_run.diagnostics.frames_processed

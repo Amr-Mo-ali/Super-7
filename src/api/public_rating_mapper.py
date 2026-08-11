@@ -8,7 +8,6 @@ from schemas.analysis import (
     NonCompletedResponse,
     PhysicalScoreResponse,
     TechnicalScoreResponse,
-    UnsupportedMetric,
 )
 from schemas.public_rating_v2 import (
     PublicEvent,
@@ -24,6 +23,8 @@ from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
 )
+from services.player_rating.models import PlayerRatingSummary
+from services.player_rating.models import PlayerRatingValue as InternalRatingValue
 
 VERSION = "public_rating_v2"
 
@@ -43,19 +44,13 @@ def public_rating_v2(
             warnings=warnings,
             retryable=status == "failed",
         )
-    technical = result.scores.technical
-    physical = result.scores.physical
+    rating_summary = result.player_rating_summary
+    if rating_summary is None:
+        raise ValueError("Completed response is missing its PlayerRatingEngine summary.")
     ratings: dict[str, PublicRatingValue | PublicGameIntelligence] = {
-        "technical_skill": _score(technical, "technical_skill"),
-        "physical_activity": _score(physical, "physical_activity"),
-        "ball_involvement": PublicRatingValue(
-            value=None,
-            confidence=0,
-            status="insufficient_evidence",
-            reason="player_rating_summary_not_attached",
-            limitations=["ball_proximity_does_not_prove_possession"],
-            version="player_rating_v1",
-        ),
+        "technical_skill": _engine_rating(rating_summary, "technical_skill"),
+        "physical_activity": _engine_rating(rating_summary, "physical_activity"),
+        "ball_involvement": _engine_rating(rating_summary, "ball_involvement"),
     }
     arbitration = EventArbitrator().arbitrate(_event_candidates(result))
     game_intelligence = GameIntelligenceEngine().evaluate(_game_evidence(result, arbitration))
@@ -89,33 +84,10 @@ def public_rating_v2(
         "professionalism",
         "growth_potential",
         "market_readiness",
+        "scalability",
     ):
-        ratings[name] = PublicRatingValue(
-            value=None,
-            confidence=0,
-            status="unsupported",
-            reason="unsupported_by_current_pipeline",
-            limitations=[],
-            version="player_rating_v1",
-        )
-    available: list[PublicRatingValue] = [
-        item
-        for item in ratings.values()
-        if isinstance(item, PublicRatingValue) and item.value is not None
-    ]
-    overall = PublicRatingValue(
-        value=sum(item.value or 0 for item in available) / len(available)
-        if len(available) >= 2
-        else None,
-        confidence=sum(item.confidence for item in available) / len(available)
-        if len(available) >= 2
-        else 0,
-        status="available" if len(available) >= 2 else "insufficient_evidence",
-        level=None,
-        reason=None if len(available) >= 2 else "insufficient_supported_categories",
-        limitations=["provisional_product_weights", "unavailable_categories_are_not_zero"],
-        version="player_rating_v1",
-    )
+        ratings[name] = _engine_rating(rating_summary, name)
+    overall = _public_rating(rating_summary.overall)
     events = {
         "timeline": [_arbitrated_event(item, result.video.fps) for item in arbitration.events]
     }
@@ -125,7 +97,7 @@ def public_rating_v2(
             "id": result.analysis_id,
             "status": result.status,
             "response_version": VERSION,
-            "rating_version": "player_rating_v1",
+            "rating_version": rating_summary.version,
         },
         metadata=result.metadata,
         video={
@@ -184,7 +156,7 @@ def public_rating_v2(
         warnings=result.warnings,
         versions={
             "response": VERSION,
-            "rating": "player_rating_v1",
+            "rating": rating_summary.version,
             "analysis": result.analysis_version,
             "technical_events": result.algorithm_versions.get("controlled_movement", "unknown"),
             "event_arbitration": arbitration.version,
@@ -192,28 +164,21 @@ def public_rating_v2(
     )
 
 
-def _score(
-    score: TechnicalScoreResponse | PhysicalScoreResponse | UnsupportedMetric,
-    name: str,
-) -> PublicRatingValue:
-    del name
-    if isinstance(score, UnsupportedMetric):
-        return PublicRatingValue(
-            value=None,
-            confidence=0,
-            status="insufficient_evidence",
-            reason=score.reason,
-            limitations=[],
-            version="player_rating_v1",
-        )
+def _engine_rating(summary: PlayerRatingSummary, category: str) -> PublicRatingValue:
+    rating = next(item for item in summary.categories if item.category == category)
+    return _public_rating(rating)
+
+
+def _public_rating(rating: InternalRatingValue) -> PublicRatingValue:
     return PublicRatingValue(
-        value=score.value,
-        confidence=score.confidence or 0.0,
-        status=cast(PublicRatingStatus, score.status),
-        level=None,
-        explanation=None,
-        limitations=[],
-        version=score.version,
+        value=rating.value,
+        confidence=rating.confidence,
+        status=cast(PublicRatingStatus, rating.status),
+        level=rating.level,
+        explanation=rating.explanation,
+        reason=str(rating.evidence["reason"]) if rating.value is None else None,
+        limitations=list(rating.limitations),
+        version=rating.version,
     )
 
 
