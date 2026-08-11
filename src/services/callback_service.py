@@ -22,6 +22,7 @@ class CallbackPayload(BaseModel):
     status: str
     summary: dict[str, Any]
     ratings: dict[str, Any]
+    overall: dict[str, Any] | None = None
     events: dict[str, Any]
     error: dict[str, str] | None = None
 

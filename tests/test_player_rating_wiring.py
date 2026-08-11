@@ -164,7 +164,8 @@ def test_public_overall_stays_unavailable_when_engine_has_one_supported_category
     assert response.overall.reason == "insufficient_supported_categories"
 
 
-def test_callback_payload_contains_engine_backed_ratings() -> None:
+def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
+    summary = _summary()
     payload = _callback_payload(
         AnalyzeRequest.model_validate(
             {
@@ -174,7 +175,30 @@ def test_callback_payload_contains_engine_backed_ratings() -> None:
                 "callbackUrl": "https://example.com/callback",
             }
         ),
-        _completed(_summary()),
+        _completed(summary),
     )
 
     assert payload.ratings["ball_involvement"]["value"] == 60.0
+    assert payload.overall is not None
+    assert payload.overall["value"] == pytest.approx(summary.overall.value)
+    assert payload.overall["confidence"] == pytest.approx(summary.overall.confidence)
+    assert payload.overall["status"] == "available"
+
+
+def test_callback_payload_preserves_unavailable_engine_overall() -> None:
+    summary = _summary(_technical(), _physical(None), _interactions(coverage=0.0))
+    payload = _callback_payload(
+        AnalyzeRequest.model_validate(
+            {
+                "videoId": "video-1",
+                "playerId": "player-1",
+                "videoUrl": "video.mp4",
+                "callbackUrl": "https://example.com/callback",
+            }
+        ),
+        _completed(summary),
+    )
+
+    assert payload.overall is not None
+    assert payload.overall["value"] is None
+    assert payload.overall["status"] == "insufficient_evidence"

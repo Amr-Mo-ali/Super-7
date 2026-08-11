@@ -167,6 +167,7 @@ def _callback_payload(
         status=result.status,
         summary=serialized.get("summary", {}),
         ratings=serialized.get("ratings", {}),
+        overall=serialized.get("overall"),
         events=serialized.get("events", {}),
     )
 
