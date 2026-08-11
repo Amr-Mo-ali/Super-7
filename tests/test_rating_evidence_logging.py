@@ -3,6 +3,7 @@
 import logging
 
 from _pytest.logging import LogCaptureFixture
+from pytest import MonkeyPatch
 
 from api.routes import _log_rating_evidence
 from core.config import Settings
@@ -90,3 +91,35 @@ def test_rating_evidence_log_handles_missing_optional_evidence(caplog: LogCaptur
     assert "movement_available=False" in message
     assert "physical_value=None" in message
     assert "technical_events_available=False" in message
+
+
+def test_rating_evidence_log_reports_internal_logging_failures(
+    caplog: LogCaptureFixture, monkeypatch: MonkeyPatch
+) -> None:
+    logger = logging.getLogger("rating-evidence-failure-test")
+    caplog.set_level(logging.ERROR)
+
+    def fail_info(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("simulated logging failure")
+
+    monkeypatch.setattr(logger, "info", fail_info)
+
+    _log_rating_evidence(
+        logger,
+        "analysis-3",
+        Settings(),
+        _track(),
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        TechnicalScoreResult(None, None, "unavailable", "missing", {}, None, None, 0, 0),
+    )
+
+    assert any(
+        record.getMessage() == "rating_evidence_logging_failed analysis_id=analysis-3"
+        and record.exc_info is not None
+        for record in caplog.records
+    )

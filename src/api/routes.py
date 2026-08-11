@@ -576,7 +576,10 @@ def _log_rating_evidence(
             technical_score.reason,
         )
     except Exception:
-        pass
+        logger.exception(
+            "rating_evidence_logging_failed analysis_id=%s",
+            analysis_id,
+        )
 
 
 def _completed(
