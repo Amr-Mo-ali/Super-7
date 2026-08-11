@@ -15,7 +15,7 @@ jobs:
       MODEL_PATH: ci-model-must-not-be-loaded.pt
       BALL_MODEL_PATH: ci-ball-model-must-not-be-loaded.pt
       ULTRALYTICS_OFFLINE: "True"
-      YOLO_CONFIG_DIR: ${{ runner.temp }}/ultralytics
+      YOLO_CONFIG_DIR: /tmp/ultralytics
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
