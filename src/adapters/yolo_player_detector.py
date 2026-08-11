@@ -20,7 +20,7 @@ class YOLOPlayerDetector(PlayerDetectorProtocol):
     ) -> None:
         self._settings = settings
         self._logger = logger
-        self._model = model or self._load_model()
+        self._model = model
 
     def _load_model(self) -> Any:
         started = perf_counter()
@@ -45,7 +45,11 @@ class YOLOPlayerDetector(PlayerDetectorProtocol):
         self._validate_frame(frame)
         started = perf_counter()
         try:
-            result = self._model.predict(
+            model = self._model
+            if model is None:
+                model = self._load_model()
+                self._model = model
+            result = model.predict(
                 frame,
                 classes=[0],
                 conf=self._settings.model_confidence,

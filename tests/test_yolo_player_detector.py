@@ -47,3 +47,18 @@ def test_confidence_is_taken_from_model_output() -> None:
         Settings(model_confidence=0.8), logging.getLogger("test"), _Model()
     )
     assert detector.detect(np.zeros((8, 8, 3), dtype=np.uint8))[0].confidence == 0.9
+
+
+def test_model_loading_is_deferred_until_first_inference(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[None] = []
+
+    def load_model(_: YOLOPlayerDetector) -> _Model:
+        calls.append(None)
+        return _Model()
+
+    monkeypatch.setattr(YOLOPlayerDetector, "_load_model", load_model)
+    detector = YOLOPlayerDetector(Settings(), logging.getLogger("test"))
+
+    assert calls == []
+    detector.detect(np.zeros((8, 8, 3), dtype=np.uint8))
+    assert calls == [None]

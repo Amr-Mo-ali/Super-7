@@ -61,6 +61,23 @@ def test_ball_adapter_maps_valid_detection_and_filters_invalid_box() -> None:
     assert len(output) == 1 and output[0].center_point == (3.0, 4.0)
 
 
+def test_ball_model_loading_is_deferred_until_first_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[None] = []
+
+    def load_model(_: YOLOBallDetector) -> _Model:
+        calls.append(None)
+        return _Model([[1, 2, 5, 6]], [0.8])
+
+    monkeypatch.setattr(YOLOBallDetector, "_load_model", load_model)
+    detector = YOLOBallDetector(Settings(), logging.getLogger("test"))
+
+    assert calls == []
+    detector.detect(np.zeros((8, 8, 3), dtype=np.uint8), 0, 0.0)
+    assert calls == [None]
+
+
 def test_ball_adapter_inference_error_is_explicit() -> None:
     class Broken:
         def predict(self, *_: object, **__: object) -> list[object]:

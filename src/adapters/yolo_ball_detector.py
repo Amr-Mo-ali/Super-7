@@ -21,7 +21,7 @@ class YOLOBallDetector(BallDetector):
     ) -> None:
         self._settings = settings
         self._logger = logger
-        self._model = model or self._load_model()
+        self._model = model
 
     def _load_model(self) -> Any:
         try:
@@ -51,7 +51,11 @@ class YOLOBallDetector(BallDetector):
             raise InvalidFrameError("Ball detector frame must be a non-empty three-channel image.")
         started = perf_counter()
         try:
-            result = self._model.predict(
+            model = self._model
+            if model is None:
+                model = self._load_model()
+                self._model = model
+            result = model.predict(
                 frame,
                 classes=[_SPORTS_BALL_CLASS],
                 conf=self._settings.ball_confidence,
