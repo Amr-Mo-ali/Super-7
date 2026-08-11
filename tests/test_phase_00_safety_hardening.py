@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from api.request_lifecycle import RequestLifecycle
 from api.routes import _public_debug_artifact_references
 from concurrency.admission import AdmissionController
@@ -60,9 +62,16 @@ def test_retention_policy_keeps_only_configured_request_count() -> None:
         assert (Path(directory) / "request-two").exists()
 
 
-def test_public_debug_references_never_serialize_local_paths() -> None:
-    public = _public_debug_artifact_references(
-        {"debug_video": r"E:\super7\debug\request\debug_video.mp4"}
-    )
-    assert public == {"debug_video": "debug_video.mp4"}
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (r"E:\super7\debug\request\debug_video.mp4", "debug_video.mp4"),
+        ("/app/debug/request/debug_video.mp4", "debug_video.mp4"),
+        ("debug_video.mp4", "debug_video.mp4"),
+    ],
+)
+def test_public_debug_references_never_serialize_local_paths(path: str, expected: str) -> None:
+    public = _public_debug_artifact_references({"debug_video": path})
+
+    assert public == {"debug_video": expected}
     assert "E:" not in public["debug_video"]

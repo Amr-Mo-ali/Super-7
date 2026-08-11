@@ -1239,7 +1239,7 @@ def _completed(
 
 def _public_debug_artifact_references(artifacts: dict[str, str]) -> dict[str, str]:
     """Expose opaque artifact names while retaining request-local paths internally."""
-    return {name: Path(path).name for name, path in artifacts.items()}
+    return {name: path.replace("\\", "/").rsplit("/", 1)[-1] for name, path in artifacts.items()}
 
 
 def _interaction_response(
