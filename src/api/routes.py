@@ -57,6 +57,7 @@ from services.callback_service import (
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
+from services.detailed_rating.engine import DetailedRatingEngine
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
 from services.interactions.models import (
@@ -166,6 +167,15 @@ def _callback_payload(
     """Build the backend callback body from an already-finalized analysis result."""
     public_result = public_rating_v2(result)
     serialized = public_result.model_dump(mode="json")
+    detailed = (
+        DetailedRatingEngine().evaluate(
+            result.scores.physical,
+            result.technical_event_analysis,
+            result.diagnostics.technical_event_analysis_quality,
+        )
+        if isinstance(result, CompletedResponse)
+        else DetailedRatings()
+    )
     return CallbackPayload(
         request_id=result.analysis_id,
         video_id=request.video_id,
@@ -174,7 +184,7 @@ def _callback_payload(
         summary=serialized.get("summary", {}),
         ratings=serialized.get("ratings", {}),
         overall=serialized.get("overall"),
-        detailed=DetailedRatings(),
+        detailed=detailed,
         events=serialized.get("events", {}),
     )
 

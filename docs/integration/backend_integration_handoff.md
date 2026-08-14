@@ -85,6 +85,18 @@ Successful data is Public Rating V2 `summary`, `ratings`, `overall`, and `events
 
 `null` means no validated detailed score is currently available; `0` will mean a genuine calculated zero if numeric scoring is introduced later. `detailed` is success-only: failed callbacks do not contain it. Non-completed analysis uses its result status and `{}` for its maps. Processing failure uses `status:"failed"`, empty maps, `overall:null`, and `error:{"code":"<exception class>","message":"Analysis could not be completed."}`. Evidence: `src/services/callback_service.py:CallbackPayload`, `src/api/routes.py:_callback_payload`, `create_analysis_job_processor`.
 
+Current detailed-axis support is deliberately narrow:
+
+| Axis | Status | Evidence / formula / gate | Limitation |
+|---|---|---|---|
+| `speed_and_fitness` | supported as visible movement activity only | `100 * movement_intensity`, using the existing physical-score evidence gate (quality, visibility, duration, observations, accepted intervals) | Image-space movement only; not a physiological fitness or stamina score. |
+| `ball_control_and_individual_skill` | supported | Existing controlled-movement/dribble component formula, minus the existing ball-loss penalty; requires technical-event quality and at least one controlled or dribble candidate | Candidate-event proxy; not a complete individual-skill assessment. |
+| `passing_and_playmaking` | partially_supported | Pass candidates exist | No completion, chance creation, assist, or playmaking outcome evidence; remains `null`. |
+| `shooting_and_finishing` | partially_supported | Shot candidates exist | No target, goal, or finishing outcome evidence; remains `null`. |
+| `defending_and_duels` | unsupported | No defensive-event evidence | Remains `null`. |
+| `tactical_intelligence_and_teamwork` | partially_supported | Single-player game-intelligence proxies exist | Team/opponent/phase context is absent; remains `null`. |
+| `positioning_and_off_ball_movement` | partially_supported | Image-space movement exists | Cannot separate meaningful off-ball positioning from generic motion; remains `null`. |
+
 # 10. Callback Delivery vs Analysis Result
 
 Pipeline success plus exhausted callback delivery returns internal `COMPLETED` and logs `analysis_callback_failed`. Pipeline/file/result failure attempts a sanitized failed callback and returns `FAILED`. The backend should retain `analysisId` as pending and reconcile/resubmit when callback is absent; Super-7 has no delivery-status/replay endpoint. Evidence: `src/api/routes.py:create_analysis_job_processor`.
