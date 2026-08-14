@@ -45,7 +45,11 @@ class DetailedRatingEngine:
         events: TechnicalEventAnalysisResponse, technical_event_quality: float | None
     ) -> float | None:
         """Reuse the existing controlled-movement/dribble evidence calculation exactly."""
-        if not _finite(technical_event_quality) or technical_event_quality <= 0:
+        if (
+            technical_event_quality is None
+            or not isfinite(technical_event_quality)
+            or technical_event_quality <= 0
+        ):
             return None
         controlled = [
             _controlled_component(

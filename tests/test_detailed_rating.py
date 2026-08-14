@@ -53,6 +53,7 @@ def _controlled() -> ControlledMovementCandidateResponse:
         proximity_frame_ratio=1,
         direction_similarity=0.8,
         confidence=0.8,
+        status="controlled_movement_candidate",
     )
 
 
@@ -72,6 +73,7 @@ def _dribble() -> DribbleCandidateResponse:
         path_straightness=0.9,
         confidence=0.8,
         confidence_version="dribble_candidate_confidence_v0.2",
+        status="dribble_candidate",
     )
 
 
@@ -126,6 +128,7 @@ def test_ball_loss_reduces_ball_control_without_using_unrelated_events() -> None
         post_evidence_frames=3,
         recovered_within_window=False,
         confidence=0.8,
+        status="ball_loss_candidate",
     )
     engine = DetailedRatingEngine()
     without_loss = engine.evaluate(_physical(), _events([_controlled()]), 0.8)
