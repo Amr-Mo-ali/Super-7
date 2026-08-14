@@ -4,9 +4,10 @@ import asyncio
 import json
 import logging
 
-from pydantic import HttpUrl, TypeAdapter
+import pytest
+from pydantic import HttpUrl, TypeAdapter, ValidationError
 
-from services.callback_service import CallbackPayload, CallbackService
+from services.callback_service import CallbackPayload, CallbackService, DetailedRatings
 
 
 def test_successful_callback_serializes_the_final_payload() -> None:
@@ -74,6 +75,29 @@ def test_callback_failure_is_handled_without_raising() -> None:
     assert asyncio.run(service.send_result(_url(), _payload())) is False
 
 
+def test_detailed_ratings_validate_nullable_bounded_future_values() -> None:
+    assert DetailedRatings(
+        speed_and_fitness=None,
+        ball_control_and_individual_skill=0,
+        passing_and_playmaking=72.5,
+        shooting_and_finishing=100,
+    ).model_dump(mode="json") == {
+        "speed_and_fitness": None,
+        "ball_control_and_individual_skill": 0.0,
+        "passing_and_playmaking": 72.5,
+        "shooting_and_finishing": 100.0,
+        "defending_and_duels": None,
+        "tactical_intelligence_and_teamwork": None,
+        "positioning_and_off_ball_movement": None,
+    }
+    with pytest.raises(ValidationError):
+        DetailedRatings(speed_and_fitness=-0.01)
+    with pytest.raises(ValidationError):
+        DetailedRatings(speed_and_fitness=100.01)
+    with pytest.raises(ValidationError):
+        DetailedRatings.model_validate({"speed_and_fitness": "not-a-number"})
+
+
 def _service(
     transport: object,
     sleep: object = asyncio.sleep,
@@ -99,5 +123,6 @@ def _payload() -> CallbackPayload:
         status="completed",
         summary={"passes": 2},
         ratings={"technical": {"value": 75}},
+        detailed=DetailedRatings(),
         events={"timeline": []},
     )

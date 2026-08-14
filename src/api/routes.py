@@ -48,7 +48,12 @@ from schemas.analysis import (
 )
 from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue
 from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
-from services.callback_service import CallbackPayload, CallbackService
+from services.callback_service import (
+    CallbackPayload,
+    CallbackService,
+    DetailedRatings,
+    FailedCallbackPayload,
+)
 from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
@@ -169,6 +174,7 @@ def _callback_payload(
         summary=serialized.get("summary", {}),
         ratings=serialized.get("ratings", {}),
         overall=serialized.get("overall"),
+        detailed=DetailedRatings(),
         events=serialized.get("events", {}),
     )
 
@@ -234,7 +240,7 @@ def create_analysis_job_processor(
         except AnalysisCancelled:
             return AnalysisJobState.CANCELLED
         except Exception as error:
-            failure_payload = CallbackPayload(
+            failure_payload = FailedCallbackPayload(
                 request_id=job.analysis_id,
                 video_id=job.video_id,
                 player_id=job.player_id,

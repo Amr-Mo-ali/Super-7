@@ -1,6 +1,7 @@
 """Phase 11.6 request-to-callback verification with an isolated backend simulation."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -14,7 +15,7 @@ from core.config import Settings
 from core.exceptions import VideoNotFoundError
 from main import create_app
 from services.analysis_queue import AnalysisJobState, AnalysisQueue
-from services.callback_service import CallbackPayload, CallbackService
+from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
 from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
@@ -61,10 +62,10 @@ class _NoPlayerTracker:
 
 class _BackendDatabase:
     def __init__(self) -> None:
-        self.callbacks: list[CallbackPayload] = []
-        self.video_analysis_updates: dict[str, CallbackPayload] = {}
+        self.callbacks: list[CallbackPayload | FailedCallbackPayload] = []
+        self.video_analysis_updates: dict[str, CallbackPayload | FailedCallbackPayload] = {}
 
-    def update_from_callback(self, payload: CallbackPayload) -> None:
+    def update_from_callback(self, payload: CallbackPayload | FailedCallbackPayload) -> None:
         self.callbacks.append(payload)
         self.video_analysis_updates[payload.video_id] = payload
 
@@ -236,7 +237,13 @@ def _callback_service(database: _BackendDatabase, delivered: bool) -> CallbackSe
         del url, timeout
         if not delivered:
             return 500
-        database.update_from_callback(CallbackPayload.model_validate_json(body))
+        payload = json.loads(body)
+        callback = (
+            FailedCallbackPayload.model_validate(payload)
+            if payload["status"] == "failed"
+            else CallbackPayload.model_validate(payload)
+        )
+        database.update_from_callback(callback)
         return 204
 
     def resolver(*_: object, **__: object) -> list[tuple[Any, ...]]:

@@ -179,10 +179,37 @@ def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
     )
 
     assert payload.ratings["ball_involvement"]["value"] == 60.0
+    assert payload.ratings["technical_skill"]["value"] == 80.0
+    assert payload.ratings["physical_activity"]["value"] == 70.0
+    assert "game_intelligence" in payload.ratings
     assert payload.overall is not None
     assert payload.overall["value"] == pytest.approx(summary.overall.value)
     assert payload.overall["confidence"] == pytest.approx(summary.overall.confidence)
     assert payload.overall["status"] == "available"
+    assert payload.detailed.model_dump(mode="json") == {
+        "speed_and_fitness": None,
+        "ball_control_and_individual_skill": None,
+        "passing_and_playmaking": None,
+        "shooting_and_finishing": None,
+        "defending_and_duels": None,
+        "tactical_intelligence_and_teamwork": None,
+        "positioning_and_off_ball_movement": None,
+    }
+    assert set(payload.model_dump(mode="json")) == {
+        "request_id",
+        "video_id",
+        "player_id",
+        "status",
+        "summary",
+        "ratings",
+        "overall",
+        "detailed",
+        "events",
+        "error",
+    }
+    assert "scores" not in payload.model_dump(mode="json")
+    assert "schema_version" not in payload.model_dump(mode="json")
+    assert "overall" not in payload.detailed.model_dump(mode="json")
 
 
 def test_callback_payload_preserves_unavailable_engine_overall() -> None:

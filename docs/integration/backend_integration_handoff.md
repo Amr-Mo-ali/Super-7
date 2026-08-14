@@ -68,10 +68,22 @@ Super-7 POSTs JSON to supplied `callbackUrl`, sending `Content-Type` and `Accept
 Actual callback fields are snake_case:
 
 ```json
-{"request_id":"<analysisId>","video_id":"video-123","player_id":"player-456","status":"completed","summary":{},"ratings":{},"events":{},"error":null}
+{"request_id":"<analysisId>","video_id":"video-123","player_id":"player-456","status":"completed","summary":{},"ratings":{},"overall":null,"detailed":{"speed_and_fitness":null,"ball_control_and_individual_skill":null,"passing_and_playmaking":null,"shooting_and_finishing":null,"defending_and_duels":null,"tactical_intelligence_and_teamwork":null,"positioning_and_off_ball_movement":null},"events":{},"error":null}
 ```
 
-Successful data is Public Rating V2 `summary`, `ratings`, and `events`. Non-completed analysis uses its result status and `{}` for those maps. Processing failure uses `status:"failed"`, empty maps, and `error:{"code":"<exception class>","message":"Analysis could not be completed."}`. Evidence: `src/services/callback_service.py:CallbackPayload`, `src/api/routes.py:_callback_payload`, `create_analysis_job_processor`.
+Successful data is Public Rating V2 `summary`, `ratings`, `overall`, and `events`; existing `ratings` and `overall` locations are unchanged. Successful/non-failed callbacks also include a `detailed` object with exactly these currently-null fields:
+
+| JSON field | Arabic label |
+|---|---|
+| `speed_and_fitness` | السرعة واللياقة البدنية |
+| `ball_control_and_individual_skill` | التحكم بالكرة والمهارة الفردية |
+| `passing_and_playmaking` | التمرير وصناعة اللعب |
+| `shooting_and_finishing` | التسديد وإنهاء الهجمات |
+| `defending_and_duels` | الدفاع والافتكاك والالتحام |
+| `tactical_intelligence_and_teamwork` | الذكاء التكتيكي وتمكين الفريق |
+| `positioning_and_off_ball_movement` | التمركز والتحرك بدون كرة |
+
+`null` means no validated detailed score is currently available; `0` will mean a genuine calculated zero if numeric scoring is introduced later. `detailed` is success-only: failed callbacks do not contain it. Non-completed analysis uses its result status and `{}` for its maps. Processing failure uses `status:"failed"`, empty maps, `overall:null`, and `error:{"code":"<exception class>","message":"Analysis could not be completed."}`. Evidence: `src/services/callback_service.py:CallbackPayload`, `src/api/routes.py:_callback_payload`, `create_analysis_job_processor`.
 
 # 10. Callback Delivery vs Analysis Result
 
@@ -159,7 +171,7 @@ Evidence: `src/core/config.py:Settings.from_environment`, `.env.example`.
 1. Backend writes `/data/videos/test-video.mp4`.
 2. It sends `{"videoId":"video-123","playerId":"player-456","videoUrl":"test-video.mp4","callbackUrl":"https://backend.example.com/api/video-analysis/webhook"}`.
 3. It records `{"analysisId":"<uuid>","videoId":"video-123","playerId":"player-456","status":"queued"}`.
-4. Worker transitions `QUEUED → RUNNING`, resolves `/videos/test-video.mp4`, then POSTs `{"request_id":"<uuid>","video_id":"video-123","player_id":"player-456","status":"completed","summary":{},"ratings":{},"events":{},"error":null}` (real maps depend on result).
+4. Worker transitions `QUEUED → RUNNING`, resolves `/videos/test-video.mp4`, then POSTs the completed callback described in section 9, including its seven-null-key `detailed` object (real existing maps depend on result).
 5. Backend persists against its IDs and correlation ID.
 
 # 23. Known Limitations

@@ -12,7 +12,7 @@ from core.config import Settings
 from main import create_app
 from schemas.analysis import AnalyzeAcceptedResponse, AnalyzeRequest
 from services.analysis_queue import AnalysisQueue
-from services.callback_service import CallbackPayload, CallbackService
+from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
 from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
@@ -59,9 +59,11 @@ class FailingTracker:
 
 class FakeCallbackService:
     def __init__(self) -> None:
-        self.payloads: list[CallbackPayload] = []
+        self.payloads: list[CallbackPayload | FailedCallbackPayload] = []
 
-    async def send_result(self, callback_url: HttpUrl, payload: CallbackPayload) -> bool:
+    async def send_result(
+        self, callback_url: HttpUrl, payload: CallbackPayload | FailedCallbackPayload
+    ) -> bool:
         del callback_url
         self.payloads.append(payload)
         return True
@@ -80,6 +82,10 @@ def test_analyze_accepts_a_valid_backend_request() -> None:
         "playerId": "player-456",
         "status": "queued",
     }
+    assert set(response.json()) == {"analysisId", "videoId", "playerId", "status"}
+    assert "detailed" not in response.json()
+    assert "scores" not in response.json()
+    assert "schema_version" not in response.json()
     assert callback.payloads == []
 
 
@@ -118,6 +124,8 @@ def test_lifespan_worker_delivers_one_final_callback() -> None:
             assert response.status_code == 202
             await _wait_for(lambda: len(callback.payloads) == 1)
         assert callback.payloads[0].status == "no_players_detected"
+        assert isinstance(callback.payloads[0], CallbackPayload)
+        assert callback.payloads[0].detailed.model_dump(mode="json") == _detailed_nulls()
 
     asyncio.run(scenario())
 
@@ -137,6 +145,8 @@ def test_lifespan_worker_delivers_failure_callback() -> None:
             "code": "RuntimeError",
             "message": "Analysis could not be completed.",
         }
+        assert isinstance(callback.payloads[0], FailedCallbackPayload)
+        assert "detailed" not in callback.payloads[0].model_dump(mode="json")
 
     asyncio.run(scenario())
 
@@ -205,4 +215,16 @@ def _payload() -> dict[str, str]:
         "playerId": "player-456",
         "videoUrl": "test-video.mp4",
         "callbackUrl": "http://72.62.28.146/api/video-analysis/webhook",
+    }
+
+
+def _detailed_nulls() -> dict[str, None]:
+    return {
+        "speed_and_fitness": None,
+        "ball_control_and_individual_skill": None,
+        "passing_and_playmaking": None,
+        "shooting_and_finishing": None,
+        "defending_and_duels": None,
+        "tactical_intelligence_and_teamwork": None,
+        "positioning_and_off_ball_movement": None,
     }

@@ -10,12 +10,41 @@ from typing import Any, Final
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
 
 _RETRY_DELAYS: Final = (1.0, 2.0, 4.0)
 
 
+class DetailedRatings(BaseModel):
+    """Reserved detailed ratings; null means no validated score is available."""
+
+    speed_and_fitness: float | None = Field(default=None, ge=0, le=100)
+    ball_control_and_individual_skill: float | None = Field(default=None, ge=0, le=100)
+    passing_and_playmaking: float | None = Field(default=None, ge=0, le=100)
+    shooting_and_finishing: float | None = Field(default=None, ge=0, le=100)
+    defending_and_duels: float | None = Field(default=None, ge=0, le=100)
+    tactical_intelligence_and_teamwork: float | None = Field(default=None, ge=0, le=100)
+    positioning_and_off_ball_movement: float | None = Field(default=None, ge=0, le=100)
+
+
 class CallbackPayload(BaseModel):
+    """Successful or non-failed analysis callback payload."""
+
+    request_id: str
+    video_id: str
+    player_id: str
+    status: str
+    summary: dict[str, Any]
+    ratings: dict[str, Any]
+    overall: dict[str, Any] | None = None
+    detailed: DetailedRatings
+    events: dict[str, Any]
+    error: dict[str, str] | None = None
+
+
+class FailedCallbackPayload(BaseModel):
+    """Failure callback payload, intentionally without detailed ratings."""
+
     request_id: str
     video_id: str
     player_id: str
@@ -52,7 +81,9 @@ class CallbackService:
         self._resolver = resolver
         self._sleep = sleep
 
-    async def send_result(self, callback_url: HttpUrl, payload: CallbackPayload) -> bool:
+    async def send_result(
+        self, callback_url: HttpUrl, payload: CallbackPayload | FailedCallbackPayload
+    ) -> bool:
         """Attempt delivery; callback failure is logged and never raised into analysis handling."""
         try:
             self._validate_url(callback_url)
