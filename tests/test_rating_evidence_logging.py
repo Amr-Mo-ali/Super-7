@@ -147,7 +147,10 @@ def test_rating_evidence_log_identifies_all_failed_gates_and_analysis_id(
         "possible_ball_interactions=3 interaction_segments=0 accepted_interaction_segments=1"
         in message
     )
-    assert "pass_candidates=3 accepted_passes=1 shot_candidates=2 accepted_shots=1" in message
+    assert (
+        "pass_detection_available=True pass_candidates=3 accepted_passes=1 "
+        "shot_detection_available=True shot_candidates=2 accepted_shots=1" in message
+    )
 
 
 def test_rating_evidence_logger_is_reachable_from_production_namespace() -> None:

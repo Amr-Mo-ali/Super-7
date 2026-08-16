@@ -69,8 +69,12 @@ from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.pass_detection import PASS_DETECTION_VERSION, PassDetectionResult, PassDetector
 from services.player_rating.engine import PlayerRatingEngine
+from services.player_rating.game_intelligence import (
+    GameIntelligenceEvidenceDiagnostics,
+    GameIntelligenceResult,
+)
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
-from services.scoring.models import PhysicalScoreResult
+from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
 from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
@@ -79,7 +83,10 @@ from services.segment_selection import build_segments, rejection_diagnostics, se
 from services.selection import Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
-from services.technical_events.models import TechnicalEventAnalysisResult
+from services.technical_events.models import (
+    TechnicalEventAnalysisResult,
+    TechnicalEvidenceDiagnostics,
+)
 from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
@@ -529,23 +536,24 @@ def _log_rating_evidence(
     physical: PhysicalScoreResult | None,
     technical_events: TechnicalEventAnalysisResult | None,
     technical_score: TechnicalScoreResult,
-    game_intelligence: object,
+    game_intelligence: GameIntelligenceResult,
     interaction: InteractionAnalysisResult | None,
-    pass_detection: PassDetectionResult,
-    shot_detection: ShotDetectionResult,
+    pass_detection: PassDetectionResult | None,
+    shot_detection: ShotDetectionResult | None,
 ) -> None:
     """Emit the completed analysis' gate inputs, decisions, and event evidence once."""
     try:
         technical_gate = technical_events.diagnostics.evidence_gate if technical_events else None
         physical_gate = physical.evidence_gate if physical else None
-        game_gate = getattr(game_intelligence, "evidence_gate", None)
+        game_gate = game_intelligence.evidence_gate
         logger.info(
             "rating_evidence analysis_id=%s technical_gate=%s technical_failed_reasons=%s "
             "physical_gate=%s physical_failed_reasons=%s game_gate=%s game_failed_reasons=%s "
             "technical_status=%s technical_reason=%s physical_status=%s physical_reason=%s "
             "game_status=%s game_reason=%s controlled_movements=%s dribbles=%s ball_losses=%s "
             "possible_ball_interactions=%s interaction_segments=%s accepted_interaction_segments=%s "
-            "pass_candidates=%s accepted_passes=%s shot_candidates=%s accepted_shots=%s",
+            "pass_detection_available=%s pass_candidates=%s accepted_passes=%s "
+            "shot_detection_available=%s shot_candidates=%s accepted_shots=%s",
             analysis_id,
             _gate_log_value(technical_gate),
             technical_gate.failed_reasons
@@ -567,10 +575,12 @@ def _log_rating_evidence(
             interaction.possible_ball_interaction_count if interaction else 0,
             len(interaction.segments) if interaction else 0,
             interaction.diagnostics.accepted_interaction_segments if interaction else 0,
-            pass_detection.raw_pass_candidates,
-            pass_detection.accepted_pass_candidates,
-            shot_detection.raw_shot_candidates,
-            shot_detection.accepted_shot_candidates,
+            pass_detection is not None,
+            pass_detection.raw_pass_candidates if pass_detection is not None else None,
+            pass_detection.accepted_pass_candidates if pass_detection is not None else None,
+            shot_detection is not None,
+            shot_detection.raw_shot_candidates if shot_detection is not None else None,
+            shot_detection.accepted_shot_candidates if shot_detection is not None else None,
         )
     except Exception:
         logger.exception(
@@ -579,7 +589,12 @@ def _log_rating_evidence(
         )
 
 
-def _gate_log_value(gate: object | None) -> dict[str, object] | None:
+def _gate_log_value(
+    gate: TechnicalEvidenceDiagnostics
+    | PhysicalEvidenceDiagnostics
+    | GameIntelligenceEvidenceDiagnostics
+    | None,
+) -> dict[str, object] | None:
     """Keep the structured log compact while preserving every gate input and threshold."""
     if gate is None:
         return None
