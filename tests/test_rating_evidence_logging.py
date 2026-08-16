@@ -11,6 +11,7 @@ from services.pass_detection import PassDetectionResult
 from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
+    GameIntelligenceResult,
 )
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
@@ -85,7 +86,7 @@ def _physical() -> PhysicalScoreResult:
     )
 
 
-def _game() -> object:
+def _game() -> GameIntelligenceResult:
     return GameIntelligenceEngine().evaluate(
         GameIntelligenceEvidence(
             3.0,
