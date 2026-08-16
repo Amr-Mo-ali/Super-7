@@ -5,7 +5,12 @@ import logging
 from _pytest.logging import LogCaptureFixture
 from pytest import MonkeyPatch
 
-from api.routes import _log_interaction_evidence, _log_rating_evidence, _log_target_track_evidence
+from api.routes import (
+    _log_interaction_evidence,
+    _log_rating_evidence,
+    _log_target_track_candidates,
+    _log_target_track_evidence,
+)
 from core.config import Settings
 from core.logging import configure_logging
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
@@ -19,6 +24,7 @@ from services.player_rating.game_intelligence import (
 from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
+from services.segment_selection import TrackSegment, rank_segments, select_segment
 from services.selection import PlayerTrack, Selection, WeightedTargetPlayerSelector
 from services.shot_detection import ShotDetectionResult
 from services.technical_events.models import (
@@ -255,6 +261,83 @@ def test_target_track_evidence_logs_raw_continuity_without_mutating_selection(
     assert selection.track.visible_frames == 3
     assert run.player_boxes is not None and sorted(run.player_boxes[7]) == [0, 1, 4]
     assert after == before
+
+
+def test_target_track_candidates_log_existing_segment_ranking_without_mutation(
+    caplog: LogCaptureFixture, monkeypatch: MonkeyPatch
+) -> None:
+    logger = logging.getLogger("football_analysis.target-candidates-test")
+    caplog.set_level(logging.WARNING, logger="football_analysis")
+    segments = (
+        _segment(track_id=7, segment_id=1, quality=0.93),
+        _segment(track_id=8, segment_id=1, quality=0.8),
+        _segment(track_id=9, segment_id=1, quality=0.99, reasons=("low_segment_quality",)),
+    )
+    ranked = rank_segments(segments)
+    selected = select_segment(segments)
+    assert selected is not None
+    tracks = tuple(PlayerTrack(segment.track_id, 3, 3, 3, 0, 0.9, 0, True) for segment in segments)
+    run = TrackingRun(
+        tracks,
+        TrackingDiagnostics(10, 9, 9, 3, 0),
+        {track.track_id: {0: _box(), 1: _box(), 2: _box()} for track in tracks},
+        {track.track_id: {0: 0.9, 1: 0.9, 2: 0.9} for track in tracks},
+    )
+    metadata = VideoMetadata("mp4", 1, 1.0, 10, 10, 10.0, 10)
+
+    _log_target_track_candidates(
+        logger, "analysis-5", selected, (selected,), metadata, run, Settings(), segments, ranked
+    )
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.msg.startswith("target_track_candidates")
+    )
+    assert "analysis_id=analysis-5 selected_track_id=7 ranking_mode=continuous_segment" in message
+    assert "eligible_segment_count=2 rejected_segment_count=1" in message
+    assert "'rank': 1, 'track_id': 7" in message
+    assert "'selection_score': 0.93" in message
+    assert "'ranking_components':" in message
+    assert "'is_selected': True" in message
+    assert "'rank': 2, 'track_id': 8" in message
+    assert select_segment(segments) == selected
+    assert rank_segments(segments) == ranked
+    assert run.player_boxes is not None and sorted(run.player_boxes[7]) == [0, 1, 2]
+
+    def fail_warning(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("simulated logging failure")
+
+    monkeypatch.setattr(logger, "warning", fail_warning)
+    _log_target_track_candidates(
+        logger, "analysis-6", selected, (selected,), metadata, run, Settings(), segments, ranked
+    )
+
+
+def _segment(
+    track_id: int,
+    segment_id: int,
+    quality: float,
+    reasons: tuple[str, ...] = (),
+) -> TrackSegment:
+    return TrackSegment(
+        track_id,
+        segment_id,
+        0,
+        2,
+        0.3,
+        3,
+        1.0,
+        0.9,
+        100.0,
+        100.0,
+        0.0,
+        0,
+        0.0,
+        quality,
+        reasons,
+    )
 
 
 def _box() -> BoundingBox:

@@ -155,10 +155,10 @@ def _near_ball(box: BoundingBox, ball: BallTrackPoint | None, settings: Settings
 
 
 def select_segment(segments: tuple[TrackSegment, ...]) -> Selection | None:
-    valid = [s for s in segments if not s.rejection_reasons]
-    if not valid:
+    ranked = rank_segments(segments)
+    if not ranked:
         return None
-    segment = max(valid, key=lambda s: s.segment_quality)
+    segment = ranked[0]
     track = PlayerTrack(
         segment.track_id,
         segment.visible_frames,
@@ -180,6 +180,33 @@ def select_segment(segments: tuple[TrackSegment, ...]) -> Selection | None:
         segment.end_frame,
         segment.duration_seconds,
     )
+
+
+def rank_segments(segments: tuple[TrackSegment, ...]) -> tuple[TrackSegment, ...]:
+    """Return eligible segments in the exact order used for target selection."""
+    return tuple(
+        sorted(
+            (segment for segment in segments if not segment.rejection_reasons),
+            key=lambda segment: segment.segment_quality,
+            reverse=True,
+        )
+    )
+
+
+def ranking_components(segment: TrackSegment, settings: Settings) -> dict[str, float]:
+    """Expose the existing segment-quality terms without changing their calculation."""
+    return {
+        "duration": min(
+            1.0,
+            segment.duration_seconds / max(settings.target_segment_min_duration_seconds * 2, 0.001),
+        )
+        * 0.25,
+        "continuity": segment.continuity_ratio * 0.25,
+        "confidence": segment.mean_confidence * 0.20,
+        "bbox_height": min(1.0, segment.mean_bbox_height / 100.0) * 0.15,
+        "stability": 1.0 / (1.0 + segment.normalized_center_displacement) * 0.10,
+        "ball_proximity": segment.ball_proximity_ratio * 0.05,
+    }
 
 
 def rejection_diagnostics(

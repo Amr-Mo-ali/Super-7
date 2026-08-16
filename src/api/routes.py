@@ -68,6 +68,7 @@ from services.interactions.models import (
 from services.movement.analyzer import MovementAnalyzer
 from services.movement.schemas import MovementResult
 from services.pass_detection import PASS_DETECTION_VERSION, PassDetectionResult, PassDetector
+from services.player_detector import BoundingBox
 from services.player_rating.engine import PlayerRatingEngine
 from services.player_rating.game_intelligence import (
     GameIntelligenceEvidenceDiagnostics,
@@ -79,7 +80,14 @@ from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
 from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
-from services.segment_selection import build_segments, rejection_diagnostics, select_segment
+from services.segment_selection import (
+    TrackSegment,
+    build_segments,
+    rank_segments,
+    ranking_components,
+    rejection_diagnostics,
+    select_segment,
+)
 from services.selection import Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
@@ -410,6 +418,8 @@ def _analyze_uploaded(
         )
     selection_diagnostics = run.diagnostics
     ranked: tuple[Selection, ...]
+    segments: tuple[TrackSegment, ...] = ()
+    ranked_segments: tuple[TrackSegment, ...] = ()
     selection_started = perf_counter()
     checker.check("player selection")
     if (
@@ -440,6 +450,7 @@ def _analyze_uploaded(
             rejected_tracks=tuple(rejected),
             rejected_track_reason_breakdown=breakdown,
         )
+        ranked_segments = rank_segments(segments)
         selected = select_segment(segments)
         ranked = (selected,) if selected is not None else ()
     else:
@@ -469,6 +480,17 @@ def _analyze_uploaded(
             metadata=request_metadata,
         )
     _log_target_track_evidence(logger, analysis_id, ranked[0], metadata, run)
+    _log_target_track_candidates(
+        logger,
+        analysis_id,
+        ranked[0],
+        ranked,
+        metadata,
+        run,
+        settings,
+        segments,
+        ranked_segments,
+    )
     return _completed(
         settings,
         tracker.model_version,
@@ -719,6 +741,154 @@ def _track_observation_continuity(frames: list[int]) -> tuple[list[list[int]], l
         else:
             fragments[-1].append(frame)
     return fragments, gaps
+
+
+def _log_target_track_candidates(
+    logger: logging.Logger,
+    analysis_id: str,
+    selected: Selection,
+    ranked: tuple[Selection, ...],
+    metadata: VideoMetadata,
+    run: object,
+    settings: Settings,
+    segments: tuple[TrackSegment, ...],
+    ranked_segments: tuple[TrackSegment, ...],
+) -> None:
+    """Log existing candidate ranking evidence without affecting target selection."""
+    try:
+        typed_run = run if isinstance(run, TrackingRun) else None
+        if segments:
+            candidates = [
+                _segment_candidate_diagnostic(
+                    segment,
+                    rank,
+                    selected,
+                    metadata,
+                    settings,
+                    typed_run.player_boxes if typed_run else None,
+                )
+                for rank, segment in enumerate(ranked_segments[:20], start=1)
+            ]
+            ranking_mode = "continuous_segment"
+            rejected_segment_count = sum(bool(segment.rejection_reasons) for segment in segments)
+        else:
+            candidates = [
+                {
+                    "rank": rank,
+                    "track_id": item.track.track_id,
+                    "selection_score": item.score,
+                    "ranking_components": {
+                        "visibility": item.visibility_contribution,
+                        "ball": item.ball_contribution,
+                    },
+                    "eligible": True,
+                    "rejection_reasons": (),
+                    "is_selected": item.track.track_id == selected.track.track_id,
+                }
+                for rank, item in enumerate(ranked[:20], start=1)
+            ]
+            ranking_mode = "whole_track"
+            rejected_segment_count = None
+        selected_frames = (
+            sorted((typed_run.player_boxes or {}).get(selected.track.track_id, {}))
+            if typed_run
+            else []
+        )
+        selected_fragments, _ = _track_observation_continuity(selected_frames)
+        selected_end = (
+            selected.segment_end_frame
+            if selected.segment_end_frame is not None
+            else (selected_frames[-1] if selected_frames else None)
+        )
+        adjacent_starts = (
+            sum(
+                1
+                for track_id, boxes in (typed_run.player_boxes or {}).items()
+                if track_id != selected.track.track_id
+                and selected_end is not None
+                and 0 < min(boxes, default=-1) - selected_end <= metadata.fps
+            )
+            if typed_run and metadata.fps
+            else None
+        )
+        selected_duration = len(selected_frames) / metadata.fps if metadata.fps else 0.0
+        short_lived_tracks = (
+            sum(
+                1
+                for boxes in (typed_run.player_boxes or {}).values()
+                if len(boxes) / metadata.fps < selected_duration
+            )
+            if typed_run and metadata.fps
+            else None
+        )
+        logger.warning(
+            "target_track_candidates analysis_id=%s selected_track_id=%s ranking_mode=%s "
+            "candidate_track_count=%s eligible_segment_count=%s rejected_segment_count=%s "
+            "candidates=%s fragmentation_heuristics=%s",
+            analysis_id,
+            selected.track.track_id,
+            ranking_mode,
+            len(typed_run.tracks) if typed_run else None,
+            len(ranked_segments) if segments else len(ranked),
+            rejected_segment_count,
+            candidates,
+            {
+                "identity_association": "unavailable_no_reidentification_history",
+                "selected_track_observation_fragment_count": len(selected_fragments),
+                "track_ids_starting_within_one_second_after_selected_end": adjacent_starts,
+                "track_ids_shorter_than_selected_track": short_lived_tracks,
+            },
+        )
+    except Exception:
+        logger.exception("target_track_candidates_logging_failed analysis_id=%s", analysis_id)
+
+
+def _segment_candidate_diagnostic(
+    segment: TrackSegment,
+    rank: int,
+    selected: Selection,
+    metadata: VideoMetadata,
+    settings: Settings,
+    player_boxes: dict[int, dict[int, BoundingBox]] | None,
+) -> dict[str, object]:
+    """Map one already-ranked eligible segment to its existing ranking evidence."""
+    frames = sorted(
+        frame
+        for frame in (player_boxes or {}).get(segment.track_id, {})
+        if segment.start_frame <= frame <= segment.end_frame
+    )
+    fragments, gaps = _track_observation_continuity(frames)
+    return {
+        "rank": rank,
+        "track_id": segment.track_id,
+        "parent_track_id": segment.track_id,
+        "segment_id": segment.segment_id,
+        "segment_start_timestamp": segment.start_frame / metadata.fps if metadata.fps else None,
+        "segment_end_timestamp": segment.end_frame / metadata.fps if metadata.fps else None,
+        "segment_duration_seconds": segment.duration_seconds,
+        "segment_observation_count": segment.visible_frames,
+        "first_seen_timestamp": frames[0] / metadata.fps if frames and metadata.fps else None,
+        "last_seen_timestamp": frames[-1] / metadata.fps if frames and metadata.fps else None,
+        "visible_duration_seconds": len(frames) / metadata.fps if metadata.fps else 0.0,
+        "observation_count": len(frames),
+        "longest_continuous_segment_seconds": (
+            max((len(fragment) for fragment in fragments), default=0) / metadata.fps
+            if metadata.fps
+            else 0.0
+        ),
+        "gap_count": len(gaps),
+        "largest_gap_seconds": max(gaps, default=0) / metadata.fps if metadata.fps else 0.0,
+        "average_confidence": segment.mean_confidence,
+        "continuity_ratio": segment.continuity_ratio,
+        "selection_score": segment.segment_quality,
+        "ranking_components": ranking_components(segment, settings),
+        "eligible": True,
+        "rejection_reasons": (),
+        "is_selected": (
+            segment.track_id == selected.track.track_id
+            and segment.segment_id == selected.segment_id
+        ),
+    }
 
 
 def _gate_log_value(
