@@ -6,7 +6,11 @@ from core.config import Settings
 from core.exceptions import PhysicalScoreConfigurationError
 from services.movement.schemas import MovementResult
 from services.scoring.level_mapper import ScoreLevelMapper
-from services.scoring.models import PhysicalScoreEvidence, PhysicalScoreResult
+from services.scoring.models import (
+    PhysicalEvidenceDiagnostics,
+    PhysicalScoreEvidence,
+    PhysicalScoreResult,
+)
 
 VERSION = "physical_activity_video_v0.1"
 
@@ -31,7 +35,17 @@ class RuleBasedPhysicalActivityScorer:
     ) -> PhysicalScoreResult:
         started = perf_counter()
         if movement is None or movement_quality is None:
-            return self._insufficient(started)
+            return self._insufficient(
+                started,
+                self._evidence_gate(
+                    movement_quality,
+                    visibility_ratio,
+                    None,
+                    None,
+                    None,
+                    "movement_unavailable" if movement is None else "movement_quality_unavailable",
+                ),
+            )
         weights = (
             self._settings.physical_score_activity_weight,
             self._settings.physical_score_active_time_weight,
@@ -48,14 +62,11 @@ class RuleBasedPhysicalActivityScorer:
         )
         observations = len(movement.trajectory)
         accepted_ratio = observations / max(observations + movement.rejected_position_jumps, 1)
-        if (
-            movement_quality < self._settings.physical_score_min_movement_quality
-            or visibility_ratio < self._settings.physical_score_min_visibility_ratio
-            or duration < self._settings.physical_score_min_visible_seconds
-            or observations < self._settings.physical_score_min_movement_observations
-            or accepted_ratio < self._settings.physical_score_min_accepted_interval_ratio
-        ):
-            return self._insufficient(started)
+        evidence_gate = self._evidence_gate(
+            movement_quality, visibility_ratio, duration, observations, accepted_ratio
+        )
+        if evidence_gate.failed_reasons:
+            return self._insufficient(started, evidence_gate)
         active = _clamp(1 - movement.metrics.stationary_time_seconds / duration)
         continuity = _clamp(longest_segment / visible_frames) if visible_frames else 0.0
         direction_rate = movement.metrics.direction_changes / duration
@@ -129,9 +140,12 @@ class RuleBasedPhysicalActivityScorer:
             raw,
             capped,
             round((perf_counter() - started) * 1000),
+            evidence_gate,
         )
 
-    def _insufficient(self, started: float) -> PhysicalScoreResult:
+    def _insufficient(
+        self, started: float, evidence_gate: PhysicalEvidenceDiagnostics
+    ) -> PhysicalScoreResult:
         return PhysicalScoreResult(
             None,
             None,
@@ -147,4 +161,45 @@ class RuleBasedPhysicalActivityScorer:
             None,
             False,
             round((perf_counter() - started) * 1000),
+            evidence_gate,
+        )
+
+    def _evidence_gate(
+        self,
+        movement_quality: float | None,
+        visibility_ratio: float,
+        duration: float | None,
+        observations: int | None,
+        accepted_ratio: float | None,
+        short_circuit_reason: str | None = None,
+    ) -> PhysicalEvidenceDiagnostics:
+        thresholds = {
+            "movement_quality": self._settings.physical_score_min_movement_quality,
+            "visibility_ratio": self._settings.physical_score_min_visibility_ratio,
+            "visible_duration_seconds": self._settings.physical_score_min_visible_seconds,
+            "movement_observations": self._settings.physical_score_min_movement_observations,
+            "accepted_interval_ratio": self._settings.physical_score_min_accepted_interval_ratio,
+        }
+        values = {
+            "movement_quality": movement_quality,
+            "visibility_ratio": visibility_ratio,
+            "visible_duration_seconds": duration,
+            "movement_observations": observations,
+            "accepted_interval_ratio": accepted_ratio,
+        }
+        failed = (
+            (short_circuit_reason,)
+            if short_circuit_reason is not None
+            else tuple(
+                name for name, value in values.items() if value is None or value < thresholds[name]
+            )
+        )
+        return PhysicalEvidenceDiagnostics(
+            movement_quality,
+            visibility_ratio,
+            duration,
+            observations,
+            accepted_ratio,
+            thresholds,
+            failed,
         )

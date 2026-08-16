@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from pydantic import HttpUrl
 
-from api.public_rating_mapper import public_rating_v2
+from api.public_rating_mapper import game_intelligence_result, public_rating_v2
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
 from concurrency.exceptions import AnalysisCancelled
@@ -76,7 +76,7 @@ from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
 from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSION
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import build_segments, rejection_diagnostics, select_segment
-from services.selection import PlayerTrack, Selection, TargetPlayerSelector
+from services.selection import Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import TechnicalEventAnalysisResult
@@ -526,76 +526,94 @@ def _noncompleted(
 def _log_rating_evidence(
     logger: logging.Logger,
     analysis_id: str,
-    settings: Settings,
-    track: PlayerTrack,
-    quality: float,
-    interaction: InteractionAnalysisResult | None,
-    movement: MovementResult | None,
     physical: PhysicalScoreResult | None,
     technical_events: TechnicalEventAnalysisResult | None,
     technical_score: TechnicalScoreResult,
+    game_intelligence: object,
+    interaction: InteractionAnalysisResult | None,
+    pass_detection: PassDetectionResult,
+    shot_detection: ShotDetectionResult,
 ) -> None:
-    """Emit a best-effort, non-sensitive snapshot of rating inputs and outputs."""
+    """Emit the completed analysis' gate inputs, decisions, and event evidence once."""
     try:
-        movement_quality = (
-            min(
-                settings.movement_raw_image_space_quality_cap,
-                len(movement.trajectory) / max(track.visible_frames, 1),
-            )
-            if movement
-            else None
-        )
-        movement_duration_seconds = (
-            movement.trajectory[-1].timestamp_seconds - movement.trajectory[0].timestamp_seconds
-            if movement is not None and len(movement.trajectory) >= 2
-            else None
-        )
-        diagnostics = interaction.diagnostics if interaction is not None else None
+        technical_gate = technical_events.diagnostics.evidence_gate if technical_events else None
+        physical_gate = physical.evidence_gate if physical else None
+        game_gate = getattr(game_intelligence, "evidence_gate", None)
         logger.info(
-            "rating_evidence analysis_id=%s player_track_quality=%s ball_analysis_quality=%s "
-            "interaction_analysis_quality=%s interaction_evidence_coverage_ratio=%s "
-            "possible_ball_interaction_count=%s accepted_interaction_segments=%s "
-            "track_visibility_ratio=%s track_visible_frames=%s track_average_confidence=%s "
-            "movement_available=%s movement_quality=%s movement_observations=%s "
-            "movement_duration_seconds=%s rejected_position_jumps=%s physical_value=%s "
-            "physical_confidence=%s physical_status=%s physical_reason=%s "
-            "technical_events_available=%s controlled_movement_candidate_count=%s "
-            "dribble_candidate_count=%s technical_score_value=%s "
-            "technical_score_confidence=%s technical_score_status=%s technical_score_reason=%s",
+            "rating_evidence analysis_id=%s technical_gate=%s technical_failed_reasons=%s "
+            "physical_gate=%s physical_failed_reasons=%s game_gate=%s game_failed_reasons=%s "
+            "technical_status=%s technical_reason=%s physical_status=%s physical_reason=%s "
+            "game_status=%s game_reason=%s controlled_movements=%s dribbles=%s ball_losses=%s "
+            "possible_ball_interactions=%s interaction_segments=%s accepted_interaction_segments=%s "
+            "pass_candidates=%s accepted_passes=%s shot_candidates=%s accepted_shots=%s",
             analysis_id,
-            min(1.0, track.visibility_ratio * track.average_confidence),
-            quality,
-            diagnostics.interaction_analysis_quality if diagnostics is not None else None,
-            interaction.interaction_evidence_coverage_ratio if interaction is not None else None,
-            interaction.possible_ball_interaction_count if interaction is not None else None,
-            diagnostics.accepted_interaction_segments if diagnostics is not None else None,
-            track.visibility_ratio,
-            track.visible_frames,
-            track.average_confidence,
-            movement is not None,
-            movement_quality,
-            len(movement.trajectory) if movement is not None else None,
-            movement_duration_seconds,
-            movement.rejected_position_jumps if movement is not None else None,
-            physical.value if physical is not None else None,
-            physical.confidence if physical is not None else None,
-            physical.status if physical is not None else None,
-            physical.reason if physical is not None else None,
-            technical_events is not None,
-            len(technical_events.controlled_movement_candidates)
-            if technical_events is not None
-            else None,
-            len(technical_events.dribble_candidates) if technical_events is not None else None,
-            technical_score.value,
-            technical_score.confidence,
+            _gate_log_value(technical_gate),
+            technical_gate.failed_reasons
+            if technical_gate
+            else ("technical_event_analysis_unavailable",),
+            _gate_log_value(physical_gate),
+            physical_gate.failed_reasons if physical_gate else ("physical_score_unavailable",),
+            _gate_log_value(game_gate),
+            game_gate.failed_reasons if game_gate else ("game_intelligence_unavailable",),
             technical_score.status,
             technical_score.reason,
+            physical.status if physical is not None else None,
+            physical.reason if physical is not None else None,
+            len(technical_events.controlled_movement_candidates)
+            if technical_events is not None
+            else 0,
+            len(technical_events.dribble_candidates) if technical_events is not None else 0,
+            len(technical_events.ball_loss_candidates) if technical_events is not None else 0,
+            interaction.possible_ball_interaction_count if interaction else 0,
+            len(interaction.segments) if interaction else 0,
+            interaction.diagnostics.accepted_interaction_segments if interaction else 0,
+            pass_detection.raw_pass_candidates,
+            pass_detection.accepted_pass_candidates,
+            shot_detection.raw_shot_candidates,
+            shot_detection.accepted_shot_candidates,
         )
     except Exception:
         logger.exception(
             "rating_evidence_logging_failed analysis_id=%s",
             analysis_id,
         )
+
+
+def _gate_log_value(gate: object | None) -> dict[str, object] | None:
+    """Keep the structured log compact while preserving every gate input and threshold."""
+    if gate is None:
+        return None
+    raw = asdict(gate)
+    thresholds = raw.get("thresholds")
+    values: dict[str, object] = {}
+    if isinstance(thresholds, dict):
+        for name, threshold in thresholds.items():
+            value = raw[name]
+            values[name] = {
+                "value": value,
+                "threshold": threshold,
+                "passed": value is not None and value >= threshold,
+            }
+    else:
+        values = {
+            name: value
+            for name, value in raw.items()
+            if name not in {"failed_reasons", "component_failed_reasons"}
+        }
+        if "visible_duration_seconds" in values:
+            values["visible_duration_passed"] = (
+                raw["visible_duration_seconds"] is not None
+                and raw["visible_duration_seconds"] >= raw["minimum_visible_duration_seconds"]
+            )
+        values["available_component_count_passed"] = (
+            raw["available_component_count"] >= raw["minimum_available_component_count"]
+        )
+    for name in ("minimum_visible_duration_seconds", "minimum_available_component_count"):
+        if name in raw:
+            values[name] = raw[name]
+    if "component_failed_reasons" in raw:
+        values["component_failed_reasons"] = raw["component_failed_reasons"]
+    return values
 
 
 def _completed(
@@ -929,18 +947,6 @@ def _completed(
         cancellation.check("technical scoring")
     technical_score = TechnicalScorer().score(technical_events)
     technical_score_time_ms = round((perf_counter() - technical_score_started) * 1000)
-    _log_rating_evidence(
-        logger,
-        analysis_id,
-        settings,
-        track,
-        quality,
-        interaction,
-        movement,
-        physical,
-        technical_events,
-        technical_score,
-    )
     player_rating_summary = PlayerRatingEngine(settings=settings).summarize(
         technical=technical_score,
         physical=physical,
@@ -1338,6 +1344,21 @@ def _completed(
             response.warnings.append(
                 "Debug-video rendering failed; analysis results are unaffected."
             )
+    try:
+        game_intelligence = game_intelligence_result(response)
+        _log_rating_evidence(
+            logger,
+            analysis_id,
+            physical,
+            technical_events,
+            technical_score,
+            game_intelligence,
+            interaction,
+            pass_detection,
+            shot_detection,
+        )
+    except Exception:
+        logger.exception("rating_evidence_logging_failed analysis_id=%s", analysis_id)
     _validate_completed_diagnostics(response)
     return response
 

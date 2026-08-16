@@ -388,3 +388,40 @@ def test_order_limits_confidence_and_accounting_invariants() -> None:
         item.start_frame <= item.end_frame and item.duration_seconds >= 0
         for item in result.controlled_movement_candidates
     )
+
+
+def test_evidence_diagnostics_report_all_failed_gates_and_exact_boundary() -> None:
+    analyzer = TechnicalEventAnalyzer(Settings())
+    players, balls = _observations([(0, 0), (1, 0)])
+    result = analyzer.analyze(
+        players,
+        balls,
+        _interaction(coverage=0.59),
+        _movement([(0, 0), (1, 0)]),
+        FPS,
+        (64, 64),
+        0.49,
+        0.5,
+        0.49,
+    )
+    gate = result.diagnostics.evidence_gate
+    assert gate is not None
+    assert gate.failed_reasons == (
+        "player_track_quality",
+        "interaction_analysis_quality",
+        "interaction_evidence_coverage_ratio",
+    )
+
+    boundary = analyzer.analyze(
+        players,
+        balls,
+        _interaction(coverage=0.6),
+        _movement([(0, 0), (1, 0)]),
+        FPS,
+        (64, 64),
+        0.5,
+        0.5,
+        0.5,
+    )
+    assert boundary.diagnostics.evidence_gate is not None
+    assert boundary.diagnostics.evidence_gate.failed_reasons == ()

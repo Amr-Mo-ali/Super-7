@@ -4,6 +4,19 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
+class PhysicalEvidenceDiagnostics:
+    """Inputs captured at the physical-score evidence gate."""
+
+    movement_quality: float | None
+    visibility_ratio: float
+    visible_duration_seconds: float | None
+    movement_observations: int | None
+    accepted_interval_ratio: float | None
+    thresholds: dict[str, float | int]
+    failed_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PhysicalScoreEvidence:
     movement_intensity: float
     active_time_ratio: float
@@ -32,3 +45,4 @@ class PhysicalScoreResult:
     raw_score: float | None
     confidence_capped: bool
     processing_time_ms: int
+    evidence_gate: PhysicalEvidenceDiagnostics | None = None

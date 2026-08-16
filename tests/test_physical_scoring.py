@@ -32,6 +32,28 @@ def test_quality_gate_returns_null_not_zero() -> None:
         _movement(), 0.1, 50, 50, 0.9, 0.8, "raw_image_space"
     )
     assert result.status == "insufficient_evidence" and result.value is None
+    assert result.evidence_gate is not None
+    assert result.evidence_gate.failed_reasons == ("visibility_ratio",)
+
+
+def test_evidence_diagnostics_report_multiple_failures_and_exact_boundary() -> None:
+    scorer = RuleBasedPhysicalActivityScorer(Settings())
+    failed = scorer.score(
+        _movement(duration=2, observations=20), 0.1, 20, 20, 0.9, 0.54, "raw_image_space"
+    )
+    assert failed.evidence_gate is not None
+    assert failed.evidence_gate.failed_reasons == (
+        "movement_quality",
+        "visibility_ratio",
+        "visible_duration_seconds",
+        "movement_observations",
+    )
+    boundary = scorer.score(
+        _movement(duration=3, observations=30), 0.2, 30, 30, 0.9, 0.55, "raw_image_space"
+    )
+    assert boundary.status == "provisional_video_based"
+    assert boundary.evidence_gate is not None
+    assert boundary.evidence_gate.failed_reasons == ()
 
 
 def test_level_ties_choose_lower_level_and_configuration_is_validated() -> None:

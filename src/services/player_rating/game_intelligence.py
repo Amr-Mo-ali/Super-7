@@ -74,6 +74,18 @@ class GameIntelligenceComponent:
 
 
 @dataclass(frozen=True, slots=True)
+class GameIntelligenceEvidenceDiagnostics:
+    """Top-level availability inputs captured by the game-intelligence gate."""
+
+    visible_duration_seconds: float | None
+    minimum_visible_duration_seconds: float
+    available_component_count: int
+    minimum_available_component_count: int
+    component_failed_reasons: dict[str, str]
+    failed_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class GameIntelligenceResult:
     value: float | None
     confidence: float
@@ -86,6 +98,7 @@ class GameIntelligenceResult:
     explanation: str
     limitations: tuple[str, ...]
     version: str = VERSION
+    evidence_gate: GameIntelligenceEvidenceDiagnostics | None = None
 
 
 class GameIntelligenceEngine:
@@ -98,7 +111,11 @@ class GameIntelligenceEngine:
             or not isfinite(duration_seconds)
             or duration_seconds < MIN_GAME_INTELLIGENCE_VISIBLE_DURATION_SECONDS
         ):
-            return self._insufficient((), "insufficient_game_intelligence_evidence")
+            return self._insufficient(
+                (),
+                "insufficient_game_intelligence_evidence",
+                self._evidence_gate(duration_seconds, ()),
+            )
         components = (
             self._ball(evidence),
             self._decision(evidence),
@@ -108,7 +125,11 @@ class GameIntelligenceEngine:
         )
         available = tuple(item for item in components if item.status == "available")
         if len(available) < MIN_AVAILABLE_GAME_INTELLIGENCE_COMPONENTS:
-            return self._insufficient(components, "insufficient_game_intelligence_evidence")
+            return self._insufficient(
+                components,
+                "insufficient_game_intelligence_evidence",
+                self._evidence_gate(duration_seconds, components),
+            )
         total = sum(GAME_INTELLIGENCE_WEIGHTS[item.name] for item in available)
         weights = {item.name: GAME_INTELLIGENCE_WEIGHTS[item.name] / total for item in available}
         value = _score(
@@ -134,6 +155,7 @@ class GameIntelligenceEngine:
             len(available),
             "Provisional video-based heuristic indicator; not a validated football-intelligence assessment.",
             limitations,
+            evidence_gate=self._evidence_gate(duration_seconds, components),
         )
 
     def _ball(self, e: GameIntelligenceEvidence) -> GameIntelligenceComponent:
@@ -321,7 +343,9 @@ class GameIntelligenceEngine:
 
     @staticmethod
     def _insufficient(
-        components: tuple[GameIntelligenceComponent, ...], reason: str
+        components: tuple[GameIntelligenceComponent, ...],
+        reason: str,
+        evidence_gate: GameIntelligenceEvidenceDiagnostics,
     ) -> GameIntelligenceResult:
         return GameIntelligenceResult(
             None,
@@ -335,6 +359,36 @@ class GameIntelligenceEngine:
             "A numeric provisional indicator is unavailable because the evidence gate was not met.",
             _LIMITATIONS,
             VERSION,
+            evidence_gate,
+        )
+
+    @staticmethod
+    def _evidence_gate(
+        duration_seconds: float | None,
+        components: tuple[GameIntelligenceComponent, ...],
+    ) -> GameIntelligenceEvidenceDiagnostics:
+        available_count = sum(item.status == "available" for item in components)
+        component_failed_reasons = {
+            item.name: str(item.evidence["reason"])
+            for item in components
+            if item.status != "available"
+        }
+        failed: list[str] = []
+        if (
+            duration_seconds is None
+            or not isfinite(duration_seconds)
+            or duration_seconds < MIN_GAME_INTELLIGENCE_VISIBLE_DURATION_SECONDS
+        ):
+            failed.append("visible_duration_seconds")
+        if components and available_count < MIN_AVAILABLE_GAME_INTELLIGENCE_COMPONENTS:
+            failed.append("available_component_count")
+        return GameIntelligenceEvidenceDiagnostics(
+            duration_seconds,
+            MIN_GAME_INTELLIGENCE_VISIBLE_DURATION_SECONDS,
+            available_count,
+            MIN_AVAILABLE_GAME_INTELLIGENCE_COMPONENTS,
+            component_failed_reasons,
+            tuple(failed),
         )
 
 

@@ -53,6 +53,8 @@ def test_all_components_available_and_weights_normalize() -> None:
     assert result.available_component_count == 5
     assert sum(result.effective_weights.values()) == pytest.approx(1)
     assert result.value is not None and result.confidence <= MAX_GAME_INTELLIGENCE_CONFIDENCE
+    assert result.evidence_gate is not None
+    assert result.evidence_gate.failed_reasons == ()
 
 
 def test_exactly_three_components_are_normalized_without_zero_filling() -> None:
@@ -83,6 +85,28 @@ def test_fewer_than_three_components_or_short_video_is_unavailable() -> None:
         engine.evaluate(_evidence(visible_duration_seconds=3.99)).reason
         == "insufficient_game_intelligence_evidence"
     )
+
+
+def test_evidence_diagnostics_report_duration_and_component_count_failures() -> None:
+    result = GameIntelligenceEngine().evaluate(
+        _evidence(
+            visible_duration_seconds=4,
+            movement_quality=0,
+            technical_value=None,
+            technical_confidence=None,
+            controlled_count=0,
+            pass_count=0,
+            shot_count=0,
+        )
+    )
+    assert result.evidence_gate is not None
+    assert result.evidence_gate.failed_reasons == ("available_component_count",)
+    assert result.evidence_gate.component_failed_reasons == {
+        "decision_consistency": "insufficient_technical_event_evidence",
+        "spatial_activity_proxy": "insufficient_movement_evidence",
+        "movement_efficiency_proxy": "insufficient_movement_evidence",
+        "technical_involvement": "insufficient_technical_evidence",
+    }
 
 
 def test_score_and_confidence_are_separate_and_confidence_cap_applies() -> None:

@@ -5,6 +5,18 @@ from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
+class TechnicalEvidenceDiagnostics:
+    """Inputs captured at the technical-event evidence gate."""
+
+    player_track_quality: float
+    ball_analysis_quality: float
+    interaction_analysis_quality: float
+    interaction_evidence_coverage_ratio: float
+    thresholds: dict[str, float]
+    failed_reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ControlledMovementCandidate:
     event_id: str
     source_interaction_segment_id: int
@@ -81,6 +93,7 @@ class TechnicalEventDiagnostics:
     dribble_candidate_statistics: tuple[dict[str, float | int | bool | str | None], ...] = ()
     dribble_rejection_breakdown: dict[str, int] | None = None
     dribble_thresholds: dict[str, float] | None = None
+    evidence_gate: TechnicalEvidenceDiagnostics | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,6 +22,7 @@ from services.event_arbitration.models import ArbitratedEvent, ArbitrationResult
 from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
+    GameIntelligenceResult,
 )
 from services.player_rating.models import PlayerRatingSummary
 from services.player_rating.models import PlayerRatingValue as InternalRatingValue
@@ -53,7 +54,7 @@ def public_rating_v2(
         "ball_involvement": _engine_rating(rating_summary, "ball_involvement"),
     }
     arbitration = EventArbitrator().arbitrate(_event_candidates(result))
-    game_intelligence = GameIntelligenceEngine().evaluate(_game_evidence(result, arbitration))
+    game_intelligence = game_intelligence_result(result, arbitration)
     ratings["game_intelligence"] = PublicGameIntelligence(
         value=game_intelligence.value,
         confidence=game_intelligence.confidence,
@@ -162,6 +163,14 @@ def public_rating_v2(
             "event_arbitration": arbitration.version,
         },
     )
+
+
+def game_intelligence_result(
+    result: CompletedResponse, arbitration: ArbitrationResult | None = None
+) -> GameIntelligenceResult:
+    """Evaluate the exact game-intelligence projection used by the public payload."""
+    resolved_arbitration = arbitration or EventArbitrator().arbitrate(_event_candidates(result))
+    return GameIntelligenceEngine().evaluate(_game_evidence(result, resolved_arbitration))
 
 
 def _engine_rating(summary: PlayerRatingSummary, category: str) -> PublicRatingValue:

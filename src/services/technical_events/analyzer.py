@@ -19,6 +19,7 @@ from services.technical_events.models import (
     DribbleCandidate,
     TechnicalEventAnalysisResult,
     TechnicalEventDiagnostics,
+    TechnicalEvidenceDiagnostics,
 )
 
 CONTROLLED_VERSION = "controlled_movement_confidence_v0.1"
@@ -48,16 +49,16 @@ class TechnicalEventAnalyzer:
         if fps <= 0:
             raise TechnicalEventInputError("Technical-event analysis requires positive FPS.")
         quality = min(player_track_quality, ball_analysis_quality, interaction_analysis_quality)
+        evidence_gate = self._evidence_gate(
+            player_track_quality,
+            ball_analysis_quality,
+            interaction_analysis_quality,
+            interactions.interaction_evidence_coverage_ratio,
+        )
         warning = (
             "Technical events are heuristic candidates and do not prove confirmed football actions."
         )
-        if (
-            player_track_quality < self._settings.technical_event_min_player_track_quality
-            or ball_analysis_quality < self._settings.technical_event_min_ball_analysis_quality
-            or interaction_analysis_quality < self._settings.technical_event_min_interaction_quality
-            or interactions.interaction_evidence_coverage_ratio
-            < self._settings.technical_event_min_evidence_coverage
-        ):
+        if evidence_gate.failed_reasons:
             return self._result(
                 (),
                 (),
@@ -74,6 +75,7 @@ class TechnicalEventAnalyzer:
                         "confidence": 0,
                     },
                     controlled_movement_thresholds=self._controlled_thresholds(),
+                    evidence_gate=evidence_gate,
                 ),
                 (
                     warning,
@@ -117,6 +119,7 @@ class TechnicalEventAnalyzer:
             tuple(dribble_stats),
             dribble_breakdown,
             self._dribble_thresholds(),
+            evidence_gate,
         )
         warnings = [
             warning,
@@ -129,6 +132,34 @@ class TechnicalEventAnalyzer:
             warnings.append("Ball-loss candidates do not prove possession was lost.")
         return self._result(
             tuple(controlled), tuple(dribbles), tuple(losses), diagnostics, tuple(warnings), None
+        )
+
+    def _evidence_gate(
+        self,
+        player_track_quality: float,
+        ball_analysis_quality: float,
+        interaction_analysis_quality: float,
+        interaction_evidence_coverage_ratio: float,
+    ) -> TechnicalEvidenceDiagnostics:
+        thresholds = {
+            "player_track_quality": self._settings.technical_event_min_player_track_quality,
+            "ball_analysis_quality": self._settings.technical_event_min_ball_analysis_quality,
+            "interaction_analysis_quality": self._settings.technical_event_min_interaction_quality,
+            "interaction_evidence_coverage_ratio": self._settings.technical_event_min_evidence_coverage,
+        }
+        values = {
+            "player_track_quality": player_track_quality,
+            "ball_analysis_quality": ball_analysis_quality,
+            "interaction_analysis_quality": interaction_analysis_quality,
+            "interaction_evidence_coverage_ratio": interaction_evidence_coverage_ratio,
+        }
+        return TechnicalEvidenceDiagnostics(
+            player_track_quality,
+            ball_analysis_quality,
+            interaction_analysis_quality,
+            interaction_evidence_coverage_ratio,
+            thresholds,
+            tuple(name for name, value in values.items() if value < thresholds[name]),
         )
 
     def _controlled(

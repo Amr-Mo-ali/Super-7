@@ -1,125 +1,155 @@
-"""Focused tests for the private production rating-evidence diagnostic."""
+"""Focused coverage for the completed-analysis evidence diagnostic event."""
 
 import logging
 
 from _pytest.logging import LogCaptureFixture
-from pytest import MonkeyPatch
 
 from api.routes import _log_rating_evidence
-from core.config import Settings
+from core.logging import configure_logging
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
-from services.movement.schemas import MovementMetrics, MovementPoint, MovementResult
-from services.scoring.models import PhysicalScoreEvidence, PhysicalScoreResult
+from services.pass_detection import PassDetectionResult
+from services.player_rating.game_intelligence import (
+    GameIntelligenceEngine,
+    GameIntelligenceEvidence,
+)
+from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
-from services.selection import PlayerTrack
-from services.technical_events.models import TechnicalEventAnalysisResult, TechnicalEventDiagnostics
+from services.shot_detection import ShotDetectionResult
+from services.technical_events.models import (
+    TechnicalEventAnalysisResult,
+    TechnicalEventDiagnostics,
+    TechnicalEvidenceDiagnostics,
+)
 
 
-def _track() -> PlayerTrack:
-    return PlayerTrack(7, 8, 10, 8, 0, 0.9, 0, True)
-
-
-def _movement() -> MovementResult:
-    metrics = MovementMetrics(1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0.5, 0, 0, 0, 0, 0, 0, 0)
-    return MovementResult(
-        metrics,
-        (MovementPoint(1, 0.0, (1, 1), 1), MovementPoint(2, 2.0, (2, 2), 1)),
-        1,
-        3,
-        2,
+def _technical_events() -> TechnicalEventAnalysisResult:
+    gate = TechnicalEvidenceDiagnostics(
+        0.4,
+        0.6,
+        0.3,
+        0.5,
+        {
+            "player_track_quality": 0.5,
+            "ball_analysis_quality": 0.5,
+            "interaction_analysis_quality": 0.5,
+            "interaction_evidence_coverage_ratio": 0.6,
+        },
+        (
+            "player_track_quality",
+            "interaction_analysis_quality",
+            "interaction_evidence_coverage_ratio",
+        ),
+    )
+    return TechnicalEventAnalysisResult(
+        (), (), (), TechnicalEventDiagnostics(evidence_gate=gate), (), "x"
     )
 
 
 def _physical() -> PhysicalScoreResult:
-    evidence = PhysicalScoreEvidence(0.5, 0.5, 0.8, 0.8, 0.5, 0.2, 2, 2, 1)
+    gate = PhysicalEvidenceDiagnostics(
+        0.4,
+        0.8,
+        2.0,
+        20,
+        0.4,
+        {
+            "movement_quality": 0.55,
+            "visibility_ratio": 0.2,
+            "visible_duration_seconds": 3.0,
+            "movement_observations": 30,
+            "accepted_interval_ratio": 0.6,
+        },
+        (
+            "movement_quality",
+            "visible_duration_seconds",
+            "movement_observations",
+            "accepted_interval_ratio",
+        ),
+    )
     return PhysicalScoreResult(
-        60, None, None, None, 0.7, "available", "v", None, evidence, (), "", 60, False, 0
-    )
-
-
-def _technical() -> TechnicalScoreResult:
-    return TechnicalScoreResult(70, 0.8, "available", None, {}, None, None, 0, 0.6)
-
-
-def test_rating_evidence_log_includes_available_evidence(caplog: LogCaptureFixture) -> None:
-    diagnostics = InteractionDiagnostics(1, 1, 0, 0, 2, 1, 0, 0, 0, 0, 0.75, "v", 0.8, 0)
-    interaction = InteractionAnalysisResult(
-        (), 2, 1, 1, 0.8, 2, 2, 0.75, "v", diagnostics, (), None
-    )
-    events = TechnicalEventAnalysisResult((), (), (), TechnicalEventDiagnostics(), (), None)
-    caplog.set_level(logging.INFO)
-
-    _log_rating_evidence(
-        logging.getLogger("rating-evidence-test"),
-        "analysis-1",
-        Settings(),
-        _track(),
-        0.6,
-        interaction,
-        _movement(),
-        _physical(),
-        events,
-        _technical(),
-    )
-
-    messages = [record.getMessage() for record in caplog.records]
-    message = next(message for message in messages if message.startswith("rating_evidence"))
-    assert "player_track_quality=0.7200000000000001" in message
-    assert "accepted_interaction_segments=1" in message
-    assert "movement_duration_seconds=2.0" in message
-    assert "technical_events_available=True" in message
-
-
-def test_rating_evidence_log_handles_missing_optional_evidence(caplog: LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO)
-
-    _log_rating_evidence(
-        logging.getLogger("rating-evidence-test"),
-        "analysis-2",
-        Settings(),
-        _track(),
-        0.0,
         None,
         None,
         None,
         None,
-        TechnicalScoreResult(None, None, "unavailable", "missing", {}, None, None, 0, 0),
+        None,
+        "insufficient_evidence",
+        "v",
+        "x",
+        None,
+        (),
+        "",
+        None,
+        False,
+        0,
+        gate,
     )
 
-    messages = [record.getMessage() for record in caplog.records]
-    message = next(message for message in messages if "analysis_id=analysis-2" in message)
-    assert "movement_available=False" in message
-    assert "physical_value=None" in message
-    assert "technical_events_available=False" in message
+
+def _game() -> object:
+    return GameIntelligenceEngine().evaluate(
+        GameIntelligenceEvidence(
+            3.0,
+            0.8,
+            0.8,
+            0.8,
+            1.0,
+            1,
+            1.0,
+            0.8,
+            0.8,
+            0.8,
+            0.8,
+            0.8,
+            0.8,
+            0.8,
+            1.0,
+            0.8,
+            0.8,
+        )
+    )
 
 
-def test_rating_evidence_log_reports_internal_logging_failures(
-    caplog: LogCaptureFixture, monkeypatch: MonkeyPatch
+def _interaction() -> InteractionAnalysisResult:
+    diagnostics = InteractionDiagnostics(3, 2, 0, 0, 2, 1, 0, 0, 0, 0, 0.8, "v", 0.8, 0)
+    return InteractionAnalysisResult((), 3, 1.0, 1.0, 0.8, 3, 3, 0.8, "v", diagnostics, (), None)
+
+
+def test_rating_evidence_log_identifies_all_failed_gates_and_analysis_id(
+    caplog: LogCaptureFixture,
 ) -> None:
-    logger = logging.getLogger("rating-evidence-failure-test")
-    caplog.set_level(logging.ERROR)
-
-    def fail_info(*args: object, **kwargs: object) -> None:
-        del args, kwargs
-        raise RuntimeError("simulated logging failure")
-
-    monkeypatch.setattr(logger, "info", fail_info)
-
+    caplog.set_level(logging.INFO, logger="football_analysis")
     _log_rating_evidence(
-        logger,
-        "analysis-3",
-        Settings(),
-        _track(),
-        0.0,
-        None,
-        None,
-        None,
-        None,
-        TechnicalScoreResult(None, None, "unavailable", "missing", {}, None, None, 0, 0),
+        logging.getLogger("football_analysis.api"),
+        "analysis-1",
+        _physical(),
+        _technical_events(),
+        TechnicalScoreResult(None, None, "unavailable", "x", {}, None, None, 0, 0),
+        _game(),
+        _interaction(),
+        PassDetectionResult((), 3, 1, 2, {}, 0),
+        ShotDetectionResult((), 2, 1, 1, {}, 0),
     )
 
-    assert any(
-        record.getMessage() == "rating_evidence_logging_failed analysis_id=analysis-3"
-        and record.exc_info is not None
-        for record in caplog.records
+    message = next(
+        record.getMessage() for record in caplog.records if record.msg.startswith("rating_evidence")
     )
+    assert "analysis_id=analysis-1" in message
+    assert (
+        "technical_failed_reasons=('player_track_quality', 'interaction_analysis_quality', 'interaction_evidence_coverage_ratio')"
+        in message
+    )
+    assert (
+        "physical_failed_reasons=('movement_quality', 'visible_duration_seconds', 'movement_observations', 'accepted_interval_ratio')"
+        in message
+    )
+    assert "game_failed_reasons=('visible_duration_seconds',)" in message
+    assert (
+        "possible_ball_interactions=3 interaction_segments=0 accepted_interaction_segments=1"
+        in message
+    )
+    assert "pass_candidates=3 accepted_passes=1 shot_candidates=2 accepted_shots=1" in message
+
+
+def test_rating_evidence_logger_is_reachable_from_production_namespace() -> None:
+    configure_logging()
+    assert logging.getLogger("football_analysis.api").isEnabledFor(logging.INFO)
