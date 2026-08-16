@@ -3,8 +3,9 @@
 import logging
 
 from _pytest.logging import LogCaptureFixture
+from pytest import MonkeyPatch
 
-from api.routes import _log_rating_evidence
+from api.routes import _log_interaction_evidence, _log_rating_evidence
 from core.logging import configure_logging
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
 from services.pass_detection import PassDetectionResult
@@ -15,12 +16,14 @@ from services.player_rating.game_intelligence import (
 )
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
+from services.selection import PlayerTrack, Selection
 from services.shot_detection import ShotDetectionResult
 from services.technical_events.models import (
     TechnicalEventAnalysisResult,
     TechnicalEventDiagnostics,
     TechnicalEvidenceDiagnostics,
 )
+from services.video_validator import VideoMetadata
 
 
 def _technical_events() -> TechnicalEventAnalysisResult:
@@ -157,3 +160,38 @@ def test_rating_evidence_log_identifies_all_failed_gates_and_analysis_id(
 def test_rating_evidence_logger_is_reachable_from_production_namespace() -> None:
     configure_logging()
     assert logging.getLogger("football_analysis.api").isEnabledFor(logging.INFO)
+
+
+def test_interaction_evidence_log_uses_existing_counters_and_is_best_effort(
+    caplog: LogCaptureFixture, monkeypatch: MonkeyPatch
+) -> None:
+    logger = logging.getLogger("football_analysis.interaction-test")
+    caplog.set_level(logging.WARNING, logger="football_analysis")
+    selection = Selection(PlayerTrack(7, 8, 10, 8, 0, 0.9, 0, True), "test", 0.0, 0.0, 0.0)
+    metadata = VideoMetadata("mp4", 1, 1.0, 10, 10, 10.0, 10)
+
+    _log_interaction_evidence(
+        logger, "analysis-2", selection, metadata, 8, 6, 0.72, 0.8, _interaction()
+    )
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.msg.startswith("interaction_evidence")
+    )
+    assert "analysis_id=analysis-2 track_id=7 player_observation_count=8" in message
+    assert "aligned_player_ball_evidence_frames=3" in message
+    assert "proximity_qualified_frames=2 proximity_ratio=0.6666666666666666" in message
+    assert (
+        "rejection_counts={'short': 0, 'low_confidence': 0, 'low_global_quality': 0, 'invalid': 0}"
+        in message
+    )
+
+    def fail_warning(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("simulated logging failure")
+
+    monkeypatch.setattr(logger, "warning", fail_warning)
+    _log_interaction_evidence(
+        logger, "analysis-3", selection, metadata, 8, 6, 0.72, 0.8, _interaction()
+    )

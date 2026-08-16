@@ -591,6 +591,55 @@ def _log_rating_evidence(
         )
 
 
+def _log_interaction_evidence(
+    logger: logging.Logger,
+    analysis_id: str,
+    selection: Selection,
+    metadata: VideoMetadata,
+    player_observation_count: int,
+    ball_observation_count: int,
+    player_tracking_quality: float,
+    ball_analysis_quality: float,
+    interaction: InteractionAnalysisResult,
+) -> None:
+    """Emit existing interaction evidence counters without affecting analysis results."""
+    try:
+        diagnostics = interaction.diagnostics
+        aligned = diagnostics.interaction_aligned_frames
+        rejection_counts = {
+            "short": diagnostics.rejected_short_interaction_segments,
+            "low_confidence": diagnostics.rejected_low_confidence_interaction_segments,
+            "low_global_quality": diagnostics.rejected_low_global_quality_interaction_segments,
+            "invalid": diagnostics.rejected_invalid_interaction_segments,
+        }
+        logger.warning(
+            "interaction_evidence analysis_id=%s track_id=%s player_observation_count=%s "
+            "player_visible_duration_seconds=%s player_tracking_quality=%s "
+            "ball_observation_count=%s ball_analysis_quality=%s "
+            "aligned_player_ball_evidence_frames=%s player_ball_evidence_overlap_ratio=%s "
+            "proximity_qualified_frames=%s proximity_ratio=%s raw_interaction_segments=%s "
+            "accepted_interaction_segments=%s rejection_counts=%s",
+            analysis_id,
+            selection.track.track_id,
+            player_observation_count,
+            selection.segment_duration_seconds
+            if selection.segment_duration_seconds is not None
+            else selection.track.visible_frames / metadata.fps,
+            player_tracking_quality,
+            ball_observation_count,
+            ball_analysis_quality,
+            aligned,
+            diagnostics.interaction_evidence_coverage_ratio,
+            diagnostics.interaction_candidate_frames,
+            diagnostics.interaction_candidate_frames / aligned if aligned else None,
+            diagnostics.raw_interaction_segments,
+            diagnostics.accepted_interaction_segments,
+            rejection_counts,
+        )
+    except Exception:
+        logger.exception("interaction_evidence_logging_failed analysis_id=%s", analysis_id)
+
+
 def _gate_log_value(
     gate: TechnicalEvidenceDiagnostics
     | PhysicalEvidenceDiagnostics
@@ -871,6 +920,17 @@ def _completed(
                 analysis_id,
                 track.track_id,
                 interaction.possible_ball_interaction_count,
+            )
+            _log_interaction_evidence(
+                logger,
+                analysis_id,
+                selection,
+                metadata,
+                len(players),
+                len(balls),
+                min(1.0, track.visibility_ratio * track.average_confidence),
+                quality,
+                interaction,
             )
         except AnalysisCancelled:
             raise
