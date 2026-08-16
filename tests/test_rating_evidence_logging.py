@@ -5,18 +5,21 @@ import logging
 from _pytest.logging import LogCaptureFixture
 from pytest import MonkeyPatch
 
-from api.routes import _log_interaction_evidence, _log_rating_evidence
+from api.routes import _log_interaction_evidence, _log_rating_evidence, _log_target_track_evidence
+from core.config import Settings
 from core.logging import configure_logging
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
 from services.pass_detection import PassDetectionResult
+from services.player_detector import BoundingBox
 from services.player_rating.game_intelligence import (
     GameIntelligenceEngine,
     GameIntelligenceEvidence,
     GameIntelligenceResult,
 )
+from services.player_tracker import TrackingDiagnostics, TrackingRun
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
-from services.selection import PlayerTrack, Selection
+from services.selection import PlayerTrack, Selection, WeightedTargetPlayerSelector
 from services.shot_detection import ShotDetectionResult
 from services.technical_events.models import (
     TechnicalEventAnalysisResult,
@@ -195,3 +198,64 @@ def test_interaction_evidence_log_uses_existing_counters_and_is_best_effort(
     _log_interaction_evidence(
         logger, "analysis-3", selection, metadata, 8, 6, 0.72, 0.8, _interaction()
     )
+
+
+def test_target_track_evidence_logs_raw_continuity_without_mutating_selection(
+    caplog: LogCaptureFixture,
+) -> None:
+    logger = logging.getLogger("football_analysis.target-track-test")
+    caplog.set_level(logging.WARNING, logger="football_analysis")
+    selection = Selection(
+        PlayerTrack(7, 3, 3, 3, 0, 0.9, 0, True),
+        "best_continuous_track_segment",
+        0.0,
+        0.0,
+        0.0,
+        1,
+        0,
+        2,
+        0.3,
+    )
+    run = TrackingRun(
+        (selection.track,),
+        TrackingDiagnostics(10, 3, 3, 1, 0),
+        {7: {0: _box(), 1: _box(), 4: _box()}},
+        {7: {0: 0.8, 1: 0.9, 4: 1.0}},
+    )
+    metadata = VideoMetadata("mp4", 1, 1.0, 10, 10, 10.0, 10)
+    selector = WeightedTargetPlayerSelector(Settings(selection_margin=0.01))
+    before = selector.select(run.tracks)
+
+    _log_target_track_evidence(logger, "analysis-4", selection, metadata, run)
+
+    after = selector.select(run.tracks)
+
+    message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.msg.startswith("target_track_evidence")
+    )
+    assert "analysis_id=analysis-4 track_id=7" in message
+    assert "visible_duration_seconds=0.3 visibility_ratio=0.3 observation_count=3" in message
+    assert "longest_continuous_segment_seconds=0.2 track_fragment_count=2" in message
+    assert "gap_count=1 largest_gap_seconds=0.2 average_confidence=0.9" in message
+    assert "tracking_quality=0.9 candidate_track_count=1" in message
+    assert (
+        "selection_method=best_continuous_track_segment selected_segment_observation_count=3 "
+        "selected_segment_duration_seconds=0.3" in message
+    )
+    assert (
+        "selected_identity_continues_under_another_track_id=unknown_no_reidentification_history"
+        in message
+    )
+    assert (
+        "suspected_id_switch_indicators=() fragmentation_indicators=('observation_gaps_present',)"
+        in message
+    )
+    assert selection.track.visible_frames == 3
+    assert run.player_boxes is not None and sorted(run.player_boxes[7]) == [0, 1, 4]
+    assert after == before
+
+
+def _box() -> BoundingBox:
+    return BoundingBox(0, 0, 10, 10)

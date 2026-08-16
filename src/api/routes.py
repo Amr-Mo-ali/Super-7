@@ -73,7 +73,7 @@ from services.player_rating.game_intelligence import (
     GameIntelligenceEvidenceDiagnostics,
     GameIntelligenceResult,
 )
-from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics
+from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
@@ -468,6 +468,7 @@ def _analyze_uploaded(
             ],
             metadata=request_metadata,
         )
+    _log_target_track_evidence(logger, analysis_id, ranked[0], metadata, run)
     return _completed(
         settings,
         tracker.model_version,
@@ -638,6 +639,86 @@ def _log_interaction_evidence(
         )
     except Exception:
         logger.exception("interaction_evidence_logging_failed analysis_id=%s", analysis_id)
+
+
+def _log_target_track_evidence(
+    logger: logging.Logger,
+    analysis_id: str,
+    selection: Selection,
+    metadata: VideoMetadata,
+    run: object,
+) -> None:
+    """Emit selected-track continuity evidence without changing analysis behavior."""
+    try:
+        typed_run = run if isinstance(run, TrackingRun) else None
+        track_id = selection.track.track_id
+        frames = sorted((typed_run.player_boxes or {}).get(track_id, {})) if typed_run else []
+        confidences = (typed_run.player_confidences or {}).get(track_id, {}) if typed_run else {}
+        observation_count = len(frames)
+        first_frame = frames[0] if frames else None
+        last_frame = frames[-1] if frames else None
+        fragments, gaps = _track_observation_continuity(frames)
+        average_confidence = (
+            sum(confidences.get(frame, selection.track.average_confidence) for frame in frames)
+            / observation_count
+            if observation_count
+            else selection.track.average_confidence
+        )
+        visible_duration = observation_count / metadata.fps if metadata.fps else 0.0
+        visibility_ratio = (
+            visible_duration / metadata.duration_seconds if metadata.duration_seconds else 0.0
+        )
+        tracking_quality = min(1.0, selection.track.visibility_ratio * average_confidence)
+        logger.warning(
+            "target_track_evidence analysis_id=%s track_id=%s video_duration_seconds=%s "
+            "first_seen_timestamp=%s last_seen_timestamp=%s visible_duration_seconds=%s "
+            "visibility_ratio=%s observation_count=%s longest_continuous_segment_seconds=%s "
+            "track_fragment_count=%s gap_count=%s largest_gap_seconds=%s "
+            "average_confidence=%s tracking_quality=%s candidate_track_count=%s "
+            "selection_method=%s selected_segment_observation_count=%s "
+            "selected_segment_duration_seconds=%s "
+            "selected_identity_continues_under_another_track_id=%s "
+            "suspected_id_switch_indicators=%s fragmentation_indicators=%s",
+            analysis_id,
+            track_id,
+            metadata.duration_seconds,
+            first_frame / metadata.fps if first_frame is not None and metadata.fps else None,
+            last_frame / metadata.fps if last_frame is not None and metadata.fps else None,
+            visible_duration,
+            visibility_ratio,
+            observation_count,
+            max((len(fragment) for fragment in fragments), default=0) / metadata.fps
+            if metadata.fps
+            else 0.0,
+            len(fragments),
+            len(gaps),
+            max(gaps, default=0) / metadata.fps if metadata.fps else 0.0,
+            average_confidence,
+            tracking_quality,
+            len(typed_run.tracks) if typed_run else None,
+            selection.method,
+            selection.track.visible_frames,
+            selection.segment_duration_seconds,
+            "unknown_no_reidentification_history",
+            (),
+            ("observation_gaps_present",) if gaps else (),
+        )
+    except Exception:
+        logger.exception("target_track_evidence_logging_failed analysis_id=%s", analysis_id)
+
+
+def _track_observation_continuity(frames: list[int]) -> tuple[list[list[int]], list[int]]:
+    """Group raw track observations; gaps show missing output, not an identity match."""
+    fragments: list[list[int]] = []
+    gaps: list[int] = []
+    for frame in frames:
+        if not fragments or frame != fragments[-1][-1] + 1:
+            if fragments:
+                gaps.append(frame - fragments[-1][-1] - 1)
+            fragments.append([frame])
+        else:
+            fragments[-1].append(frame)
+    return fragments, gaps
 
 
 def _gate_log_value(
