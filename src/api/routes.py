@@ -567,6 +567,8 @@ def _log_rating_evidence(
             technical_score.reason,
             physical.status if physical is not None else None,
             physical.reason if physical is not None else None,
+            game_intelligence.status,
+            game_intelligence.reason,
             len(technical_events.controlled_movement_candidates)
             if technical_events is not None
             else 0,
