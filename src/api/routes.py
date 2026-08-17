@@ -12,7 +12,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from pydantic import HttpUrl
 
-from api.public_rating_mapper import game_intelligence_result, public_rating_v2
+from api.public_rating_mapper import event_arbitration, game_intelligence_result, public_rating_v2
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
 from concurrency.exceptions import AnalysisCancelled
@@ -180,13 +180,18 @@ def _callback_payload(
     result: AnalyzeResponse,
 ) -> CallbackPayload:
     """Build the backend callback body from an already-finalized analysis result."""
-    public_result = public_rating_v2(result)
+    arbitration = event_arbitration(result) if isinstance(result, CompletedResponse) else None
+    public_result = public_rating_v2(result, arbitration)
     serialized = public_result.model_dump(mode="json")
     detailed = (
         DetailedRatingEngine().evaluate(
             result.scores.physical,
             result.technical_event_analysis,
             result.diagnostics.technical_event_analysis_quality,
+            result.pass_detection,
+            result.shot_detection,
+            arbitration,
+            result.selected_player.track_id,
         )
         if isinstance(result, CompletedResponse)
         else DetailedRatings()

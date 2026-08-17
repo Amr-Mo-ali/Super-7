@@ -32,6 +32,7 @@ VERSION = "public_rating_v2"
 
 def public_rating_v2(
     result: CompletedResponse | NonCompletedResponse | AmbiguousResponse,
+    arbitration: ArbitrationResult | None = None,
 ) -> PublicRatingV2Response | PublicRatingV2Failure:
     if not isinstance(result, CompletedResponse):
         status = result.status
@@ -53,8 +54,8 @@ def public_rating_v2(
         "physical_activity": _engine_rating(rating_summary, "physical_activity"),
         "ball_involvement": _engine_rating(rating_summary, "ball_involvement"),
     }
-    arbitration = EventArbitrator().arbitrate(_event_candidates(result))
-    game_intelligence = game_intelligence_result(result, arbitration)
+    resolved_arbitration = arbitration or event_arbitration(result)
+    game_intelligence = game_intelligence_result(result, resolved_arbitration)
     ratings["game_intelligence"] = PublicGameIntelligence(
         value=game_intelligence.value,
         confidence=game_intelligence.confidence,
@@ -90,7 +91,9 @@ def public_rating_v2(
         ratings[name] = _engine_rating(rating_summary, name)
     overall = _public_rating(rating_summary.overall)
     events = {
-        "timeline": [_arbitrated_event(item, result.video.fps) for item in arbitration.events]
+        "timeline": [
+            _arbitrated_event(item, result.video.fps) for item in resolved_arbitration.events
+        ]
     }
     return PublicRatingV2Response(
         request_id=result.analysis_id,
@@ -119,13 +122,13 @@ def public_rating_v2(
             "possible_ball_interactions": int(
                 result.interaction_analysis.possible_ball_interaction_count.value or 0
             ),
-            "controlled_movements": _arbitrated_count(arbitration, "controlled_movement"),
-            "dribbles": _arbitrated_count(arbitration, "dribble"),
-            "ball_losses": _arbitrated_count(arbitration, "ball_loss"),
-            "passes": _arbitrated_count(arbitration, "pass"),
-            "shots": _arbitrated_count(arbitration, "shot"),
-            "ambiguous_events": arbitration.ambiguous_conflict_count,
-            "deduplicated_total_events": arbitration.public_event_count,
+            "controlled_movements": _arbitrated_count(resolved_arbitration, "controlled_movement"),
+            "dribbles": _arbitrated_count(resolved_arbitration, "dribble"),
+            "ball_losses": _arbitrated_count(resolved_arbitration, "ball_loss"),
+            "passes": _arbitrated_count(resolved_arbitration, "pass"),
+            "shots": _arbitrated_count(resolved_arbitration, "shot"),
+            "ambiguous_events": resolved_arbitration.ambiguous_conflict_count,
+            "deduplicated_total_events": resolved_arbitration.public_event_count,
         },
         quality={
             "tracking": {
@@ -160,9 +163,14 @@ def public_rating_v2(
             "rating": rating_summary.version,
             "analysis": result.analysis_version,
             "technical_events": result.algorithm_versions.get("controlled_movement", "unknown"),
-            "event_arbitration": arbitration.version,
+            "event_arbitration": resolved_arbitration.version,
         },
     )
+
+
+def event_arbitration(result: CompletedResponse) -> ArbitrationResult:
+    """Apply the established event arbitration to a completed analysis result."""
+    return EventArbitrator().arbitrate(_event_candidates(result))
 
 
 def game_intelligence_result(

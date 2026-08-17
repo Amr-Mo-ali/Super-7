@@ -1,17 +1,25 @@
 """Focused contract tests for evidence-gated detailed callback ratings."""
 
+from math import nan
+
 import pytest
 
 from schemas.analysis import (
     BallLossCandidateResponse,
     ControlledMovementCandidateResponse,
     DribbleCandidateResponse,
+    PassCandidateResponse,
+    PassDetectionResponse,
     PhysicalScoreEvidenceResponse,
     PhysicalScoreResponse,
+    ShotCandidateResponse,
+    ShotDetectionResponse,
     TechnicalEventAnalysisResponse,
     UnsupportedMetric,
 )
 from services.detailed_rating.engine import DetailedRatingEngine
+from services.event_arbitration import EventArbitrator, EventCandidateRef
+from services.event_arbitration.models import ArbitrationResult
 
 
 def _physical(
@@ -89,6 +97,117 @@ def _events(
     )
 
 
+def _pass(
+    pass_id: str, confidence: float, possessor: int = 1, start: int = 0
+) -> PassCandidateResponse:
+    return PassCandidateResponse(
+        pass_id=pass_id,
+        possessor_track_id=possessor,
+        receiver_track_id=2,
+        start_frame=start,
+        release_frame=start + 2,
+        end_frame=start + 5,
+        duration_seconds=0.5,
+        distance=100,
+        confidence=confidence,
+        release_speed=200,
+        trajectory_points=[(0, 0), (50, 0), (100, 0)],
+        trajectory_duration=0.3,
+        trajectory_length=100,
+        trajectory_direction=(1, 0),
+        trajectory_quality=0.9,
+        status="pass_candidate",
+    )
+
+
+def _shot(
+    shot_id: str, confidence: float, possessor: int = 1, start: int = 0
+) -> ShotCandidateResponse:
+    return ShotCandidateResponse(
+        shot_id=shot_id,
+        possessor_track_id=possessor,
+        start_frame=start,
+        preparation_start_frame=start,
+        preparation_end_frame=start + 1,
+        release_frame=start + 2,
+        end_frame=start + 5,
+        duration_seconds=0.5,
+        distance=100,
+        trajectory_points=[(0, 0), (50, 0), (100, 0)],
+        trajectory_duration=0.3,
+        mean_speed=200,
+        maximum_speed=300,
+        release_speed=250,
+        release_direction=(1, 0),
+        release_acceleration=100,
+        preparation_confidence=0.9,
+        release_confidence=0.9,
+        trajectory_quality=0.9,
+        follow_through_confidence=0.9,
+        confidence=confidence,
+        status="shot_candidate",
+    )
+
+
+def _arbitration(
+    passes: list[PassCandidateResponse] | None = None,
+    shots: list[ShotCandidateResponse] | None = None,
+) -> ArbitrationResult:
+    pass_items, shot_items = passes or [], shots or []
+    refs = [
+        EventCandidateRef(
+            item.pass_id,
+            "pass",
+            item.start_frame,
+            item.release_frame,
+            item.end_frame,
+            item.possessor_track_id,
+            item.receiver_track_id,
+            item.confidence,
+            item.trajectory_quality,
+            item.distance,
+            "test",
+        )
+        for item in pass_items
+    ] + [
+        EventCandidateRef(
+            item.shot_id,
+            "shot",
+            item.start_frame,
+            item.release_frame,
+            item.end_frame,
+            item.possessor_track_id,
+            None,
+            item.confidence,
+            item.trajectory_quality,
+            item.distance,
+            "test",
+            item.preparation_confidence,
+            item.release_confidence,
+            item.follow_through_confidence,
+        )
+        for item in shot_items
+    ]
+    return EventArbitrator().arbitrate(tuple(refs))
+
+
+def _detailed(
+    passes: list[PassCandidateResponse] | None = None,
+    shots: list[ShotCandidateResponse] | None = None,
+    target: int = 1,
+):
+    pass_items, shot_items = passes or [], shots or []
+    return DetailedRatingEngine().evaluate(
+        _physical(),
+        _events([_controlled()]),
+        0.8,
+        PassDetectionResponse(pass_candidates=pass_items),
+        ShotDetectionResponse(shot_candidates=shot_items),
+        _arbitration(pass_items, shot_items),
+        target,
+    )
+
+
 def test_supported_detailed_scores_are_deterministic_and_bounded() -> None:
     engine = DetailedRatingEngine()
     first = engine.evaluate(_physical(), _events([_controlled()], [_dribble()]), 0.8)
@@ -152,3 +271,50 @@ def test_insufficient_physical_status_does_not_expose_movement_activity() -> Non
     )
 
     assert ratings.speed_and_fitness is None
+
+
+def test_target_accepted_pass_and_shot_scores_are_mean_event_confidence() -> None:
+    ratings = _detailed(
+        [_pass("pass-1", 0.8), _pass("pass-2", 0.6, start=10)],
+        [_shot("shot-1", 0.9, start=20), _shot("shot-2", 0.7, start=30)],
+    )
+
+    assert ratings.passing_and_playmaking == pytest.approx(70.0)
+    assert ratings.shooting_and_finishing == pytest.approx(80.0)
+    assert ratings.speed_and_fitness == 70.0
+    assert ratings.ball_control_and_individual_skill == pytest.approx(73.0)
+    assert ratings.defending_and_duels is None
+    assert ratings.tactical_intelligence_and_teamwork is None
+    assert ratings.positioning_and_off_ball_movement is None
+
+
+def test_other_players_events_do_not_contaminate_target_detailed_ratings() -> None:
+    ratings = _detailed(
+        [_pass("target-pass", 0.6), _pass("other-pass", 1.0, possessor=2, start=10)],
+        [_shot("target-shot", 0.7, start=20), _shot("other-shot", 1.0, possessor=2, start=30)],
+    )
+    other_only = _detailed([_pass("other-pass", 0.9, 2)], [_shot("other-shot", 0.9, 2)])
+
+    assert ratings.passing_and_playmaking == pytest.approx(60.0)
+    assert ratings.shooting_and_finishing == pytest.approx(70.0)
+    assert other_only.passing_and_playmaking is None
+    assert other_only.shooting_and_finishing is None
+
+
+def test_ambiguous_or_absent_events_do_not_produce_detailed_scores() -> None:
+    ambiguous = _detailed([_pass("pass-1", 0.9)], [_shot("shot-1", 0.9)])
+    absent = _detailed()
+
+    assert ambiguous.passing_and_playmaking is None
+    assert ambiguous.shooting_and_finishing is None
+    assert absent.passing_and_playmaking is None
+    assert absent.shooting_and_finishing is None
+
+
+def test_non_finite_event_confidence_is_safely_excluded() -> None:
+    pass_item = _pass("pass-1", 0.8).model_copy(update={"confidence": nan})
+    shot_item = _shot("shot-1", 0.8).model_copy(update={"confidence": nan})
+    ratings = _detailed([pass_item], [shot_item])
+
+    assert ratings.passing_and_playmaking is None
+    assert ratings.shooting_and_finishing is None
