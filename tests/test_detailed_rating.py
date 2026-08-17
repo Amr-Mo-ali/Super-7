@@ -17,6 +17,7 @@ from schemas.analysis import (
     TechnicalEventAnalysisResponse,
     UnsupportedMetric,
 )
+from services.callback_service import DetailedRatings
 from services.detailed_rating.engine import DetailedRatingEngine
 from services.event_arbitration import EventArbitrator, EventCandidateRef
 from services.event_arbitration.models import ArbitrationResult
@@ -195,7 +196,7 @@ def _detailed(
     passes: list[PassCandidateResponse] | None = None,
     shots: list[ShotCandidateResponse] | None = None,
     target: int = 1,
-):
+) -> DetailedRatings:
     pass_items, shot_items = passes or [], shots or []
     return DetailedRatingEngine().evaluate(
         _physical(),
