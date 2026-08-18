@@ -71,7 +71,7 @@ Actual callback fields are snake_case:
 {"request_id":"<analysisId>","video_id":"video-123","player_id":"player-456","status":"completed","summary":{},"ratings":{},"overall":null,"detailed":{"speed_and_fitness":null,"ball_control_and_individual_skill":null,"passing_and_playmaking":null,"shooting_and_finishing":null,"defending_and_duels":null,"tactical_intelligence_and_teamwork":null,"positioning_and_off_ball_movement":null},"events":{},"error":null}
 ```
 
-Successful data is Public Rating V2 `summary`, `ratings`, `overall`, and `events`; existing `ratings` and `overall` locations are unchanged. Successful/non-failed callbacks also include a `detailed` object with exactly these currently-null fields:
+Successful data is Public Rating V2 `summary`, `ratings`, `overall`, and `events`; existing `ratings` and `overall` locations are unchanged. Successful/non-failed callbacks also include a `detailed` object with these nullable fields:
 
 | JSON field | Arabic label |
 |---|---|
@@ -85,17 +85,17 @@ Successful data is Public Rating V2 `summary`, `ratings`, `overall`, and `events
 
 `null` means no validated detailed score is currently available; `0` will mean a genuine calculated zero if numeric scoring is introduced later. `detailed` is success-only: failed callbacks do not contain it. Non-completed analysis uses its result status and `{}` for its maps. Processing failure uses `status:"failed"`, empty maps, `overall:null`, and `error:{"code":"<exception class>","message":"Analysis could not be completed."}`. Evidence: `src/services/callback_service.py:CallbackPayload`, `src/api/routes.py:_callback_payload`, `create_analysis_job_processor`.
 
-Current detailed-axis support is deliberately narrow:
+Current detailed-axis support is deliberately narrow and evidence-gated (see [ADR-001](../adr/001-evidence-gated-detailed-player-ratings.md)):
 
 | Axis | Status | Evidence / formula / gate | Limitation |
 |---|---|---|---|
 | `speed_and_fitness` | supported as visible movement activity only | `100 * movement_intensity`, using the existing physical-score evidence gate (quality, visibility, duration, observations, accepted intervals) | Image-space movement only; not a physiological fitness or stamina score. |
 | `ball_control_and_individual_skill` | supported | Existing controlled-movement/dribble component formula, minus the existing ball-loss penalty; requires technical-event quality and at least one controlled or dribble candidate | Candidate-event proxy; not a complete individual-skill assessment. |
-| `passing_and_playmaking` | partially_supported | Pass candidates exist | No completion, chance creation, assist, or playmaking outcome evidence; remains `null`. |
-| `shooting_and_finishing` | partially_supported | Shot candidates exist | No target, goal, or finishing outcome evidence; remains `null`. |
+| `passing_and_playmaking` | partially_supported | Accepted, target-attributed, conflict-free pass candidates | `100 * mean(qualifying confidence)`; not completion, accuracy, assists, or full playmaking ability. |
+| `shooting_and_finishing` | partially_supported | Accepted, target-attributed, conflict-free shot candidates | `100 * mean(qualifying confidence)`; observed shot-like evidence only, not finishing ability or outcome quality. |
 | `defending_and_duels` | unsupported | No defensive-event evidence | Remains `null`. |
-| `tactical_intelligence_and_teamwork` | partially_supported | Single-player game-intelligence proxies exist | Team/opponent/phase context is absent; remains `null`. |
-| `positioning_and_off_ball_movement` | partially_supported | Image-space movement exists | Cannot separate meaningful off-ball positioning from generic motion; remains `null`. |
+| `tactical_intelligence_and_teamwork` | unsupported | No direct team/tactical evidence | Team/opponent/phase context is absent; remains `null`. |
+| `positioning_and_off_ball_movement` | unsupported | No direct positioning evidence | Image-space movement cannot be used as a proxy; remains `null`. |
 
 # 10. Callback Delivery vs Analysis Result
 
@@ -183,7 +183,7 @@ Evidence: `src/core/config.py:Settings.from_environment`, `.env.example`.
 1. Backend writes `/data/videos/test-video.mp4`.
 2. It sends `{"videoId":"video-123","playerId":"player-456","videoUrl":"test-video.mp4","callbackUrl":"https://backend.example.com/api/video-analysis/webhook"}`.
 3. It records `{"analysisId":"<uuid>","videoId":"video-123","playerId":"player-456","status":"queued"}`.
-4. Worker transitions `QUEUED → RUNNING`, resolves `/videos/test-video.mp4`, then POSTs the completed callback described in section 9, including its seven-null-key `detailed` object (real existing maps depend on result).
+4. Worker transitions `QUEUED → RUNNING`, resolves `/videos/test-video.mp4`, then POSTs the completed callback described in section 9, including evidence-gated values in its `detailed` object (real existing maps depend on result).
 5. Backend persists against its IDs and correlation ID.
 
 # 23. Known Limitations
