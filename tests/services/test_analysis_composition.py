@@ -25,8 +25,16 @@ def test_factory_builds_independent_lazy_default_components(
     monkeypatch.setattr(YOLOPlayerDetector, "_load_model", lambda _: loaded.append("player"))
     monkeypatch.setattr(YOLOBallDetector, "_load_model", lambda _: loaded.append("ball"))
     settings = Settings(model_path="player.pt", ball_model_path="ball.pt")
-    first = create_analysis_components(settings, logging.getLogger("test.composition"))
-    second = create_analysis_components(settings, logging.getLogger("test.composition"))
+    first = create_analysis_components(
+        settings,
+        player_detector_logger=logging.getLogger("test.player"),
+        ball_detector_logger=logging.getLogger("test.ball"),
+    )
+    second = create_analysis_components(
+        settings,
+        player_detector_logger=logging.getLogger("test.player"),
+        ball_detector_logger=logging.getLogger("test.ball"),
+    )
     assert isinstance(first.tracker, DetectionOnlyPlayerTracker)
     assert first.tracker is not second.tracker
     assert first.extractor is not second.extractor
@@ -38,6 +46,9 @@ def test_factory_builds_independent_lazy_default_components(
 def test_factory_honors_tracker_override() -> None:
     tracker = _Tracker()
     components = create_analysis_components(
-        Settings(), logging.getLogger("test.composition"), tracker_override=tracker
+        Settings(),
+        player_detector_logger=logging.getLogger("test.player"),
+        ball_detector_logger=logging.getLogger("test.ball"),
+        tracker_override=tracker,
     )
     assert components.tracker is tracker

@@ -42,7 +42,8 @@ def create_app(
 
     components = create_analysis_components(
         resolved_settings,
-        get_logger("football_analysis.api"),
+        player_detector_logger=get_logger("football_analysis.detector"),
+        ball_detector_logger=get_logger("football_analysis.ball_detector"),
         tracker_override=tracker,
         selector_override=selector,
         validator_override=validator,
