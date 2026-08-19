@@ -74,6 +74,9 @@ existing OpenAPI document responds at `/openapi.json`; this does not add a healt
 ## Layout
 
 ```text
-src/football_analysis/  Application package (intentionally empty of feature code)
-tests/                  Test package
+src/api/                API, request lifecycle, and public presentation
+src/services/           Video-analysis, scoring, and callback services
+src/schemas/            API and response contracts
+tests/                  Test suite
+docs/                   Architecture, remediation, and decision records
 ```
