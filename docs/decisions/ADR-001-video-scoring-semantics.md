@@ -31,4 +31,4 @@ Tests establish deterministic formulas, gating, bounds, target attribution, and 
 
 ## Mismatch to preserve
 
-`PlayerRatingEngine.summarize()` can accept a game-intelligence result, but the production route does not provide one and Public V2 calculates game intelligence separately. Consequently, game intelligence is public but never participates in current `overall`.
+`PlayerRatingEngine.summarize()` exposes an optional game-intelligence parameter, but this is not safe Overall support. Production route wiring does not pass it and Public V2 calculates game intelligence separately. If an available game-intelligence result is passed, it enters the available category set while `_overall()` has no corresponding weight, causing `KeyError`. Consequently, game intelligence is public but excluded from the current production Overall.
