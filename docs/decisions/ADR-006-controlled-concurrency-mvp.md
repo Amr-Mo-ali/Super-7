@@ -16,7 +16,7 @@ The immediate objective is controlled concurrency and measured capacity on the 4
 - Lightweight network I/O, including callback HTTP delivery, may remain asynchronous.
 - No Redis, Celery, Kubernetes, PostgreSQL runtime integration, autoscaling, multiple hosts, new database server, or direct Apex-table writes are part of this MVP.
 
-The current code uses `AnalysisExecutor.execute()` with `asyncio.to_thread`, but that is a current implementation fact, not the selected future CPU boundary. The recommended mechanism is a small, supervised set of long-lived `multiprocessing` worker processes, with simple job/result messages and one model/pipeline composition per worker. This is preferred over `ProcessPoolExecutor` because the current request pipeline is a closure over many service instances and lifecycle objects, and workers need explicit startup, health, cleanup, and ownership. It is preferred over passing work by `fork` because worker construction can be made explicit. The exact message and supervisor design is deferred to MVP-2 after process-safety tests.
+The current code uses `AnalysisExecutor.execute()` with `asyncio.to_thread`, but that is a current implementation fact, not the selected future CPU boundary. The approved mechanism is `ProcessPoolExecutor` with an explicit `spawn` context, a top-level child initializer and pickle-safe callable, and one worker initially; see ADR-007. This retains explicit child composition without bespoke worker lifecycle infrastructure. The API process retains the bounded admission queue and remains responsible for supervision, result handling, and callbacks. `fork` sharing is not approved.
 
 ## Explicit non-durability
 
