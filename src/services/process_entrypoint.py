@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pickle
 import re
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -25,7 +24,7 @@ from services.video_path_resolver import VideoPathResolver
 
 CHILD_ANALYSIS_SCHEMA_VERSION = 1
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_RESPONSE_ADAPTER = TypeAdapter(AnalyzeResponse)
+_RESPONSE_ADAPTER: TypeAdapter[AnalyzeResponse] = TypeAdapter(AnalyzeResponse)
 _runtime: _ChildRuntime | None = None
 
 
@@ -74,11 +73,10 @@ class ChildAnalysisFailure:
 
     def __post_init__(self) -> None:
         _validate_result(self.analysis_id, self.processing_duration_ms, self.schema_version)
-        if (
-            self.error_code != "ANALYSIS_FAILED"
-            or self.public_message != "Analysis could not be completed."
-        ):
-            raise ValueError("child failures must use the fixed sanitized form")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", self.error_code):
+            raise ValueError("child failure code must be a safe exception class name")
+        if self.public_message != "Analysis could not be completed.":
+            raise ValueError("child failures must use the fixed sanitized message")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +90,20 @@ class ChildAnalysisCancelled:
 
 
 type ChildAnalysisResult = ChildAnalysisSuccess | ChildAnalysisFailure | ChildAnalysisCancelled
+
+
+@dataclass(frozen=True, slots=True)
+class ParentFailure:
+    error_code: str
+    public_message: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParentCancelled:
+    analysis_id: str
+
+
+type ParentChildResult = AnalyzeResponse | ParentFailure | ParentCancelled
 
 
 @dataclass(slots=True)
@@ -128,10 +140,9 @@ def initialize_analysis_child(settings: Settings) -> None:
         logger,
     )
     logger.info(
-        "analysis_child_initialized child_pid=%s analysis_version=%s model_version=%s",
+        "analysis_child_initialized child_pid=%s analysis_version=%s execution_mode=child",
         os.getpid(),
         settings.analysis_version,
-        components.tracker.model_version,
     )
 
 
@@ -142,6 +153,7 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
         raise RuntimeError("analysis child is not initialized")
     started = perf_counter()
     artifacts = None
+    outcome: ChildAnalysisResult | None = None
     try:
         runtime.path_resolver.validate_reference(request.video_reference)
         video_path = runtime.path_resolver.resolve(request.video_reference)
@@ -170,7 +182,7 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
             artifacts,
             {},
         )
-        return ChildAnalysisSuccess(
+        outcome = ChildAnalysisSuccess(
             request.analysis_id,
             result.model_dump_json(),
             runtime.settings.analysis_version,
@@ -178,25 +190,56 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
             _milliseconds(started),
         )
     except AnalysisCancelled:
-        return ChildAnalysisCancelled(request.analysis_id, _milliseconds(started))
-    except Exception:
-        return ChildAnalysisFailure(
+        outcome = ChildAnalysisCancelled(request.analysis_id, _milliseconds(started))
+    except Exception as error:
+        outcome = ChildAnalysisFailure(
             request.analysis_id,
-            "ANALYSIS_FAILED",
+            type(error).__name__,
             "Analysis could not be completed.",
             _milliseconds(started),
         )
     finally:
         if artifacts is not None:
-            artifacts.cleanup()
+            try:
+                artifacts.cleanup()
+            except Exception as error:
+                runtime.logger.warning(
+                    "analysis_child_cleanup_failed analysis_id=%s cleanup_error_type=%s",
+                    request.analysis_id,
+                    type(error).__name__,
+                )
+                if isinstance(outcome, ChildAnalysisSuccess):
+                    outcome = ChildAnalysisFailure(
+                        request.analysis_id,
+                        type(error).__name__,
+                        "Analysis could not be completed.",
+                        _milliseconds(started),
+                    )
+    assert outcome is not None
+    return outcome
 
 
-def deserialize_child_success(result: ChildAnalysisSuccess) -> AnalyzeResponse:
-    """Validate a child success envelope before a future parent uses it."""
-    response = _RESPONSE_ADAPTER.validate_json(result.response_json)
-    if response.analysis_id != result.analysis_id:
-        raise ValueError("child response analysis ID does not match its envelope")
-    return response
+def validate_child_result(
+    expected_analysis_id: str,
+    expected_schema_version: int,
+    result: ChildAnalysisResult,
+) -> ParentChildResult:
+    """Validate one child envelope before a future parent performs callback work."""
+    if (
+        result.analysis_id != expected_analysis_id
+        or result.schema_version != expected_schema_version
+    ):
+        raise ValueError("child result does not match the expected analysis identity or schema")
+    if isinstance(result, ChildAnalysisSuccess):
+        response: AnalyzeResponse = _RESPONSE_ADAPTER.validate_json(result.response_json)
+        if response.analysis_id != result.analysis_id:
+            raise ValueError("child response analysis ID does not match its envelope")
+        return response
+    if isinstance(result, ChildAnalysisFailure):
+        return ParentFailure(result.error_code, result.public_message)
+    if isinstance(result, ChildAnalysisCancelled):
+        return ParentCancelled(result.analysis_id)
+    raise ValueError("child result has an unknown shape")
 
 
 def _validate_reference(value: str) -> None:
@@ -234,8 +277,3 @@ def _reset_child_runtime_for_test() -> None:
     """Test-only internal seam; never used by production runtime."""
     global _runtime
     _runtime = None
-
-
-def settings_are_pickle_safe(settings: Settings) -> bool:
-    """Narrow test helper documenting the explicitly typed settings boundary."""
-    return pickle.loads(pickle.dumps(settings)) == settings
