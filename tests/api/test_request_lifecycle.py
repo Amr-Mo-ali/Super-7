@@ -1,6 +1,7 @@
 """Deterministic tests for local analysis lifecycle coordination."""
 
 import asyncio
+import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -211,6 +212,39 @@ def test_artifact_cleanup_failure_still_releases_permit() -> None:
             assert (await controller.metrics()).active_permits == 0
 
     asyncio.run(scenario())
+
+
+def test_artifact_cleanup_observations_cover_completed_and_failed_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            caplog.set_level(logging.INFO, logger="football_analysis.lifecycle")
+            lifecycle = RequestLifecycle(
+                AdmissionController(1),
+                AnalysisExecutor(),
+                ArtifactManager(Path(directory), 1024),
+            )
+            assert await lifecycle.execute_with_artifacts("cleanup-success", lambda _, __: 42) == 42
+            with pytest.raises(RuntimeError, match="pipeline failed"):
+                await lifecycle.execute_with_artifacts(
+                    "cleanup-failure",
+                    lambda _, __: (_ for _ in ()).throw(RuntimeError("pipeline failed")),
+                )
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "analysis_cleanup_finished analysis_id=cleanup-success cleanup_outcome=completed" in message
+        and "cleanup_succeeded=True" in message
+        for message in messages
+    )
+    assert any(
+        "analysis_cleanup_finished analysis_id=cleanup-failure cleanup_outcome=failed" in message
+        and "cleanup_succeeded=True" in message
+        for message in messages
+    )
+    assert all("TemporaryDirectory" not in message for message in messages)
 
 
 def test_cancellation_initialization_failure_releases_permit(

@@ -1,10 +1,13 @@
 """Backend integration contract tests for the analyze endpoint."""
 
 import asyncio
+import logging
+import time
 from pathlib import Path
 from typing import cast
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from pydantic import HttpUrl
 
@@ -72,7 +75,8 @@ class FakeCallbackService:
         del callback_url
 
 
-def test_analyze_accepts_a_valid_backend_request() -> None:
+def test_analyze_accepts_a_valid_backend_request(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="football_analysis.api")
     callback = FakeCallbackService()
     response = asyncio.run(_post(_payload(), callback))
     assert response.status_code == 202
@@ -87,6 +91,16 @@ def test_analyze_accepts_a_valid_backend_request() -> None:
     assert "scores" not in response.json()
     assert "schema_version" not in response.json()
     assert callback.payloads == []
+    admission = next(
+        record.getMessage()
+        for record in caplog.records
+        if "analysis_admission_accepted" in record.getMessage()
+    )
+    assert "admission_duration_ms=" in admission
+    assert "active_analysis_count=0" in admission
+    assert "max_active_analyses=1" in admission
+    assert "test-video.mp4" not in admission
+    assert "72.62.28.146" not in admission
 
 
 def test_analyze_rejects_missing_required_fields() -> None:
@@ -101,14 +115,24 @@ def test_analyze_rejects_an_invalid_callback_url() -> None:
     assert response.status_code == 422
 
 
-def test_analyze_rejects_explicitly_when_the_queue_is_full() -> None:
+def test_analyze_rejects_explicitly_when_the_queue_is_full(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="football_analysis.api")
         queue = AnalysisQueue(1)
         first = await _post(_payload(), analysis_queue=queue)
         second = await _post(_payload(), analysis_queue=queue)
         assert first.status_code == 202
         assert second.status_code == 503
         assert second.json()["detail"]["error"] == "Analysis queue is full."
+        rejection = next(
+            record.getMessage()
+            for record in caplog.records
+            if "analysis_admission_rejected" in record.getMessage()
+        )
+        assert "rejection_reason=queue_full" in rejection
+        assert "admission_duration_ms=" in rejection
 
     asyncio.run(scenario())
 
@@ -151,6 +175,48 @@ def test_lifespan_worker_delivers_failure_callback() -> None:
     asyncio.run(scenario())
 
 
+def test_execution_duration_excludes_inline_callback_delivery(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="football_analysis")
+
+        def delayed_transport(*_: object) -> int:
+            time.sleep(0.02)
+            return 204
+
+        callback = CallbackService(
+            1,
+            logging.getLogger("football_analysis.callback"),
+            transport=delayed_transport,
+            resolver=lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
+        )
+        app = _app(callback)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+            assert response.status_code == 202
+            await _wait_for(
+                lambda: any(
+                    "analysis_job_terminal" in record.getMessage() for record in caplog.records
+                )
+            )
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    execution = next(message for message in messages if "analysis_execution_finished" in message)
+    callback = next(message for message in messages if "analysis_callback_finished" in message)
+    terminal = next(message for message in messages if "analysis_job_terminal" in message)
+    assert _milliseconds(callback, "callback_duration_ms") >= 10
+    assert _milliseconds(execution, "analysis_duration_ms") < _milliseconds(
+        callback, "callback_duration_ms"
+    )
+    assert _milliseconds(terminal, "end_to_end_duration_ms") >= _milliseconds(
+        callback, "callback_duration_ms"
+    )
+
+
 def test_request_aliases_normalize_to_snake_case_fields() -> None:
     payload = _payload()
     request = AnalyzeRequest.model_validate(payload)
@@ -187,7 +253,7 @@ async def _post(
 
 
 def _app(
-    callback: FakeCallbackService,
+    callback: CallbackService | FakeCallbackService,
     tracker: FakeTracker | FailingTracker | None = None,
     analysis_queue: AnalysisQueue | None = None,
 ) -> FastAPI:
@@ -228,3 +294,8 @@ def _detailed_nulls() -> dict[str, None]:
         "tactical_intelligence_and_teamwork": None,
         "positioning_and_off_ball_movement": None,
     }
+
+
+def _milliseconds(message: str, field: str) -> int:
+    value = next(part.split("=", 1)[1] for part in message.split() if part.startswith(f"{field}="))
+    return int(value)

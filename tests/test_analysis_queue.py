@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import fields
 
+import pytest
 from pydantic import HttpUrl, TypeAdapter
 
 from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue, AnalysisWorker
@@ -101,6 +102,42 @@ def test_shutdown_stops_new_queue_admission_and_cancels_waiting_jobs() -> None:
         assert await queue.submit(_job("later")) is False
 
     asyncio.run(scenario())
+
+
+def test_worker_logs_queue_wait_terminal_active_limit_and_shutdown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="test.queue.observability")
+        queue = AnalysisQueue(2)
+
+        async def processor(_: AnalysisJob) -> AnalysisJobState:
+            return AnalysisJobState.COMPLETED
+
+        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.observability"))
+        assert await queue.submit(_job("observed"))
+        await worker.start()
+        await _wait_for(lambda: queue.state_of("observed") is AnalysisJobState.COMPLETED)
+        assert queue.metrics().active_analysis_count == 0
+        assert queue.metrics().max_active_analyses == 1
+        assert await queue.submit(_job("shutdown"))
+        worker.begin_shutdown()
+        await worker.shutdown()
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(message for message in messages if "analysis_job_started" in message)
+    terminal = next(message for message in messages if "analysis_job_terminal" in message)
+    cancelled = next(message for message in messages if "analysis_job_cancelled" in message)
+    assert "queue_wait_ms=" in started
+    assert "active_analysis_count=1" in started
+    assert "max_active_analyses=1" in started
+    assert "final_state=COMPLETED" in terminal
+    assert "end_to_end_duration_ms=" in terminal
+    assert "cancellation_reason=shutdown" in cancelled
+    assert sum("analysis_job_terminal" in message for message in messages) == 1
+    assert "analysis_shutdown_started" in messages
+    assert "analysis_shutdown_finished" in messages
 
 
 async def _wait_for(predicate: object) -> None:

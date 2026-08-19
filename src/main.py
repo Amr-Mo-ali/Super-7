@@ -112,7 +112,7 @@ def create_app(
             await worker.start()
             yield
         finally:
-            resolved_analysis_queue.stop_accepting()
+            worker.begin_shutdown()
             await resolved_lifecycle.shutdown()
             await worker.shutdown()
 
