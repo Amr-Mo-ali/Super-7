@@ -6,8 +6,6 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from adapters.yolo_ball_detector import YOLOBallDetector
-from adapters.yolo_player_detector import YOLOPlayerDetector
 from api.health import create_health_router
 from api.request_lifecycle import RequestLifecycle
 from api.routes import create_analysis_job_processor, create_router
@@ -17,19 +15,11 @@ from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
+from services.analysis_composition import create_analysis_components
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
-from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.callback_service import CallbackService
-from services.feature_extractor import FeatureExtractor
-from services.interactions.analyzer import BallInteractionAnalyzer
-from services.movement.analyzer import BottomCenterMovementAnalyzer
-from services.pass_detection import PassDetector
-from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
-from services.scoring.physical_activity import RuleBasedPhysicalActivityScorer
-from services.selection import TargetPlayerSelector, WeightedTargetPlayerSelector
-from services.shot_detection import ShotDetector
-from services.technical_events.analyzer import TechnicalEventAnalyzer
-from services.tracker import ByteTrackTracker
+from services.player_tracker import AutomaticPlayerTracker
+from services.selection import TargetPlayerSelector
 from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
@@ -50,18 +40,16 @@ def create_app(
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
-    def tracker_factory() -> ByteTrackTracker:
-        return ByteTrackTracker(resolved_settings)
-
-    resolved_tracker = tracker or DetectionOnlyPlayerTracker(
-        YOLOPlayerDetector(resolved_settings, get_logger("football_analysis.detector")),
-        tracker_factory,
+    components = create_analysis_components(
         resolved_settings,
-        YOLOBallDetector(resolved_settings, get_logger("football_analysis.ball_detector")),
+        get_logger("football_analysis.api"),
+        tracker_override=tracker,
+        selector_override=selector,
+        validator_override=validator,
     )
     get_logger("football_analysis.startup").info(
         "detector=%s model=%s device=%s enabled=true",
-        resolved_tracker.__class__.__name__,
+        components.tracker.__class__.__name__,
         resolved_settings.model_path,
         resolved_settings.model_device,
     )
@@ -85,18 +73,18 @@ def create_app(
     resolved_analysis_queue = analysis_queue or AnalysisQueue(resolved_settings.max_queued_analyses)
     processor = create_analysis_job_processor(
         resolved_settings,
-        validator or VideoValidator(resolved_settings),
-        resolved_tracker,
-        selector or WeightedTargetPlayerSelector(resolved_settings),
-        FeatureExtractor(),
-        NormalizedBallProximityAnalyzer(resolved_settings),
-        BottomCenterMovementAnalyzer(resolved_settings),
-        BallInteractionAnalyzer(resolved_settings),
-        TechnicalEventAnalyzer(resolved_settings),
-        PassDetector(resolved_settings),
-        ShotDetector(),
+        components.validator,
+        components.tracker,
+        components.selector,
+        components.extractor,
+        components.ball_proximity_analyzer,
+        components.movement_analyzer,
+        components.interaction_analyzer,
+        components.technical_event_analyzer,
+        components.pass_detector,
+        components.shot_detector,
         get_logger("football_analysis.api"),
-        RuleBasedPhysicalActivityScorer(resolved_settings),
+        components.physical_scorer,
         resolved_lifecycle,
         resolved_path_resolver,
         resolved_callback_service,
@@ -137,17 +125,17 @@ def create_app(
     app.include_router(
         create_router(
             resolved_settings,
-            validator or VideoValidator(resolved_settings),
-            resolved_tracker,
-            selector or WeightedTargetPlayerSelector(resolved_settings),
-            FeatureExtractor(),
-            NormalizedBallProximityAnalyzer(resolved_settings),
-            BottomCenterMovementAnalyzer(resolved_settings),
-            BallInteractionAnalyzer(resolved_settings),
-            TechnicalEventAnalyzer(resolved_settings),
-            PassDetector(resolved_settings),
-            ShotDetector(),
-            RuleBasedPhysicalActivityScorer(resolved_settings),
+            components.validator,
+            components.tracker,
+            components.selector,
+            components.extractor,
+            components.ball_proximity_analyzer,
+            components.movement_analyzer,
+            components.interaction_analyzer,
+            components.technical_event_analyzer,
+            components.pass_detector,
+            components.shot_detector,
+            components.physical_scorer,
             get_logger("football_analysis.api"),
             resolved_lifecycle,
             downloader or VideoDownloader(resolved_settings),
