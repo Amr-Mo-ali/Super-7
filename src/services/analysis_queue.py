@@ -61,7 +61,12 @@ class _JobTiming:
 class AnalysisQueue:
     """Application-owned, bounded queue holding lightweight analysis references only."""
 
-    def __init__(self, capacity: int, max_active_analyses: int = 1) -> None:
+    def __init__(
+        self,
+        capacity: int,
+        max_active_analyses: int = 1,
+        clock: Callable[[], float] = perf_counter,
+    ) -> None:
         if max_active_analyses != 1:
             raise ValueError("The controlled MVP currently supports exactly one active analysis.")
         self._queue: asyncio.Queue[AnalysisJob] = asyncio.Queue(maxsize=capacity)
@@ -71,17 +76,22 @@ class AnalysisQueue:
         self._worker_running = False
         self._active_analysis_count = 0
         self._max_active_analyses = max_active_analyses
+        self._clock = clock
 
     async def submit(self, job: AnalysisJob) -> bool:
         if not self._accepting or self._queue.full():
             return False
         self._queue.put_nowait(job)
         self._states[job.analysis_id] = AnalysisJobState.QUEUED
-        self._timings[job.analysis_id] = _JobTiming(perf_counter())
+        self._timings[job.analysis_id] = _JobTiming(self._clock())
         return True
 
     async def next_job(self) -> AnalysisJob:
         return await self._queue.get()
+
+    async def wait_until_idle(self) -> None:
+        """Wait until all claimed queue items have reached one terminal bookkeeping path."""
+        await self._queue.join()
 
     def mark_running(self, job: AnalysisJob) -> float | None:
         if self._states.get(job.analysis_id) is AnalysisJobState.CANCELLED:
@@ -90,7 +100,7 @@ class AnalysisQueue:
         timing = self._timings.get(job.analysis_id)
         if timing is None:
             return 0.0
-        timing.started_at = perf_counter()
+        timing.started_at = self._clock()
         self._active_analysis_count += 1
         return _milliseconds(timing.started_at - timing.enqueued_at)
 
@@ -103,7 +113,7 @@ class AnalysisQueue:
         timing = self._timings.pop(job.analysis_id, None)
         if timing is None:
             return None
-        return _milliseconds(perf_counter() - timing.enqueued_at)
+        return _milliseconds(self._clock() - timing.enqueued_at)
 
     def cancel(self, analysis_id: str) -> bool:
         if self._states.get(analysis_id) is not AnalysisJobState.QUEUED:
@@ -122,9 +132,7 @@ class AnalysisQueue:
             self._states[job.analysis_id] = AnalysisJobState.CANCELLED
             self._queue.task_done()
             timing = self._timings.pop(job.analysis_id, None)
-            duration = (
-                None if timing is None else _milliseconds(perf_counter() - timing.enqueued_at)
-            )
+            duration = None if timing is None else _milliseconds(self._clock() - timing.enqueued_at)
             cancelled.append((job, duration))
         return tuple(cancelled)
 
@@ -156,6 +164,8 @@ class AnalysisWorker:
         self._logger = logger
         self._task: asyncio.Task[None] | None = None
         self._shutdown_started = False
+        self._shutdown_finished = False
+        self._cancelled_queued_job_count = 0
 
     async def start(self) -> None:
         if self._task is not None:
@@ -173,15 +183,44 @@ class AnalysisWorker:
                 pass
             self._task = None
         self._queue.set_worker_running(False)
-        self._logger.info("analysis_shutdown_finished")
+        if not self._shutdown_finished:
+            self._shutdown_finished = True
+            metrics = self._queue.metrics()
+            self._logger.info(
+                "analysis_shutdown_finished queue_depth=%s queue_capacity=%s "
+                "active_analysis_count=%s max_active_analyses=%s accepting=%s "
+                "worker_running=%s cancelled_queued_job_count=%s shutdown_outcome=completed",
+                metrics.queued,
+                metrics.capacity,
+                metrics.active_analysis_count,
+                metrics.max_active_analyses,
+                metrics.accepting,
+                metrics.worker_running,
+                self._cancelled_queued_job_count,
+            )
 
     def begin_shutdown(self) -> None:
         """Stop admission and record every in-memory job cancelled during shutdown."""
         if self._shutdown_started:
             return
         self._shutdown_started = True
-        self._logger.info("analysis_shutdown_started")
-        for job, end_to_end_duration_ms in self._queue.stop_accepting():
+        before = self._queue.metrics()
+        cancelled = self._queue.stop_accepting()
+        self._cancelled_queued_job_count = len(cancelled)
+        after = self._queue.metrics()
+        self._logger.info(
+            "analysis_shutdown_started queue_depth=%s queue_capacity=%s "
+            "active_analysis_count=%s max_active_analyses=%s accepting_before=%s "
+            "accepting_after=%s cancelled_queued_job_count=%s",
+            before.queued,
+            before.capacity,
+            before.active_analysis_count,
+            before.max_active_analyses,
+            before.accepting,
+            after.accepting,
+            self._cancelled_queued_job_count,
+        )
+        for job, end_to_end_duration_ms in cancelled:
             _log_job(
                 self._logger,
                 "analysis_job_cancelled",
@@ -215,18 +254,34 @@ class AnalysisWorker:
             )
             try:
                 state = await self._processor(job)
+            except asyncio.CancelledError:
+                self._finish_started_job(
+                    job,
+                    AnalysisJobState.CANCELLED,
+                    cancellation_reason="worker_shutdown",
+                )
+                raise
             except Exception:
                 state = AnalysisJobState.FAILED
                 self._logger.exception("analysis_job_failed analysis_id=%s", job.analysis_id)
-            end_to_end_duration_ms = self._queue.mark_finished(job, state)
-            _log_job(
-                self._logger,
-                "analysis_job_terminal",
-                job,
-                self._queue.metrics(),
-                final_state=state,
-                end_to_end_duration_ms=end_to_end_duration_ms,
-            )
+            self._finish_started_job(job, state)
+
+    def _finish_started_job(
+        self,
+        job: AnalysisJob,
+        state: AnalysisJobState,
+        **fields: object,
+    ) -> None:
+        end_to_end_duration_ms = self._queue.mark_finished(job, state)
+        _log_job(
+            self._logger,
+            "analysis_job_terminal",
+            job,
+            self._queue.metrics(),
+            final_state=state,
+            end_to_end_duration_ms=end_to_end_duration_ms,
+            **fields,
+        )
 
 
 def _milliseconds(seconds: float) -> int:

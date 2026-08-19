@@ -18,7 +18,7 @@ The service emits concise stdlib log events without callback URLs, video referen
 | `analysis_job_terminal` | final in-memory state and `end_to_end_duration_ms`, measured from successful enqueue through the inline callback path. |
 | `analysis_shutdown_started`, `analysis_job_cancelled`, `analysis_shutdown_finished` | shutdown and queued-job cancellation evidence. |
 
-`queue_wait_ms` starts after successful enqueue and ends when the worker marks a job running. `analysis_duration_ms` excludes queue wait and callback delivery. `callback_duration_ms` includes all current retries and retry delays. `end_to_end_duration_ms` includes queue wait, execution, and the current inline callback path.
+`queue_wait_ms` starts after successful enqueue and ends when the worker marks a job running. `analysis_duration_ms` includes the request lifecycle and its artifact cleanup, excludes queue wait, and ends before callback delivery. `callback_duration_ms` includes all current retries and retry delays. `end_to_end_duration_ms` includes queue wait, execution, cleanup, and the current inline callback path.
 
 ## Run with one active analysis
 
@@ -58,4 +58,4 @@ Use `docker inspect` or platform logs to identify container restarts/OOM evidenc
 
 ## Evidence review
 
-For each job, correlate by `analysis_id` and verify the ordering: accepted, started, execution finished, callback finished (unless cancellation prevents it), cleanup finished, terminal. A failed callback does not make a completed analysis failed. Treat missing terminal evidence during restart tests as expected non-durability, not proof of recovery. Share only sanitized summaries and raw logs with protected identifiers where operational policy requires it.
+For a normal job, correlate by `analysis_id` and verify the ordering: accepted, started, cleanup finished, execution finished, callback finished, terminal. Cleanup normally appears before execution-finished because it runs inside the request lifecycle. Callback delivery follows execution-finished and terminal follows callback completion/exhaustion. Cancellation or exceptional paths can omit later events; a worker cancellation instead produces a terminal `CANCELLED` observation after its started-job bookkeeping. A failed callback does not make a completed analysis failed. Treat missing terminal evidence during process/host restart tests as expected non-durability, not proof of recovery. Share only sanitized summaries and raw logs with protected identifiers where operational policy requires it.

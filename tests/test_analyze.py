@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import time
 from pathlib import Path
 from typing import cast
 
@@ -73,6 +72,17 @@ class FakeCallbackService:
 
     def validate_callback_url(self, callback_url: HttpUrl) -> None:
         del callback_url
+
+
+class _ControlledClock:
+    def __init__(self) -> None:
+        self._now = 0.0
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
 
 
 def test_analyze_accepts_a_valid_backend_request(caplog: pytest.LogCaptureFixture) -> None:
@@ -180,18 +190,29 @@ def test_execution_duration_excludes_inline_callback_delivery(
 ) -> None:
     async def scenario() -> None:
         caplog.set_level(logging.INFO, logger="football_analysis")
+        clock = _ControlledClock()
+        attempts = 0
 
         def delayed_transport(*_: object) -> int:
-            time.sleep(0.02)
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("simulated callback delay")
             return 204
+
+        async def delayed_retry(delay_seconds: float) -> None:
+            assert delay_seconds == 1.0
+            clock.advance(5.0)
 
         callback = CallbackService(
             1,
             logging.getLogger("football_analysis.callback"),
             transport=delayed_transport,
             resolver=lambda *_args, **_kwargs: [(None, None, None, None, ("8.8.8.8", 443))],
+            sleep=delayed_retry,
+            clock=clock,
         )
-        app = _app(callback)
+        app = _app(callback, analysis_queue=AnalysisQueue(10, clock=clock))
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -208,13 +229,12 @@ def test_execution_duration_excludes_inline_callback_delivery(
     execution = next(message for message in messages if "analysis_execution_finished" in message)
     callback = next(message for message in messages if "analysis_callback_finished" in message)
     terminal = next(message for message in messages if "analysis_job_terminal" in message)
-    assert _milliseconds(callback, "callback_duration_ms") >= 10
+    assert messages.index(execution) < messages.index(callback) < messages.index(terminal)
+    assert _milliseconds(callback, "callback_duration_ms") == 5000
     assert _milliseconds(execution, "analysis_duration_ms") < _milliseconds(
         callback, "callback_duration_ms"
     )
-    assert _milliseconds(terminal, "end_to_end_duration_ms") >= _milliseconds(
-        callback, "callback_duration_ms"
-    )
+    assert _milliseconds(terminal, "end_to_end_duration_ms") == 5000
 
 
 def test_request_aliases_normalize_to_snake_case_fields() -> None:

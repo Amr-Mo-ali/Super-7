@@ -75,18 +75,20 @@ class CallbackService:
         transport: Callable[[str, bytes, float], int] | None = None,
         resolver: Callable[..., list[tuple[Any, ...]]] = getaddrinfo,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = perf_counter,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._logger = logger
         self._transport = transport or self._post
         self._resolver = resolver
         self._sleep = sleep
+        self._clock = clock
 
     async def send_result(
         self, callback_url: HttpUrl, payload: CallbackPayload | FailedCallbackPayload
     ) -> bool:
         """Attempt delivery; callback failure is logged and never raised into analysis handling."""
-        callback_started = perf_counter()
+        callback_started = self._clock()
         max_attempts = len(_RETRY_DELAYS) + 1
         try:
             self._validate_url(callback_url)
@@ -97,13 +99,13 @@ class CallbackService:
                 "callback_outcome=rejected error_type=%s",
                 payload.request_id,
                 max_attempts,
-                _milliseconds(perf_counter() - callback_started),
+                _milliseconds(self._clock() - callback_started),
                 type(error).__name__,
             )
             return False
         body = json.dumps(payload.model_dump(mode="json"), separators=(",", ":")).encode()
         for attempt in range(len(_RETRY_DELAYS) + 1):
-            attempt_started = perf_counter()
+            attempt_started = self._clock()
             response_status_class: int | str = "unavailable"
             try:
                 response_status = await asyncio.to_thread(
@@ -119,7 +121,7 @@ class CallbackService:
                     payload.request_id,
                     attempt + 1,
                     max_attempts,
-                    _milliseconds(perf_counter() - attempt_started),
+                    _milliseconds(self._clock() - attempt_started),
                     response_status_class,
                 )
                 self._logger.info(
@@ -129,7 +131,7 @@ class CallbackService:
                     payload.request_id,
                     attempt + 1,
                     max_attempts,
-                    _milliseconds(perf_counter() - callback_started),
+                    _milliseconds(self._clock() - callback_started),
                 )
                 return True
             except (HTTPError, OSError, RuntimeError, TimeoutError, URLError) as error:
@@ -140,7 +142,7 @@ class CallbackService:
                     payload.request_id,
                     attempt + 1,
                     max_attempts,
-                    _milliseconds(perf_counter() - attempt_started),
+                    _milliseconds(self._clock() - attempt_started),
                     response_status_class,
                     type(error).__name__,
                 )
@@ -162,7 +164,7 @@ class CallbackService:
             payload.request_id,
             max_attempts,
             max_attempts,
-            _milliseconds(perf_counter() - callback_started),
+            _milliseconds(self._clock() - callback_started),
         )
         return False
 

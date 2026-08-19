@@ -111,9 +111,16 @@ def test_complete_request_lifecycle_delivers_callback_and_updates_backend(
     caplog.set_level(logging.INFO)
     asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
-    assert any("analysis_job_queued" in message for message in messages)
+    assert any("analysis_admission_accepted" in message for message in messages)
     assert any("analysis_job_started" in message for message in messages)
-    assert any("analysis_job_completed" in message for message in messages)
+    assert any(
+        "analysis_execution_finished" in message and "execution_outcome=completed" in message
+        for message in messages
+    )
+    assert any(
+        "analysis_job_terminal" in message and "final_state=COMPLETED" in message
+        for message in messages
+    )
 
 
 def test_missing_file_produces_a_sanitized_failure_callback(caplog: Any) -> None:
@@ -136,7 +143,16 @@ def test_missing_file_produces_a_sanitized_failure_callback(caplog: Any) -> None
 
     caplog.set_level(logging.INFO)
     asyncio.run(scenario())
-    assert any("analysis_job_failed" in record.getMessage() for record in caplog.records)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("analysis_admission_accepted" in message for message in messages)
+    assert any(
+        "analysis_execution_finished" in message and "execution_outcome=failed" in message
+        for message in messages
+    )
+    assert any(
+        "analysis_job_terminal" in message and "final_state=FAILED" in message
+        for message in messages
+    )
 
 
 def test_queue_saturation_returns_503_without_callback_or_execution() -> None:

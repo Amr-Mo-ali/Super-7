@@ -214,6 +214,37 @@ def test_artifact_cleanup_failure_still_releases_permit() -> None:
     asyncio.run(scenario())
 
 
+def test_pipeline_failure_is_preserved_when_cleanup_also_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class PipelineFailure(Exception):
+        pass
+
+    async def scenario() -> None:
+        with TemporaryDirectory() as directory:
+            caplog.set_level(logging.INFO, logger="football_analysis.lifecycle")
+            controller = AdmissionController(1)
+            lifecycle = RequestLifecycle(
+                controller, AnalysisExecutor(), CleanupFailureArtifactManager(Path(directory), 1024)
+            )
+
+            def pipeline(_: CancellationManager, __: ArtifactSession) -> None:
+                raise PipelineFailure("pipeline request-data must survive")
+
+            with pytest.raises(PipelineFailure, match="pipeline request-data must survive"):
+                await lifecycle.execute_with_artifacts("cleanup-primary-failure", pipeline)
+            assert (await controller.metrics()).active_permits == 0
+            assert await lifecycle.execute("after-cleanup-primary-failure", lambda _: 42) == 42
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    cleanup = next(message for message in messages if "analysis_cleanup_finished" in message)
+    assert "cleanup_succeeded=false" in cleanup
+    assert "cleanup_error_type=RuntimeError" in cleanup
+    assert "pipeline request-data" not in cleanup
+    assert "TemporaryDirectory" not in cleanup
+
+
 def test_artifact_cleanup_observations_cover_completed_and_failed_paths(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
