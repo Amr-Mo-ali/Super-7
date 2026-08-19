@@ -12,6 +12,9 @@ dependencies = [
   "ultralytics>=8.3,<9",
   "uvicorn>=0.30,<1",
   "lap>=0.5.13",
+  "SQLAlchemy>=2.0,<3",
+  "psycopg>=3.2,<4",
+  "alembic>=1.14,<2",
 ]
 
 [dependency-groups]
@@ -29,7 +32,7 @@ requires = ["hatchling>=1.25,<2"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/api", "src/core", "src/schemas", "src/services"]
+packages = ["src/api", "src/core", "src/persistence", "src/schemas", "src/services"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

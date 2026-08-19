@@ -18,6 +18,18 @@ class Settings:
     video_storage_root: str = "/videos"
     max_duration_seconds: float = 15 * 60
     request_deadline_seconds: float = 15 * 60
+    persistence_enabled: bool = False
+    database_url: str | None = field(default=None, repr=False)
+    database_pool_size: int = 2
+    database_max_overflow: int = 1
+    database_pool_timeout_seconds: float = 30.0
+    database_pool_recycle_seconds: float = 1800.0
+    database_sql_echo: bool = False
+    worker_poll_interval_seconds: float = 1.0
+    lease_duration_seconds: float = 900.0
+    lease_renewal_interval_seconds: float = 60.0
+    default_max_attempts: int = 3
+    callback_poll_interval_seconds: float = 1.0
     min_width: int = 64
     min_height: int = 64
     min_fps: float = 1.0
@@ -209,6 +221,30 @@ class Settings:
             raise ValueError("max_queued_analyses must be positive.")
         if self.request_deadline_seconds <= 0:
             raise ValueError("request_deadline_seconds must be positive.")
+        if self.persistence_enabled and not self.database_url:
+            raise ValueError("database_url is required when persistence_enabled is true.")
+        if self.database_pool_size <= 0:
+            raise ValueError("database_pool_size must be positive.")
+        if self.database_max_overflow < 0:
+            raise ValueError("database_max_overflow must be non-negative.")
+        if self.database_pool_timeout_seconds <= 0:
+            raise ValueError("database_pool_timeout_seconds must be positive.")
+        if self.database_pool_recycle_seconds <= 0:
+            raise ValueError("database_pool_recycle_seconds must be positive.")
+        if self.worker_poll_interval_seconds <= 0:
+            raise ValueError("worker_poll_interval_seconds must be positive.")
+        if self.lease_duration_seconds <= 0:
+            raise ValueError("lease_duration_seconds must be positive.")
+        if self.lease_renewal_interval_seconds <= 0:
+            raise ValueError("lease_renewal_interval_seconds must be positive.")
+        if self.lease_renewal_interval_seconds >= self.lease_duration_seconds:
+            raise ValueError(
+                "lease_renewal_interval_seconds must be less than lease_duration_seconds."
+            )
+        if self.default_max_attempts <= 0:
+            raise ValueError("default_max_attempts must be positive.")
+        if self.callback_poll_interval_seconds <= 0:
+            raise ValueError("callback_poll_interval_seconds must be positive.")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -221,6 +257,18 @@ class Settings:
             video_storage_root=environ.get("VIDEO_STORAGE_ROOT", "/videos"),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),
             request_deadline_seconds=float(environ.get("REQUEST_DEADLINE_SECONDS", 15 * 60)),
+            persistence_enabled=_environment_bool(environ.get("PERSISTENCE_ENABLED", "false")),
+            database_url=environ.get("DATABASE_URL") or None,
+            database_pool_size=int(environ.get("DATABASE_POOL_SIZE", 2)),
+            database_max_overflow=int(environ.get("DATABASE_MAX_OVERFLOW", 1)),
+            database_pool_timeout_seconds=float(environ.get("DATABASE_POOL_TIMEOUT_SECONDS", 30)),
+            database_pool_recycle_seconds=float(environ.get("DATABASE_POOL_RECYCLE_SECONDS", 1800)),
+            database_sql_echo=_environment_bool(environ.get("DATABASE_SQL_ECHO", "false")),
+            worker_poll_interval_seconds=float(environ.get("WORKER_POLL_INTERVAL_SECONDS", 1)),
+            lease_duration_seconds=float(environ.get("LEASE_DURATION_SECONDS", 900)),
+            lease_renewal_interval_seconds=float(environ.get("LEASE_RENEWAL_INTERVAL_SECONDS", 60)),
+            default_max_attempts=int(environ.get("DEFAULT_MAX_ATTEMPTS", 3)),
+            callback_poll_interval_seconds=float(environ.get("CALLBACK_POLL_INTERVAL_SECONDS", 1)),
             model_path=environ.get("MODEL_PATH", "yolo11n.pt"),
             model_device=environ.get("MODEL_DEVICE", "cpu"),
             model_confidence=float(environ.get("MODEL_CONFIDENCE", 0.25)),
@@ -258,3 +306,12 @@ class Settings:
             ),
             debug=DebugSettings.from_environment(),
         )
+
+
+def _environment_bool(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise ValueError(f"Expected a boolean environment value, got {value!r}.")
