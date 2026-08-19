@@ -31,21 +31,6 @@ uv run pytest
 uv run pre-commit run --all-files
 ```
 
-## Durable persistence development
-
-Persistence is disabled by default. For an isolated Super-7 development database only, set
-`PERSISTENCE_ENABLED=true` and a secret-provided `DATABASE_URL`, then run:
-
-```powershell
-uv run alembic upgrade head
-uv run alembic downgrade -1
-```
-
-These migrations create only Super-7-owned tables; do not point them at Apex application tables.
-The foundation uses application-generated UUID primary keys and named `CHECK` constraints for stable
-lifecycle values. Claim and lease-recovery indexes support future job processing; dispatch and callback
-due indexes support future polling. No current runtime path uses these tables.
-
 ## Run locally
 
 ```powershell
