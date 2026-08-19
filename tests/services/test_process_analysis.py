@@ -100,7 +100,7 @@ def test_wrong_analysis_id_is_rejected_and_busy_state_is_cleared() -> None:
             await supervisor.start()
             with pytest.raises(ProcessAnalysisError, match="stale"):
                 await supervisor.submit(_request())
-            assert supervisor.state is ProcessAnalysisState.READY
+            assert supervisor.state is ProcessAnalysisState.FAILED
         finally:
             await supervisor.shutdown()
 
