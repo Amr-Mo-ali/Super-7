@@ -55,6 +55,10 @@ class ChildAnalysisSuccess:
 
     def __post_init__(self) -> None:
         _validate_result(self.analysis_id, self.processing_duration_ms, self.schema_version)
+        if not self.analysis_version or _has_control(self.analysis_version):
+            raise ValueError("analysis_version must be a safe non-empty value")
+        if not self.model_version or _has_control(self.model_version):
+            raise ValueError("model_version must be a safe non-empty value")
         try:
             decoded = json.loads(self.response_json)
         except json.JSONDecodeError as error:
@@ -271,6 +275,10 @@ def _validate_result(analysis_id: str, duration_ms: int, version: int) -> None:
 
 def _milliseconds(started: float) -> int:
     return max(0, round((perf_counter() - started) * 1000))
+
+
+def _has_control(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 def _reset_child_runtime_for_test() -> None:
