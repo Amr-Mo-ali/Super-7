@@ -63,12 +63,16 @@ Duplicate terminal job, HTTP 200:
   "playerId": "player-456",
   "status": "COMPLETED",
   "duplicate": true,
+  "callbackStatus": "DELIVERED",
   "resultAvailable": true,
+  "resolvedAnalysisVersion": "analysis-v2026.08.19",
   "schemaVersion": "analysis_job_v1"
 }
 ```
 
-Terminal duplicate responses contain job metadata only. They do not rerun analysis, re-emit a callback, or return a result/result summary. `resultAvailable` means a finalized result exists; it does not introduce a result-query endpoint.
+Terminal duplicate responses expose analysis `status`, independent `callbackStatus`, and immutable `resolvedAnalysisVersion`, but contain no result/result summary. They do not rerun analysis or re-emit a callback. `COMPLETED` with `PENDING`, `RETRYING`, or `EXHAUSTED` callback status is valid; callback failure never changes `COMPLETED` to `FAILED`. All responses for one job return the same resolved version.
+
+`resultAvailable` is true only for `COMPLETED` with a finalized successful result. It is false for `FAILED` and `CANCELLED`: a durable terminal failure record is not a successful result. It does not promise or introduce a result-query endpoint.
 
 Same key with different immutable fields, HTTP 409:
 
@@ -102,7 +106,9 @@ Queue/admission rejection, HTTP 503 (no job was accepted):
 }
 ```
 
-## Callback envelope
+## Status naming and callback envelope
+
+`status` is used in HTTP acceptance and duplicate-job responses. `analysisStatus` is used in callback envelopes. Both use the same analysis-status enum; the naming difference is part of this proposed V1 contract, not two separate analysis state machines.
 
 Successful analysis callback:
 
@@ -165,7 +171,9 @@ Apex must treat a repeated `X-Super7-Callback-Event-Id` as an acknowledged no-op
 | `jobId` | opaque string | response/callback | Super-7 | yes | Canonical analysis job identity. |
 | `analysisId` | opaque string | migration response/callback | Super-7 | yes | Temporary alias equal to `jobId`. |
 | `callbackEventId` | opaque string | callback | Super-7 | yes | Stable event identity across delivery retries. |
-| `analysisStatus` | enum | response/callback | Super-7 | mutable lifecycle | Analysis state, separate from delivery state. |
+| `status` | analysis-status enum | acceptance/duplicate response | Super-7 | mutable lifecycle | Analysis job state in HTTP responses. |
+| `analysisStatus` | analysis-status enum | callback | Super-7 | mutable lifecycle | The same analysis job state in callback envelopes. |
+| `callbackStatus` | callback-status enum | terminal duplicate/status response | Super-7 | mutable lifecycle | Delivery state independent from analysis status. |
 | `resultAvailable` | boolean | terminal duplicate response | Super-7 | finalized | Whether a finalized result exists; it is not the result or a query promise. |
 | execution attempt | internal record | no | Super-7 | immutable per attempt | Attempt identity/count, started/finished times, worker/lease identity, and safe error class. |
 | `result` | object | successful callback | Super-7 | finalized | Versioned final analysis result. |

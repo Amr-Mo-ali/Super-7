@@ -23,7 +23,7 @@ Callback delivery is attempted inline after the final analysis result (including
 | `callbackEventId` | Super-7 creates one opaque globally unique delivery-event identity after recording a terminal result. The same event ID is reused for every delivery retry and replay of that terminal event. | Send in callback header and payload, log, and persist in the callback-delivery record. |
 | execution attempt | Super-7 creates an internal attempt identity whenever a worker claims the same job. It is not a new logical request or public job identity. | Persist with `jobId`, attempt count, `startedAt`/`finishedAt`, worker/lease identity where applicable, and safe error classification. |
 
-`jobId` is the canonical Super-7 identity. `analysisId` is a temporary response/callback alias during migration and must equal `jobId`, never identify a second entity.
+`jobId` is the canonical Super-7 identity. `analysisId` is a temporary response/callback alias during migration and must equal `jobId`, never identify a second entity. Proposed HTTP acceptance/duplicate responses call the analysis state `status`; callback envelopes call the same analysis-status enum `analysisStatus`. This is a surface naming difference, not separate analysis state machines. Terminal HTTP metadata also exposes the independent callback-status enum.
 
 One logical job has one `jobId`, one idempotency binding, one immutable request, and one final result or terminal failure. It may have multiple bounded internal execution attempts. Automatic attempts retain the same `jobId`, idempotency key, and resolved analysis version; they never create a duplicate logical job.
 
@@ -35,7 +35,7 @@ One idempotency key identifies one immutable logical analysis request. The immut
 |---|---|
 | New key | The durable acceptance boundary atomically records the immutable job, idempotency binding, resolved analysis version, and durable dispatch/enqueue intent. Return HTTP 202 with `duplicate: false` only after that succeeds. Worker dispatch may happen later. |
 | Same key, same fields, `QUEUED` or `RUNNING` | Return the same job and current status with HTTP 202 and `duplicate: true`; do not enqueue another job. |
-| Same key, same fields, terminal | Return existing terminal job metadata with HTTP 200 and `duplicate: true`; do not rerun analysis or re-emit a callback. Do not promise a result or result summary before a result-query contract exists. |
+| Same key, same fields, terminal | Return existing terminal job metadata with HTTP 200 and `duplicate: true`, including analysis status, callback delivery status, and resolved analysis version. Do not rerun analysis or re-emit a callback. Do not promise a result or result summary before a result-query contract exists. |
 | Same key, same fields, `CANCELLED` | Return the same job with HTTP 200 and `duplicate: true`; do not silently reactivate it. |
 | Same key, different immutable field | Return HTTP 409 `idempotency_conflict`, include the existing `jobId`, and create/overwrite nothing. This includes changed `videoId`, `playerId`, video reference, callback URL, supplied `requestedAnalysisVersion`, or schema version. |
 | Concurrent identical requests | Use an atomic unique key/fingerprint operation. Exactly one durable accepted job/dispatch intent is created; the other request receives the same job as a duplicate. |
@@ -64,7 +64,7 @@ Analysis and callback delivery are independent state machines.
 | `DELIVERED` | Callback receiver acknowledged success. No delivery transition. | Terminal. Record `deliveredAt`, response class/code. |
 | `EXHAUSTED` | Delivery policy ended without acknowledgement or permanent failure was classified. No automatic analysis transition. | Terminal. Record `exhaustedAt`, reason; operator/redrive policy may be required. |
 
-A worker crash, service shutdown, or process restart must never infer `COMPLETED` from partial memory. Later implementation recovers durable state by reclaiming an expired/lost claim to `QUEUED` for another attempt when policy permits, or finalizing a visible terminal failure after attempts are exhausted. Callback status never changes analysis status, and a callback event is created only after the terminal result/failure is durable.
+A worker crash, service shutdown, or process restart must never infer `COMPLETED` from partial memory. Later implementation recovers durable state by reclaiming an expired/lost claim to `QUEUED` for another attempt when policy permits, or finalizing a visible terminal failure after attempts are exhausted. Callback status never changes analysis status: `COMPLETED` with `PENDING`, `RETRYING`, or `EXHAUSTED` is valid. A callback event is created only after the terminal result/failure is durable.
 
 ## 5. Failure taxonomy
 
