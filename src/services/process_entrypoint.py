@@ -205,7 +205,20 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
     finally:
         if artifacts is not None:
             try:
-                artifacts.cleanup()
+                cleanup_result = artifacts.cleanup()
+                if cleanup_result.errors:
+                    runtime.logger.warning(
+                        "analysis_child_cleanup_failed analysis_id=%s cleanup_error_type=%s",
+                        request.analysis_id,
+                        "ArtifactCleanupError",
+                    )
+                    if isinstance(outcome, ChildAnalysisSuccess):
+                        outcome = ChildAnalysisFailure(
+                            request.analysis_id,
+                            "ArtifactCleanupError",
+                            "Analysis could not be completed.",
+                            _milliseconds(started),
+                        )
             except Exception as error:
                 runtime.logger.warning(
                     "analysis_child_cleanup_failed analysis_id=%s cleanup_error_type=%s",

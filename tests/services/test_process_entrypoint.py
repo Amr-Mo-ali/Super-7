@@ -8,7 +8,7 @@ import pytest
 
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
-from diagnostics.artifacts import ArtifactSession
+from diagnostics.artifacts import ArtifactSession, CleanupResult
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
 from services.process_entrypoint import (
@@ -202,7 +202,7 @@ def test_child_artifacts_cleanup_on_success_failure_and_cancellation(
 @pytest.mark.parametrize(
     ("analysis", "expected_type", "expected_code"),
     [
-        ("success", ChildAnalysisFailure, "CleanupBoom"),
+        ("success", ChildAnalysisFailure, "ArtifactCleanupError"),
         ("failure", ChildAnalysisFailure, "AnalysisBoom"),
         ("cancelled", ChildAnalysisCancelled, None),
     ],
@@ -219,10 +219,10 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
     initialize_analysis_child(settings)
     cleanup_path = Path(settings.debug_output_dir) / analysis
 
-    def boom(_: ArtifactSession) -> object:
-        raise CleanupBoom(f"secret-cleanup-marker {cleanup_path}")
+    def cleanup_with_errors(_: ArtifactSession) -> CleanupResult:
+        return CleanupResult((f"secret-cleanup-marker {cleanup_path}",))
 
-    monkeypatch.setattr(ArtifactSession, "cleanup", boom)
+    monkeypatch.setattr(ArtifactSession, "cleanup", cleanup_with_errors)
 
     def fake(*args: object) -> NonCompletedResponse:
         if analysis == "failure":
@@ -242,7 +242,25 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "analysis_child_cleanup_failed" in messages
     assert f"analysis_id={analysis}" in messages
-    assert "cleanup_error_type=CleanupBoom" in messages
+    assert "cleanup_error_type=ArtifactCleanupError" in messages
     assert "secret-cleanup-marker" not in messages
     assert str(cleanup_path) not in messages
     assert settings.video_storage_root not in messages
+
+
+def test_unexpected_cleanup_exception_remains_sanitized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+
+    def boom(_: ArtifactSession) -> CleanupResult:
+        raise CleanupBoom("secret-cleanup-marker")
+
+    monkeypatch.setattr(ArtifactSession, "cleanup", boom)
+    monkeypatch.setattr(
+        process_entrypoint, "_analyze_uploaded", lambda *args: _response(str(args[13]))
+    )
+    result = run_child_analysis(_request("exceptional-cleanup"))
+    assert isinstance(result, ChildAnalysisFailure)
+    assert result.error_code == "CleanupBoom"
