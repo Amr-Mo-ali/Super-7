@@ -10,13 +10,16 @@ from typing import Any, cast
 
 import httpx
 from fastapi import FastAPI
+from process_pool_lifecycle_fake import FakeProcessPoolLifecycle
 
 from core.config import Settings
 from core.exceptions import VideoNotFoundError
 from main import create_app
+from schemas.analysis import Diagnostics, NonCompletedResponse
 from services.analysis_queue import AnalysisJobState, AnalysisQueue
 from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
 from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.process_contracts import ChildAnalysisRequest, ParentFailure
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
 
@@ -95,7 +98,8 @@ def test_complete_request_lifecycle_delivers_callback_and_updates_backend(
 ) -> None:
     async def scenario() -> None:
         database = _BackendDatabase()
-        app = _app(database)
+        pool = FakeProcessPoolLifecycle([_process_response])
+        app = _app(database, process_pool=pool)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://super-7") as client:
@@ -107,6 +111,14 @@ def test_complete_request_lifecycle_delivers_callback_and_updates_backend(
         callback = database.video_analysis_updates["video-123"]
         assert callback.request_id == analysis_id
         assert callback.status == "no_players_detected"
+        assert app.state.analysis_queue.state_of(analysis_id) is AnalysisJobState.COMPLETED
+        assert len(pool.requests) == 1
+        assert pool.requests[0].analysis_id == analysis_id
+        assert pool.requests[0].video_id == "video-123"
+        assert pool.requests[0].player_id == "player-456"
+        assert pool.requests[0].video_reference == "test-video.mp4"
+        assert not hasattr(pool.requests[0], "callback_url")
+        assert pool.start_calls == pool.shutdown_calls == 1
 
     caplog.set_level(logging.INFO)
     asyncio.run(scenario())
@@ -126,7 +138,10 @@ def test_complete_request_lifecycle_delivers_callback_and_updates_backend(
 def test_missing_file_produces_a_sanitized_failure_callback(caplog: Any) -> None:
     async def scenario() -> None:
         database = _BackendDatabase()
-        app = _app(database)
+        pool = FakeProcessPoolLifecycle(
+            [ParentFailure("VideoNotFoundError", "Analysis could not be completed.")]
+        )
+        app = _app(database, process_pool=pool)
         async with app.router.lifespan_context(app):
             response = await _post(app, _payload(video_url="missing-video.mp4"))
             assert response.status_code == 202
@@ -140,6 +155,8 @@ def test_missing_file_produces_a_sanitized_failure_callback(caplog: Any) -> None
             "code": "VideoNotFoundError",
             "message": "Analysis could not be completed.",
         }
+        assert callback.request_id == analysis_id
+        assert pool.requests[0].video_reference == "missing-video.mp4"
 
     caplog.set_level(logging.INFO)
     asyncio.run(scenario())
@@ -172,7 +189,11 @@ def test_queue_saturation_returns_503_without_callback_or_execution() -> None:
 def test_callback_failure_does_not_change_completed_analysis_state(caplog: Any) -> None:
     async def scenario() -> None:
         database = _BackendDatabase()
-        app = _app(database, callback_delivered=False)
+        app = _app(
+            database,
+            callback_delivered=False,
+            process_pool=FakeProcessPoolLifecycle([_process_response]),
+        )
         async with app.router.lifespan_context(app):
             response = await _post(app, _payload())
             analysis_id = response.json()["analysisId"]
@@ -203,13 +224,15 @@ def test_restart_cancels_accepted_waiting_jobs() -> None:
 def test_multiple_requests_are_callback_delivered_fifo() -> None:
     async def scenario() -> None:
         database = _BackendDatabase()
-        app = _app(database, queue=AnalysisQueue(3))
+        pool = FakeProcessPoolLifecycle([_process_response, _process_response])
+        app = _app(database, queue=AnalysisQueue(3), process_pool=pool)
         first = await _post(app, _payload("video-one"))
         second = await _post(app, _payload("video-two"))
         assert first.status_code == second.status_code == 202
         async with app.router.lifespan_context(app):
             await _wait_for(lambda: len(database.callbacks) == 2)
         assert [payload.video_id for payload in database.callbacks] == ["video-one", "video-two"]
+        assert [request.video_id for request in pool.requests] == ["video-one", "video-two"]
 
     asyncio.run(scenario())
 
@@ -224,7 +247,11 @@ def _app(
     database: _BackendDatabase,
     queue: AnalysisQueue | None = None,
     callback_delivered: bool = True,
+    process_pool: FakeProcessPoolLifecycle | None = None,
 ) -> FastAPI:
+    resolved_pool = (
+        process_pool if process_pool is not None else FakeProcessPoolLifecycle([_process_response])
+    )
     return create_app(
         Settings(max_queued_analyses=3),
         tracker=_NoPlayerTracker(),
@@ -232,6 +259,23 @@ def _app(
         path_resolver=cast(VideoPathResolver, _Resolver()),
         callback_service=_callback_service(database, callback_delivered),
         analysis_queue=queue,
+        process_analysis_pool=resolved_pool,
+    )
+
+
+def _process_response(request: ChildAnalysisRequest) -> NonCompletedResponse:
+    return NonCompletedResponse(
+        analysis_id=request.analysis_id,
+        status="no_players_detected",
+        warnings=[],
+        diagnostics=Diagnostics(
+            frames_processed=0,
+            frames_with_player_detections=0,
+            total_person_detections=0,
+            tracks_created=0,
+            valid_candidate_tracks=0,
+            ball_detections=0,
+        ),
     )
 
 
