@@ -22,7 +22,9 @@ def test_successful_callback_serializes_the_final_payload() -> None:
     assert json.loads(delivered[0][1]) == _payload().model_dump(mode="json")
 
 
-def test_callback_timeout_retries_with_exponential_backoff() -> None:
+def test_callback_timeout_retries_with_exponential_backoff(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     attempts = 0
     delays: list[float] = []
 
@@ -34,10 +36,22 @@ def test_callback_timeout_retries_with_exponential_backoff() -> None:
     async def sleep(delay: float) -> None:
         delays.append(delay)
 
+    caplog.set_level(logging.INFO, logger="test.callback")
     service = _service(timeout, sleep=sleep)
     assert asyncio.run(service.send_result(_url(), _payload())) is False
     assert attempts == 4
     assert delays == [1.0, 2.0, 4.0]
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("analysis_callback_attempt_finished" in message for message in messages) == 4
+    assert sum("analysis_callback_retry_scheduled" in message for message in messages) == 3
+    assert any(
+        "analysis_callback_finished" in message
+        and "callback_outcome=exhausted" in message
+        and "callback_attempts=4" in message
+        for message in messages
+    )
+    assert all("backend.example.com" not in message for message in messages)
+    assert all("passes" not in message for message in messages)
 
 
 def test_callback_retries_transient_failures_until_success() -> None:

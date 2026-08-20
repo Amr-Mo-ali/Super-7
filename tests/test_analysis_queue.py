@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import fields
 
+import pytest
 from pydantic import HttpUrl, TypeAdapter
 
 from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue, AnalysisWorker
@@ -101,6 +102,137 @@ def test_shutdown_stops_new_queue_admission_and_cancels_waiting_jobs() -> None:
         assert await queue.submit(_job("later")) is False
 
     asyncio.run(scenario())
+
+
+def test_worker_logs_queue_wait_terminal_active_limit_and_shutdown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="test.queue.observability")
+        queue = AnalysisQueue(2)
+
+        async def processor(_: AnalysisJob) -> AnalysisJobState:
+            return AnalysisJobState.COMPLETED
+
+        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.observability"))
+        assert await queue.submit(_job("observed"))
+        await worker.start()
+        await _wait_for(lambda: queue.state_of("observed") is AnalysisJobState.COMPLETED)
+        assert queue.metrics().active_analysis_count == 0
+        assert queue.metrics().max_active_analyses == 1
+        assert await queue.submit(_job("shutdown"))
+        worker.begin_shutdown()
+        await worker.shutdown()
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(message for message in messages if "analysis_job_started" in message)
+    terminal = next(message for message in messages if "analysis_job_terminal" in message)
+    cancelled = next(message for message in messages if "analysis_job_cancelled" in message)
+    assert "queue_wait_ms=" in started
+    assert "active_analysis_count=1" in started
+    assert "max_active_analyses=1" in started
+    assert "final_state=COMPLETED" in terminal
+    assert "end_to_end_duration_ms=" in terminal
+    assert "cancellation_reason=shutdown" in cancelled
+    assert sum("analysis_job_terminal" in message for message in messages) == 1
+    shutdown_started = next(
+        message for message in messages if "analysis_shutdown_started" in message
+    )
+    shutdown_finished = next(
+        message for message in messages if "analysis_shutdown_finished" in message
+    )
+    assert "queue_depth=1" in shutdown_started
+    assert "queue_capacity=2" in shutdown_started
+    assert "active_analysis_count=0" in shutdown_started
+    assert "accepting_before=True" in shutdown_started
+    assert "accepting_after=False" in shutdown_started
+    assert "cancelled_queued_job_count=1" in shutdown_started
+    assert "worker_running=False" in shutdown_finished
+    assert "cancelled_queued_job_count=1" in shutdown_finished
+
+
+def test_worker_cancellation_finalizes_the_started_analysis_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> AnalysisQueue:
+        caplog.set_level(logging.INFO, logger="test.queue.cancellation")
+        queue = AnalysisQueue(2)
+        started = asyncio.Event()
+        blocked = asyncio.Event()
+        started_jobs: list[str] = []
+
+        async def processor(job: AnalysisJob) -> AnalysisJobState:
+            started_jobs.append(job.analysis_id)
+            started.set()
+            await blocked.wait()
+            return AnalysisJobState.COMPLETED
+
+        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.cancellation"))
+        assert await queue.submit(_job("running"))
+        assert await queue.submit(_job("waiting"))
+        await worker.start()
+        await started.wait()
+        await worker.shutdown()
+        worker.begin_shutdown()
+        await worker.shutdown()
+        await asyncio.wait_for(queue.wait_until_idle(), timeout=0.1)
+        assert started_jobs == ["running"]
+        assert queue.state_of("running") is AnalysisJobState.CANCELLED
+        assert queue.state_of("waiting") is AnalysisJobState.CANCELLED
+        assert queue.metrics().active_analysis_count == 0
+        assert queue.metrics().queued == 0
+        return queue
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    terminal = [
+        message
+        for message in messages
+        if "analysis_job_terminal" in message and "analysis_id=running" in message
+    ]
+    assert len(terminal) == 1
+    assert "final_state=CANCELLED" in terminal[0]
+    assert "cancellation_reason=worker_shutdown" in terminal[0]
+    assert not any("analysis_job_started analysis_id=waiting" in message for message in messages)
+    assert sum("analysis_shutdown_started" in message for message in messages) == 1
+    assert sum("analysis_shutdown_finished" in message for message in messages) == 1
+
+
+def test_worker_cancellation_during_inline_callback_phase_finalizes_the_job(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="test.queue.callback_cancellation")
+        queue = AnalysisQueue(1)
+        callback_started = asyncio.Event()
+        callback_blocked = asyncio.Event()
+
+        async def processor(_: AnalysisJob) -> AnalysisJobState:
+            callback_started.set()
+            await callback_blocked.wait()
+            return AnalysisJobState.COMPLETED
+
+        worker = AnalysisWorker(
+            queue, processor, logging.getLogger("test.queue.callback_cancellation")
+        )
+        assert await queue.submit(_job("callback-running"))
+        await worker.start()
+        await callback_started.wait()
+        await worker.shutdown()
+        await asyncio.wait_for(queue.wait_until_idle(), timeout=0.1)
+        assert queue.state_of("callback-running") is AnalysisJobState.CANCELLED
+        assert queue.metrics().active_analysis_count == 0
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    terminal = [
+        message
+        for message in messages
+        if "analysis_job_terminal" in message and "analysis_id=callback-running" in message
+    ]
+    assert len(terminal) == 1
+    assert "final_state=CANCELLED" in terminal[0]
 
 
 async def _wait_for(predicate: object) -> None:

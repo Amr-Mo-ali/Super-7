@@ -1,9 +1,11 @@
 """Minimal coordination of admission, cancellation, deadlines, and cleanup."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from threading import Lock
+from time import perf_counter
 from typing import TypeVar
 
 from concurrency.admission import AdmissionController
@@ -24,6 +26,7 @@ class RequestLifecycle:
         executor: AnalysisExecutor,
         artifacts: ArtifactManager | None = None,
         request_deadline_seconds: float | None = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         if request_deadline_seconds is not None and request_deadline_seconds <= 0:
             raise ValueError("request_deadline_seconds must be positive when configured.")
@@ -31,6 +34,7 @@ class RequestLifecycle:
         self._executor = executor
         self._artifacts = artifacts
         self._request_deadline_seconds = request_deadline_seconds
+        self._logger = logger or logging.getLogger("football_analysis.lifecycle")
         self._active: dict[str, tuple[CancellationManager, asyncio.Event]] = {}
         self._shutting_down = False
         self._lock = Lock()
@@ -99,6 +103,8 @@ class RequestLifecycle:
         artifacts: ArtifactSession | None = None
         completion: asyncio.Event | None = None
         deadline_task: asyncio.Task[None] | None = None
+        execution_outcome = "completed"
+        primary_failed = False
         try:
             cancellation = CancellationManager(request_id)
             completion = self._register(cancellation)
@@ -108,10 +114,42 @@ class RequestLifecycle:
             return await self._executor.execute(
                 request_id, cancellation, lambda state: pipeline(state, session)
             )
+        except asyncio.CancelledError:
+            execution_outcome = "cancelled"
+            primary_failed = True
+            raise
+        except Exception:
+            execution_outcome = "failed"
+            primary_failed = True
+            raise
         finally:
             try:
                 if artifacts is not None:
-                    artifacts.cleanup()
+                    cleanup_started = perf_counter()
+                    try:
+                        cleanup = artifacts.cleanup()
+                    except Exception as error:
+                        self._logger.warning(
+                            "analysis_cleanup_finished analysis_id=%s cleanup_outcome=%s "
+                            "cleanup_succeeded=false cleanup_error_count=1 cleanup_duration_ms=%s "
+                            "cleanup_error_type=%s",
+                            request_id,
+                            execution_outcome,
+                            _milliseconds(perf_counter() - cleanup_started),
+                            type(error).__name__,
+                        )
+                        if not primary_failed:
+                            raise
+                    else:
+                        self._logger.info(
+                            "analysis_cleanup_finished analysis_id=%s cleanup_outcome=%s "
+                            "cleanup_succeeded=%s cleanup_error_count=%s cleanup_duration_ms=%s",
+                            request_id,
+                            execution_outcome,
+                            not cleanup.errors,
+                            len(cleanup.errors),
+                            _milliseconds(perf_counter() - cleanup_started),
+                        )
             finally:
                 try:
                     await self._stop_deadline(deadline_task)
@@ -176,3 +214,7 @@ class RequestLifecycle:
         deadline_task.cancel()
         with suppress(asyncio.CancelledError):
             await deadline_task
+
+
+def _milliseconds(seconds: float) -> int:
+    return max(0, round(seconds * 1000))

@@ -1,12 +1,13 @@
 """Thin HTTP orchestration for automatic target-player analysis."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
@@ -20,6 +21,7 @@ from core.config import Settings
 from core.exceptions import AnalysisError, InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
 from diagnostics.artifacts import ArtifactSession
+from diagnostics.job_events import log_job_event
 from diagnostics.performance import current_collector
 from schemas.analysis import (
     AmbiguousResponse,
@@ -75,6 +77,12 @@ from services.player_rating.game_intelligence import (
     GameIntelligenceResult,
 )
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
+from services.process_contracts import (
+    ChildAnalysisRequest,
+    ParentCancelled,
+    ParentChildResult,
+    ParentFailure,
+)
 from services.scoring.models import PhysicalEvidenceDiagnostics, PhysicalScoreResult
 from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.scoring.technical import TechnicalScorer, TechnicalScoreResult
@@ -132,6 +140,7 @@ def create_router(
         payload: AnalyzeRequest,
     ) -> AnalyzeQueuedResponse:
         """Validate a lightweight job and enqueue it for the single background worker."""
+        admission_started = perf_counter()
         analysis_id = str(uuid4())
         try:
             path_resolver.validate_reference(payload.video_url)
@@ -148,23 +157,40 @@ def create_router(
             payload.callback_url,
         )
         if not await analysis_queue.submit(job):
-            logger.warning(
-                "analysis_queue_full analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
-                analysis_id,
-                payload.video_id,
-                payload.player_id,
-                analysis_queue.metrics().queued,
+            metrics = analysis_queue.metrics()
+            log_job_event(
+                logger,
+                "analysis_admission_rejected",
+                analysis_id=analysis_id,
+                video_id=payload.video_id,
+                player_id=payload.player_id,
+                queue_depth=metrics.queued,
+                queue_capacity=metrics.capacity,
+                active_analysis_count=metrics.active_analysis_count,
+                max_active_analyses=metrics.max_active_analyses,
+                accepting=metrics.accepting,
+                fields={
+                    "admission_duration_ms": _milliseconds(perf_counter() - admission_started),
+                    "rejection_reason": "shutting_down" if not metrics.accepting else "queue_full",
+                },
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={"error": "Analysis queue is full."},
             )
-        logger.info(
-            "analysis_job_queued analysis_id=%s video_id=%s player_id=%s queue_depth=%s",
-            analysis_id,
-            payload.video_id,
-            payload.player_id,
-            analysis_queue.metrics().queued,
+        metrics = analysis_queue.metrics()
+        log_job_event(
+            logger,
+            "analysis_admission_accepted",
+            analysis_id=analysis_id,
+            video_id=payload.video_id,
+            player_id=payload.player_id,
+            queue_depth=metrics.queued,
+            queue_capacity=metrics.capacity,
+            active_analysis_count=metrics.active_analysis_count,
+            max_active_analyses=metrics.max_active_analyses,
+            accepting=metrics.accepting,
+            fields={"admission_duration_ms": _milliseconds(perf_counter() - admission_started)},
         )
         return AnalyzeQueuedResponse(
             analysis_id=analysis_id,
@@ -207,6 +233,133 @@ def _callback_payload(
         detailed=detailed,
         events=serialized.get("events", {}),
     )
+
+
+class ProcessAnalysisExecutor(Protocol):
+    """The parent-side process adapter surface needed by one queue-job processor."""
+
+    async def execute(self, request: ChildAnalysisRequest) -> ParentChildResult: ...
+
+
+class ProcessCallbackSender(Protocol):
+    """The callback delivery surface retained by the parent-side processor."""
+
+    async def send_result(
+        self, callback_url: HttpUrl, payload: CallbackPayload | FailedCallbackPayload
+    ) -> bool: ...
+
+
+def create_process_analysis_job_processor(
+    process_pool: ProcessAnalysisExecutor,
+    callback_service: ProcessCallbackSender,
+    logger: logging.Logger,
+) -> Callable[[AnalysisJob], Awaitable[AnalysisJobState]]:
+    """Create an unused parent-owned processor for serialized child analysis results."""
+
+    async def process(job: AnalysisJob) -> AnalysisJobState:
+        started = perf_counter()
+        try:
+            child_request = ChildAnalysisRequest(
+                job.analysis_id,
+                job.video_id,
+                job.player_id,
+                job.video_reference,
+            )
+            result = await process_pool.execute(child_request)
+            if isinstance(result, ParentCancelled):
+                _log_process_execution(logger, job.analysis_id, "cancelled", started)
+                return AnalysisJobState.CANCELLED
+            if isinstance(result, ParentFailure):
+                _log_process_execution(logger, job.analysis_id, "failed", started)
+                await _send_process_failure_callback(
+                    callback_service, logger, job, result.error_code, result.public_message
+                )
+                return AnalysisJobState.FAILED
+            request = AnalyzeRequest.model_validate(
+                {
+                    "videoId": job.video_id,
+                    "playerId": job.player_id,
+                    "videoUrl": job.video_reference,
+                    "callbackUrl": str(job.callback_url),
+                }
+            )
+            callback_payload = _callback_payload(request, result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            _log_process_execution(logger, job.analysis_id, "failed", started, error)
+            await _send_process_failure_callback(
+                callback_service,
+                logger,
+                job,
+                "ProcessPoolError",
+                "Analysis could not be completed.",
+            )
+            return AnalysisJobState.FAILED
+        _log_process_execution(logger, job.analysis_id, "completed", started)
+        await _send_process_callback(
+            callback_service, logger, job, callback_payload, "analysis_callback_error"
+        )
+        return AnalysisJobState.COMPLETED
+
+    return process
+
+
+def _log_process_execution(
+    logger: logging.Logger,
+    analysis_id: str,
+    outcome: str,
+    started: float,
+    error: Exception | None = None,
+) -> None:
+    fields = "" if error is None else f" error_type={type(error).__name__}"
+    logger.info(
+        "analysis_execution_finished analysis_id=%s execution_outcome=%s analysis_duration_ms=%s%s",
+        analysis_id,
+        outcome,
+        _milliseconds(perf_counter() - started),
+        fields,
+    )
+
+
+async def _send_process_failure_callback(
+    callback_service: ProcessCallbackSender,
+    logger: logging.Logger,
+    job: AnalysisJob,
+    error_code: str,
+    public_message: str,
+) -> None:
+    payload = FailedCallbackPayload(
+        request_id=job.analysis_id,
+        video_id=job.video_id,
+        player_id=job.player_id,
+        status="failed",
+        summary={},
+        ratings={},
+        events={},
+        error={"code": error_code, "message": public_message},
+    )
+    await _send_process_callback(
+        callback_service, logger, job, payload, "analysis_failure_callback_error"
+    )
+
+
+async def _send_process_callback(
+    callback_service: ProcessCallbackSender,
+    logger: logging.Logger,
+    job: AnalysisJob,
+    payload: CallbackPayload | FailedCallbackPayload,
+    error_event: str,
+) -> None:
+    try:
+        delivered = await callback_service.send_result(job.callback_url, payload)
+    except Exception as error:
+        logger.warning(
+            "%s analysis_id=%s error_type=%s", error_event, job.analysis_id, type(error).__name__
+        )
+    else:
+        if not delivered:
+            logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
 
 
 def create_analysis_job_processor(
@@ -268,8 +421,20 @@ def create_analysis_job_processor(
             )
             callback_payload = _callback_payload(request, result)
         except AnalysisCancelled:
+            logger.info(
+                "analysis_execution_finished analysis_id=%s execution_outcome=cancelled "
+                "analysis_duration_ms=%s",
+                job.analysis_id,
+                _milliseconds(perf_counter() - started),
+            )
             return AnalysisJobState.CANCELLED
         except Exception as error:
+            logger.info(
+                "analysis_execution_finished analysis_id=%s execution_outcome=failed "
+                "analysis_duration_ms=%s",
+                job.analysis_id,
+                _milliseconds(perf_counter() - started),
+            )
             failure_payload = FailedCallbackPayload(
                 request_id=job.analysis_id,
                 video_id=job.video_id,
@@ -292,6 +457,12 @@ def create_analysis_job_processor(
                     logger.warning("analysis_callback_failed analysis_id=%s", job.analysis_id)
             logger.exception("analysis_job_pipeline_failed analysis_id=%s", job.analysis_id)
             return AnalysisJobState.FAILED
+        logger.info(
+            "analysis_execution_finished analysis_id=%s execution_outcome=completed "
+            "analysis_duration_ms=%s",
+            job.analysis_id,
+            _milliseconds(perf_counter() - started),
+        )
         try:
             delivered = await callback_service.send_result(job.callback_url, callback_payload)
         except Exception:
@@ -302,6 +473,10 @@ def create_analysis_job_processor(
         return AnalysisJobState.COMPLETED
 
     return process
+
+
+def _milliseconds(seconds: float) -> int:
+    return max(0, round(seconds * 1000))
 
 
 def _analyze_downloaded(
