@@ -48,7 +48,14 @@ def _response(request: ChildAnalysisRequest) -> NonCompletedResponse:
         analysis_id=request.analysis_id,
         status="no_players_detected",
         warnings=[],
-        diagnostics=Diagnostics(0, 0, 0, 0, 0, 0),
+        diagnostics=Diagnostics(
+            frames_processed=0,
+            frames_with_player_detections=0,
+            total_person_detections=0,
+            tracks_created=0,
+            valid_candidate_tracks=0,
+            ball_detections=0,
+        ),
     )
 
 
@@ -74,7 +81,8 @@ def test_process_pool_and_worker_construction_are_inert() -> None:
 
 def test_lifespan_starts_pool_before_prequeued_work() -> None:
     async def scenario() -> None:
-        pool = FakeProcessPoolLifecycle([_response])
+        execute_started = asyncio.Event()
+        pool = FakeProcessPoolLifecycle([_response], execute_started=execute_started)
         queue = AnalysisQueue(1)
         callback = _Callback()
         job = AnalysisJob.create(
@@ -83,9 +91,9 @@ def test_lifespan_starts_pool_before_prequeued_work() -> None:
         assert await queue.submit(job)
         app = _app(pool, queue, callback)
         async with app.router.lifespan_context(app):
-            while not pool.requests:
-                await asyncio.sleep(0)
-            assert pool._events[:2] == ["pool.start", "pool.execute"]
+            await asyncio.wait_for(execute_started.wait(), timeout=1)
+            await queue.wait_until_idle()
+            assert pool.events[:2] == ("pool.start", "pool.execute")
             assert queue.metrics().worker_running is True
         assert pool.shutdown_calls == 1
         assert queue.state_of("queued") is AnalysisJobState.COMPLETED
@@ -104,10 +112,11 @@ def test_runtime_uses_parent_callback_and_child_request_contract() -> None:
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post("/analyze", json=_payload())
             analysis_id = response.json()["analysisId"]
-            while not callback.payloads:
-                await asyncio.sleep(0)
+            await queue.wait_until_idle()
         assert response.status_code == 202
         assert pool.requests[0].analysis_id == analysis_id
+        assert pool.requests[0].video_id == "video"
+        assert pool.requests[0].player_id == "player"
         assert pool.requests[0].video_reference == "safe.mp4"
         assert not hasattr(pool.requests[0], "callback_url")
         assert callback.payloads[0].request_id == analysis_id

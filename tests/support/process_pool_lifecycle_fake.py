@@ -29,6 +29,10 @@ class FakeProcessPoolLifecycle:
         self.start_calls = 0
         self.shutdown_calls = 0
 
+    @property
+    def events(self) -> tuple[str, ...]:
+        return tuple(self._events)
+
     def start(self) -> None:
         self.start_calls += 1
         self._events.append("pool.start")
