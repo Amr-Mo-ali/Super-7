@@ -18,16 +18,15 @@ from multiprocessing.context import BaseContext
 from typing import Protocol, cast
 
 from core.config import Settings
-from services.process_entrypoint import (
+from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisRequest,
     ChildAnalysisResult,
     ParentChildResult,
     ParentFailure,
-    initialize_analysis_child,
-    run_child_analysis,
     validate_child_result,
 )
+from services.process_entrypoint import initialize_analysis_child, run_child_analysis
 
 
 class _ProcessExecutor(Protocol):

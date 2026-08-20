@@ -1,5 +1,6 @@
 """Thin HTTP orchestration for automatic target-player analysis."""
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
@@ -76,7 +77,7 @@ from services.player_rating.game_intelligence import (
     GameIntelligenceResult,
 )
 from services.player_tracker import AutomaticPlayerTracker, TrackingDiagnostics, TrackingRun
-from services.process_entrypoint import (
+from services.process_contracts import (
     ChildAnalysisRequest,
     ParentCancelled,
     ParentChildResult,
@@ -257,14 +258,34 @@ def create_process_analysis_job_processor(
 
     async def process(job: AnalysisJob) -> AnalysisJobState:
         started = perf_counter()
-        child_request = ChildAnalysisRequest(
-            job.analysis_id,
-            job.video_id,
-            job.player_id,
-            job.video_reference,
-        )
         try:
+            child_request = ChildAnalysisRequest(
+                job.analysis_id,
+                job.video_id,
+                job.player_id,
+                job.video_reference,
+            )
             result = await process_pool.execute(child_request)
+            if isinstance(result, ParentCancelled):
+                _log_process_execution(logger, job.analysis_id, "cancelled", started)
+                return AnalysisJobState.CANCELLED
+            if isinstance(result, ParentFailure):
+                _log_process_execution(logger, job.analysis_id, "failed", started)
+                await _send_process_failure_callback(
+                    callback_service, logger, job, result.error_code, result.public_message
+                )
+                return AnalysisJobState.FAILED
+            request = AnalyzeRequest.model_validate(
+                {
+                    "videoId": job.video_id,
+                    "playerId": job.player_id,
+                    "videoUrl": job.video_reference,
+                    "callbackUrl": str(job.callback_url),
+                }
+            )
+            callback_payload = _callback_payload(request, result)
+        except asyncio.CancelledError:
+            raise
         except Exception as error:
             _log_process_execution(logger, job.analysis_id, "failed", started, error)
             await _send_process_failure_callback(
@@ -275,24 +296,6 @@ def create_process_analysis_job_processor(
                 "Analysis could not be completed.",
             )
             return AnalysisJobState.FAILED
-        if isinstance(result, ParentCancelled):
-            _log_process_execution(logger, job.analysis_id, "cancelled", started)
-            return AnalysisJobState.CANCELLED
-        if isinstance(result, ParentFailure):
-            _log_process_execution(logger, job.analysis_id, "failed", started)
-            await _send_process_failure_callback(
-                callback_service, logger, job, result.error_code, result.public_message
-            )
-            return AnalysisJobState.FAILED
-        request = AnalyzeRequest.model_validate(
-            {
-                "videoId": job.video_id,
-                "playerId": job.player_id,
-                "videoUrl": job.video_reference,
-                "callbackUrl": str(job.callback_url),
-            }
-        )
-        callback_payload = _callback_payload(request, result)
         _log_process_execution(logger, job.analysis_id, "completed", started)
         await _send_process_callback(
             callback_service, logger, job, callback_payload, "analysis_callback_error"

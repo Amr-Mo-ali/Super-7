@@ -55,10 +55,10 @@ def _job() -> AnalysisJob:
     )
 
 
-def _response(status: str = "no_players_detected") -> NonCompletedResponse:
+def _response() -> NonCompletedResponse:
     return NonCompletedResponse(
         analysis_id="analysis-1",
-        status=status,
+        status="no_players_detected",
         warnings=[],
         diagnostics=Diagnostics(
             frames_processed=0,
