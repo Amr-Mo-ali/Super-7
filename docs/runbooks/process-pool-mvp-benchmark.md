@@ -7,7 +7,7 @@ Run only on local, test, or staging. Do not use this procedure against VPS produ
 - Python environment installed with `uv sync` already completed; do not download a different model for this run.
 - A readable `VIDEO_STORAGE_ROOT` containing the approved `.mp4` references used below.
 - The configured `MODEL_PATH` available to the process child, and enough disk for `DEBUG_OUTPUT_DIR` when debug artifacts are enabled.
-- A reachable non-private callback receiver. For local integration use the repository backend mock or a staging receiver reachable from Super-7; callback URL validation rejects local/private addresses.
+- The in-process repository backend mock is suitable for automated integration tests, not as a live callback URL. A live smoke run needs an approved staging Apex callback endpoint or an explicitly approved public ingress in front of a test receiver. Its hostname must resolve only to global/public IPs. Do not disable or bypass CallbackService SSRF validation, expose a receiver publicly without authorization, or invent callback credentials/signatures beyond the current integration contract.
 - Record machine/container details, CPU count, RAM, OS, image/commit, model file checksum/version, and all environment values used (excluding secrets).
 
 Required settings include `VIDEO_STORAGE_ROOT`, `MODEL_PATH`, `MODEL_DEVICE`, `DEBUG_OUTPUT_DIR`, `MAX_QUEUED_ANALYSES`, `CALLBACK_TIMEOUT_SECONDS`, and any analysis/version settings from `.env.example`. Keep `MAX_QUEUED_ANALYSES` explicit. Do not increase process or worker count.
@@ -29,10 +29,12 @@ Invoke-WebRequest http://127.0.0.1:8000/health/live
 Invoke-WebRequest http://127.0.0.1:8000/health/ready
 ```
 
-Submit only safe video references (filenames, not paths) and record each `analysisId` from HTTP 202:
+This command requires `uv sync` and the editable project installation first. For Docker/VPS startup, use the repository's existing Docker Compose/start command rather than a second deployment method.
+
+Submit only safe video references (filenames, not paths) and record each `analysisId` from HTTP 202. Replace the placeholder callback URL with the approved staging endpoint:
 
 ```powershell
-$body = @{ videoId='video-001'; playerId='player-001'; videoUrl='known.mp4'; callbackUrl='https://staging.example/webhook' } | ConvertTo-Json
+$body = @{ videoId='video-001'; playerId='player-001'; videoUrl='known.mp4'; callbackUrl='https://APPROVED-STAGING-CALLBACK.example/webhook' } | ConvertTo-Json
 Measure-Command { Invoke-RestMethod http://127.0.0.1:8000/analyze -Method Post -ContentType 'application/json' -Body $body }
 ```
 
@@ -42,15 +44,15 @@ Use the callback receiver/backend mock to verify exactly one callback per comple
 
 ### A. Cold single request
 
-Start a fresh application, submit one known video, and retain parent and child logs. Capture first child model-load effect, child PID (must differ from parent PID), `analysis_duration_ms`, `end_to_end_duration_ms`, callback result, and health latency while work is active. Record disk/artifact directories before and after.
+Start a fresh application, submit one known video, and retain parent and child logs. Capture first child model-load effect, initialized child PID (must differ from parent PID), `analysis_duration_ms`, `end_to_end_duration_ms`, callback result, and health latency while work is active. Record disk/artifact directories before and after.
 
 ### B. Warm sequential requests
 
-Submit three known requests only after the prior terminal callback. Verify logs show the same child PID handling each request, every job has one terminal state, one callback per completed/failed job, and request artifact directories are cleaned. Compare cold and warm latency; do not infer a target threshold.
+Submit three known requests only after the prior terminal callback. Record `analysis_child_initialized child_pid=<pid>`, observe that the same OS child remains alive across all three jobs, confirm no second initialization and no `BrokenProcessPool`/restart event, and then infer that the retained child handled the sequential jobs because `max_workers=1`. This is process-lifecycle evidence, not direct per-job PID attribution. Verify every job has one terminal state, one callback per completed/failed job, and request artifact directories are cleaned. Compare cold and warm latency; do not infer a target threshold.
 
 ### C. Admission burst with one process
 
-Submit five requests quickly with the configured queue capacity recorded. Measure each HTTP admission response; HTTP 503 is valid when capacity is exhausted. Verify serialized execution (not concurrency), FIFO callback order where all jobs are admitted, and each admitted job's queue wait. Probe `/health/ready` during the burst.
+Submit five requests quickly and record `MAX_QUEUED_ANALYSES`. One request may become active while the remaining requests occupy the bounded queue; scheduling means there is no guaranteed rejection count. Record actual admitted/rejected counts and each HTTP admission response. Verify serialized execution (not concurrency), FIFO callback order where all jobs are admitted, and each admitted job's queue wait. Probe both health endpoints during the burst: `/health/live` should remain responsive; `/health/ready` may intentionally return 503 when capacity is exhausted or shutdown begins. Record readiness status and latency, and do not classify an expected capacity 503 as an application crash.
 
 ## Measurements and evidence
 
