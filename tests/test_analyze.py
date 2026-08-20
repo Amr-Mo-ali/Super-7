@@ -19,10 +19,10 @@ from schemas.analysis import (
     Diagnostics,
     NonCompletedResponse,
 )
-from services.analysis_queue import AnalysisQueue
+from services.analysis_queue import AnalysisJobState, AnalysisQueue
 from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
 from services.player_tracker import TrackingDiagnostics, TrackingRun
-from services.process_contracts import ParentFailure
+from services.process_contracts import ChildAnalysisRequest, ParentFailure
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
 
@@ -157,13 +157,14 @@ def test_analyze_rejects_explicitly_when_the_queue_is_full(
 def test_lifespan_worker_delivers_one_final_callback() -> None:
     async def scenario() -> None:
         callback = FakeCallbackService()
-        pool = FakeProcessPoolLifecycle([_process_response()])
+        pool = FakeProcessPoolLifecycle([_process_response])
         app = _app(callback, process_pool=pool)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post("/analyze", json=_payload())
             assert response.status_code == 202
+            analysis_id = response.json()["analysisId"]
             await _wait_for(lambda: len(callback.payloads) == 1)
         assert callback.payloads[0].status == "no_players_detected"
         assert isinstance(callback.payloads[0], CallbackPayload)
@@ -171,6 +172,9 @@ def test_lifespan_worker_delivers_one_final_callback() -> None:
         assert pool.start_calls == 1
         assert pool.shutdown_calls == 1
         assert len(pool.requests) == 1
+        assert callback.payloads[0].request_id == analysis_id
+        assert pool.requests[0].analysis_id == analysis_id
+        assert app.state.analysis_queue.state_of(analysis_id) is AnalysisJobState.COMPLETED
         assert not hasattr(pool.requests[0], "callback_url")
 
     asyncio.run(scenario())
@@ -188,6 +192,7 @@ def test_lifespan_worker_delivers_failure_callback() -> None:
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post("/analyze", json=_payload())
             assert response.status_code == 202
+            analysis_id = response.json()["analysisId"]
             await _wait_for(lambda: len(callback.payloads) == 1)
         assert callback.payloads[0].status == "failed"
         assert callback.payloads[0].error == {
@@ -198,6 +203,9 @@ def test_lifespan_worker_delivers_failure_callback() -> None:
         assert "detailed" not in callback.payloads[0].model_dump(mode="json")
         assert pool.start_calls == 1
         assert pool.shutdown_calls == 1
+        assert pool.requests[0].analysis_id == analysis_id
+        assert callback.payloads[0].request_id == analysis_id
+        assert app.state.analysis_queue.state_of(analysis_id) is AnalysisJobState.FAILED
 
     asyncio.run(scenario())
 
@@ -232,7 +240,7 @@ def test_execution_duration_excludes_inline_callback_delivery(
         app = _app(
             callback,
             analysis_queue=AnalysisQueue(10, clock=clock),
-            process_pool=FakeProcessPoolLifecycle([_process_response()]),
+            process_pool=FakeProcessPoolLifecycle([_process_response]),
         )
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
@@ -306,13 +314,17 @@ def _app(
         path_resolver=cast(VideoPathResolver, FakeResolver()),
         callback_service=cast(CallbackService, callback),
         analysis_queue=analysis_queue,
-        process_analysis_pool=process_pool or FakeProcessPoolLifecycle([_process_response()]),
+        process_analysis_pool=(
+            process_pool
+            if process_pool is not None
+            else FakeProcessPoolLifecycle([_process_response])
+        ),
     )
 
 
-def _process_response() -> NonCompletedResponse:
+def _process_response(request: ChildAnalysisRequest) -> NonCompletedResponse:
     return NonCompletedResponse(
-        analysis_id="analysis-1",
+        analysis_id=request.analysis_id,
         status="no_players_detected",
         warnings=[],
         diagnostics=Diagnostics(

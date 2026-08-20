@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
 from services.process_contracts import ChildAnalysisRequest, ParentChildResult
+
+type ProcessOutcome = ParentChildResult | Callable[[ChildAnalysisRequest], ParentChildResult]
 
 
 class FakeProcessPoolLifecycle:
     def __init__(
         self,
-        outcomes: list[ParentChildResult] | None = None,
+        outcomes: list[ProcessOutcome] | None = None,
         *,
         events: list[str] | None = None,
         start_error: Exception | None = None,
@@ -39,7 +42,8 @@ class FakeProcessPoolLifecycle:
             self._execute_started.set()
         if self._execute_release is not None:
             await self._execute_release.wait()
-        return self._outcomes.pop(0)
+        outcome = self._outcomes.pop(0)
+        return outcome(request) if callable(outcome) else outcome
 
     async def shutdown(self) -> None:
         self.shutdown_calls += 1
