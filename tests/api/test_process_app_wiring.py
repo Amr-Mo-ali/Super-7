@@ -230,6 +230,86 @@ def test_lifespan_stops_worker_before_pool_shutdown() -> None:
     asyncio.run(scenario())
 
 
+class _ShutdownBlockingPool(FakeProcessPoolLifecycle):
+    def __init__(
+        self,
+        execute_started: asyncio.Event,
+        execute_release: asyncio.Event,
+        shutdown_started: asyncio.Event,
+        shutdown_release: asyncio.Event,
+    ) -> None:
+        super().__init__(
+            [_response], execute_started=execute_started, execute_release=execute_release
+        )
+        self._shutdown_started = shutdown_started
+        self._shutdown_release = shutdown_release
+
+    async def shutdown(self) -> None:
+        self._shutdown_started.set()
+        await self._shutdown_release.wait()
+        await super().shutdown()
+
+
+def test_shutdown_cancels_active_parent_wait_and_rejects_admission() -> None:
+    """A real running ProcessPool child is not force-terminated by parent cancellation."""
+
+    async def scenario() -> None:
+        execute_started = asyncio.Event()
+        execute_release = asyncio.Event()
+        shutdown_started = asyncio.Event()
+        shutdown_release = asyncio.Event()
+        lifespan_ready = asyncio.Event()
+        request_shutdown = asyncio.Event()
+        queue = AnalysisQueue(2)
+        callback = _Callback()
+        pool = _ShutdownBlockingPool(
+            execute_started, execute_release, shutdown_started, shutdown_release
+        )
+        app = _app(pool, queue, callback)
+
+        async def run_lifespan() -> None:
+            async with app.router.lifespan_context(app):
+                lifespan_ready.set()
+                await request_shutdown.wait()
+
+        lifespan_task = asyncio.create_task(run_lifespan())
+        try:
+            await asyncio.wait_for(lifespan_ready.wait(), timeout=1)
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+                analysis_id = response.json()["analysisId"]
+                await asyncio.wait_for(execute_started.wait(), timeout=1)
+                assert queue.state_of(analysis_id) is AnalysisJobState.RUNNING
+                request_shutdown.set()
+                await asyncio.wait_for(shutdown_started.wait(), timeout=1)
+                assert queue.metrics().accepting is False
+                assert queue.metrics().worker_running is False
+                assert queue.state_of(analysis_id) is AnalysisJobState.CANCELLED
+                assert callback.payloads == []
+                assert pool.shutdown_calls == 0
+                rejected = await client.post("/analyze", json=_payload())
+            assert rejected.status_code == 503
+            assert len(pool.requests) == 1
+            assert callback.payloads == []
+            shutdown_release.set()
+            await asyncio.wait_for(lifespan_task, timeout=1)
+            assert pool.shutdown_calls == 1
+            assert queue.metrics().worker_running is False
+            assert queue.metrics().accepting is False
+            assert queue.state_of(analysis_id) is AnalysisJobState.CANCELLED
+            assert callback.payloads == []
+            assert not any(task.get_name() == "analysis-worker" for task in asyncio.all_tasks())
+        finally:
+            request_shutdown.set()
+            execute_release.set()
+            shutdown_release.set()
+            if not lifespan_task.done():
+                await asyncio.wait_for(lifespan_task, timeout=1)
+
+    asyncio.run(scenario())
+
+
 def _payload() -> dict[str, str]:
     return {
         "videoId": "video",
