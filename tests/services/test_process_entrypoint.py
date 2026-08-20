@@ -8,6 +8,7 @@ import pytest
 
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
+from diagnostics.artifacts import ArtifactSession
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
 from services.process_entrypoint import (
@@ -38,8 +39,8 @@ def _settings(tmp_path: Path) -> Settings:
     return Settings(video_storage_root=str(videos), debug_output_dir=str(tmp_path / "debug"))
 
 
-def _request() -> ChildAnalysisRequest:
-    return ChildAnalysisRequest("analysis-1", "video-1", "player-1", "safe.mp4")
+def _request(analysis_id: str = "analysis-1") -> ChildAnalysisRequest:
+    return ChildAnalysisRequest(analysis_id, "video-1", "player-1", "safe.mp4")
 
 
 def _response(analysis_id: str) -> NonCompletedResponse:
@@ -152,3 +153,96 @@ def test_runtime_initialization_and_parent_validation(tmp_path: Path) -> None:
         validate_child_result(
             "other", CHILD_ANALYSIS_SCHEMA_VERSION, ChildAnalysisCancelled("analysis-1", 0)
         )
+
+
+class AnalysisBoom(RuntimeError):
+    pass
+
+
+class CleanupBoom(RuntimeError):
+    pass
+
+
+def test_child_artifacts_cleanup_on_success_failure_and_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+
+    def successful(*args: object) -> NonCompletedResponse:
+        artifacts = args[18]
+        assert isinstance(artifacts, ArtifactSession)
+        artifacts.create(artifacts.reserve("artifact.bin", 1)).write_bytes(b"x")
+        assert artifacts.directory.is_dir()
+        return _response(str(args[13]))
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", successful)
+    success = run_child_analysis(_request("success"))
+    assert isinstance(success, ChildAnalysisSuccess)
+    assert not (Path(settings.debug_output_dir) / "success").exists()
+
+    def failed(*_: object) -> NonCompletedResponse:
+        raise AnalysisBoom("secret-analysis-marker")
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", failed)
+    failure = run_child_analysis(_request("failure"))
+    assert isinstance(failure, ChildAnalysisFailure)
+    assert failure.error_code == "AnalysisBoom"
+    assert not (Path(settings.debug_output_dir) / "failure").exists()
+
+    def cancelled(*_: object) -> NonCompletedResponse:
+        raise AnalysisCancelled()
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", cancelled)
+    cancellation = run_child_analysis(_request("cancelled"))
+    assert isinstance(cancellation, ChildAnalysisCancelled)
+    assert not (Path(settings.debug_output_dir) / "cancelled").exists()
+
+
+@pytest.mark.parametrize(
+    ("analysis", "expected_type", "expected_code"),
+    [
+        ("success", ChildAnalysisFailure, "CleanupBoom"),
+        ("failure", ChildAnalysisFailure, "AnalysisBoom"),
+        ("cancelled", ChildAnalysisCancelled, None),
+    ],
+)
+def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    analysis: str,
+    expected_type: type[ChildAnalysisFailure] | type[ChildAnalysisCancelled],
+    expected_code: str | None,
+) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    cleanup_path = Path(settings.debug_output_dir) / analysis
+
+    def boom(_: ArtifactSession) -> object:
+        raise CleanupBoom(f"secret-cleanup-marker {cleanup_path}")
+
+    monkeypatch.setattr(ArtifactSession, "cleanup", boom)
+
+    def fake(*args: object) -> NonCompletedResponse:
+        if analysis == "failure":
+            raise AnalysisBoom("secret-analysis-marker")
+        if analysis == "cancelled":
+            raise AnalysisCancelled()
+        return _response(str(args[13]))
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", fake)
+    caplog.set_level("WARNING", logger="football_analysis.child")
+    result = run_child_analysis(_request(analysis))
+    assert isinstance(result, expected_type)
+    if expected_code is not None:
+        assert isinstance(result, ChildAnalysisFailure)
+        assert result.error_code == expected_code
+        assert result.public_message == "Analysis could not be completed."
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "analysis_child_cleanup_failed" in messages
+    assert f"analysis_id={analysis}" in messages
+    assert "cleanup_error_type=CleanupBoom" in messages
+    assert "secret-cleanup-marker" not in messages
+    assert str(cleanup_path) not in messages
+    assert settings.video_storage_root not in messages
