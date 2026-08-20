@@ -3,12 +3,13 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Protocol
 
 from fastapi import FastAPI
 
 from api.health import create_health_router
 from api.request_lifecycle import RequestLifecycle
-from api.routes import create_analysis_job_processor, create_router
+from api.routes import create_process_analysis_job_processor, create_router
 from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
 from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
@@ -19,10 +20,20 @@ from services.analysis_composition import create_analysis_components
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.callback_service import CallbackService
 from services.player_tracker import AutomaticPlayerTracker
+from services.process_analysis_pool import ProcessAnalysisPool
+from services.process_contracts import ChildAnalysisRequest, ParentChildResult
 from services.selection import TargetPlayerSelector
 from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
+
+
+class ProcessPoolLifecycle(Protocol):
+    def start(self) -> None: ...
+
+    async def execute(self, request: ChildAnalysisRequest) -> ParentChildResult: ...
+
+    async def shutdown(self) -> None: ...
 
 
 def create_app(
@@ -35,11 +46,13 @@ def create_app(
     path_resolver: VideoPathResolver | None = None,
     callback_service: CallbackService | None = None,
     analysis_queue: AnalysisQueue | None = None,
+    process_analysis_pool: ProcessPoolLifecycle | None = None,
 ) -> FastAPI:
     """Compose immutable settings and small injected MVP services."""
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
+    # Router composition still needs these lazy components; child processes own analysis execution.
     components = create_analysis_components(
         resolved_settings,
         player_detector_logger=get_logger("football_analysis.detector"),
@@ -72,23 +85,9 @@ def create_app(
         get_logger("football_analysis.callback"),
     )
     resolved_analysis_queue = analysis_queue or AnalysisQueue(resolved_settings.max_queued_analyses)
-    processor = create_analysis_job_processor(
-        resolved_settings,
-        components.validator,
-        components.tracker,
-        components.selector,
-        components.extractor,
-        components.ball_proximity_analyzer,
-        components.movement_analyzer,
-        components.interaction_analyzer,
-        components.technical_event_analyzer,
-        components.pass_detector,
-        components.shot_detector,
-        get_logger("football_analysis.api"),
-        components.physical_scorer,
-        resolved_lifecycle,
-        resolved_path_resolver,
-        resolved_callback_service,
+    resolved_process_pool = process_analysis_pool or ProcessAnalysisPool(resolved_settings)
+    processor = create_process_analysis_job_processor(
+        resolved_process_pool, resolved_callback_service, get_logger("football_analysis.api")
     )
     worker = AnalysisWorker(
         resolved_analysis_queue, processor, get_logger("football_analysis.worker")
@@ -98,12 +97,18 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
             resolved_path_resolver.validate_storage_root()
+            resolved_process_pool.start()
             await worker.start()
             yield
         finally:
             worker.begin_shutdown()
-            await resolved_lifecycle.shutdown()
-            await worker.shutdown()
+            try:
+                await resolved_lifecycle.shutdown()
+            finally:
+                try:
+                    await worker.shutdown()
+                finally:
+                    await resolved_process_pool.shutdown()
 
     app = FastAPI(
         title="Football Analysis MVP",
@@ -116,6 +121,7 @@ def create_app(
     app.state.request_lifecycle = resolved_lifecycle
     app.state.analysis_queue = resolved_analysis_queue
     app.state.analysis_worker = worker
+    app.state.process_analysis_pool = resolved_process_pool
     app.state.startup_completed = True
     app.state.detectors_initialized = True
     app.state.configuration_loaded = True
