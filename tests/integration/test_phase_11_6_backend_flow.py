@@ -9,6 +9,7 @@ from runpy import run_path
 from typing import Any, cast
 
 import httpx
+from application_log_capture import capture_application_logs
 from fastapi import FastAPI
 from process_pool_lifecycle_fake import FakeProcessPoolLifecycle
 
@@ -120,8 +121,9 @@ def test_complete_request_lifecycle_delivers_callback_and_updates_backend(
         assert not hasattr(pool.requests[0], "callback_url")
         assert pool.start_calls == pool.shutdown_calls == 1
 
-    caplog.set_level(logging.INFO)
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        caplog.set_level(logging.INFO)
+        asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
     assert any("analysis_admission_accepted" in message for message in messages)
     assert any("analysis_job_started" in message for message in messages)
@@ -158,8 +160,9 @@ def test_missing_file_produces_a_sanitized_failure_callback(caplog: Any) -> None
         assert callback.request_id == analysis_id
         assert pool.requests[0].video_reference == "missing-video.mp4"
 
-    caplog.set_level(logging.INFO)
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        caplog.set_level(logging.INFO)
+        asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
     assert any("analysis_admission_accepted" in message for message in messages)
     assert any(
@@ -202,8 +205,9 @@ def test_callback_failure_does_not_change_completed_analysis_state(caplog: Any) 
             )
         assert database.callbacks == []
 
-    caplog.set_level(logging.WARNING)
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        caplog.set_level(logging.WARNING)
+        asyncio.run(scenario())
     assert any("analysis_callback_failed" in record.getMessage() for record in caplog.records)
 
 

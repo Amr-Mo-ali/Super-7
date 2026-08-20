@@ -3,6 +3,8 @@
 import logging
 from io import StringIO
 
+import pytest
+from application_log_capture import capture_application_logs
 from pytest import MonkeyPatch
 
 from core.logging import configure_logging, get_logger
@@ -78,6 +80,7 @@ def test_configure_logging_emits_child_info_without_adding_context() -> None:
         for handler in application_logger.handlers
         if getattr(handler, "_football_analysis_owned_handler", False)
     )
+    assert isinstance(handler, logging.StreamHandler)
     stream = StringIO()
     original_stream = handler.stream
     handler.stream = stream
@@ -90,6 +93,18 @@ def test_configure_logging_emits_child_info_without_adding_context() -> None:
         stream.getvalue()
         == "INFO football_analysis.child analysis_child_initialized child_pid=123\n"
     )
+
+
+def test_caplog_captures_application_records_when_attached_to_the_boundary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging()
+    caplog.set_level(logging.INFO, logger="football_analysis")
+
+    with capture_application_logs(caplog):
+        get_logger("football_analysis.api").info("application-capture-proof")
+
+    assert [record.getMessage() for record in caplog.records] == ["application-capture-proof"]
 
 
 def test_get_logger_returns_the_named_stdlib_logger() -> None:

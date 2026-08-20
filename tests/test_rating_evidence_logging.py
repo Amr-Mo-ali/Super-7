@@ -3,6 +3,7 @@
 import logging
 
 from _pytest.logging import LogCaptureFixture
+from application_log_capture import capture_application_logs
 from pytest import MonkeyPatch
 
 from api.routes import (
@@ -131,17 +132,18 @@ def test_rating_evidence_log_identifies_all_failed_gates_and_analysis_id(
     caplog: LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="football_analysis")
-    _log_rating_evidence(
-        logging.getLogger("football_analysis.api"),
-        "analysis-1",
-        _physical(),
-        _technical_events(),
-        TechnicalScoreResult(None, None, "unavailable", "x", {}, None, None, 0, 0),
-        _game(),
-        _interaction(),
-        PassDetectionResult((), 3, 1, 2, {}, 0),
-        ShotDetectionResult((), 2, 1, 1, {}, 0),
-    )
+    with capture_application_logs(caplog):
+        _log_rating_evidence(
+            logging.getLogger("football_analysis.api"),
+            "analysis-1",
+            _physical(),
+            _technical_events(),
+            TechnicalScoreResult(None, None, "unavailable", "x", {}, None, None, 0, 0),
+            _game(),
+            _interaction(),
+            PassDetectionResult((), 3, 1, 2, {}, 0),
+            ShotDetectionResult((), 2, 1, 1, {}, 0),
+        )
 
     message = next(
         record.getMessage() for record in caplog.records if record.msg.startswith("rating_evidence")
@@ -179,9 +181,10 @@ def test_interaction_evidence_log_uses_existing_counters_and_is_best_effort(
     selection = Selection(PlayerTrack(7, 8, 10, 8, 0, 0.9, 0, True), "test", 0.0, 0.0, 0.0)
     metadata = VideoMetadata("mp4", 1, 1.0, 10, 10, 10.0, 10)
 
-    _log_interaction_evidence(
-        logger, "analysis-2", selection, metadata, 8, 6, 0.72, 0.8, _interaction()
-    )
+    with capture_application_logs(caplog):
+        _log_interaction_evidence(
+            logger, "analysis-2", selection, metadata, 8, 6, 0.72, 0.8, _interaction()
+        )
 
     message = next(
         record.getMessage()
@@ -232,7 +235,8 @@ def test_target_track_evidence_logs_raw_continuity_without_mutating_selection(
     selector = WeightedTargetPlayerSelector(Settings(selection_margin=0.01))
     before = selector.select(run.tracks)
 
-    _log_target_track_evidence(logger, "analysis-4", selection, metadata, run)
+    with capture_application_logs(caplog):
+        _log_target_track_evidence(logger, "analysis-4", selection, metadata, run)
 
     after = selector.select(run.tracks)
 
@@ -285,9 +289,10 @@ def test_target_track_candidates_log_existing_segment_ranking_without_mutation(
     )
     metadata = VideoMetadata("mp4", 1, 1.0, 10, 10, 10.0, 10)
 
-    _log_target_track_candidates(
-        logger, "analysis-5", selected, (selected,), metadata, run, Settings(), segments, ranked
-    )
+    with capture_application_logs(caplog):
+        _log_target_track_candidates(
+            logger, "analysis-5", selected, (selected,), metadata, run, Settings(), segments, ranked
+        )
 
     message = next(
         record.getMessage()

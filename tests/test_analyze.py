@@ -7,6 +7,7 @@ from typing import cast
 
 import httpx
 import pytest
+from application_log_capture import capture_application_logs
 from fastapi import FastAPI
 from process_pool_lifecycle_fake import FakeProcessPoolLifecycle
 from pydantic import HttpUrl
@@ -93,9 +94,10 @@ class _ControlledClock:
 
 
 def test_analyze_accepts_a_valid_backend_request(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO, logger="football_analysis.api")
-    callback = FakeCallbackService()
-    response = asyncio.run(_post(_payload(), callback))
+    with capture_application_logs(caplog):
+        caplog.set_level(logging.INFO, logger="football_analysis.api")
+        callback = FakeCallbackService()
+        response = asyncio.run(_post(_payload(), callback))
     assert response.status_code == 202
     assert response.json() == {
         "analysisId": response.json()["analysisId"],
@@ -151,7 +153,8 @@ def test_analyze_rejects_explicitly_when_the_queue_is_full(
         assert "rejection_reason=queue_full" in rejection
         assert "admission_duration_ms=" in rejection
 
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        asyncio.run(scenario())
 
 
 def test_lifespan_worker_delivers_one_final_callback() -> None:
@@ -253,7 +256,8 @@ def test_execution_duration_excludes_inline_callback_delivery(
                 )
             )
 
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
     execution = next(message for message in messages if "analysis_execution_finished" in message)
     callback = next(message for message in messages if "analysis_callback_finished" in message)

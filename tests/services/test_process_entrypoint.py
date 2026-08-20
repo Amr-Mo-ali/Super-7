@@ -6,9 +6,11 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from application_log_capture import capture_application_logs
 
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
+from core.logging import configure_logging as configure_application_logging
 from diagnostics.artifacts import ArtifactSession, CleanupResult
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
@@ -160,8 +162,8 @@ def test_child_initialization_configures_logging_before_its_first_log(
 ) -> None:
     settings = _settings(tmp_path)
     calls: list[str] = []
-    original_configure_logging = process_entrypoint.configure_logging
-    application_logger = process_entrypoint.get_logger("football_analysis")
+    original_configure_logging = configure_application_logging
+    application_logger = logging.getLogger("football_analysis")
 
     def configure() -> None:
         calls.append("configure")
@@ -172,7 +174,7 @@ def test_child_initialization_configures_logging_before_its_first_log(
             if record.name == "football_analysis.child":
                 assert calls == ["configure"]
 
-    monkeypatch.setattr(process_entrypoint, "configure_logging", configure)
+    monkeypatch.setattr("services.process_entrypoint.configure_logging", configure)
     probe = InitializationProbe()
     application_logger.addHandler(probe)
     try:
@@ -272,12 +274,8 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
 
     monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", fake)
     caplog.set_level("WARNING", logger="football_analysis.child")
-    application_logger = process_entrypoint.get_logger("football_analysis")
-    application_logger.addHandler(caplog.handler)
-    try:
+    with capture_application_logs(caplog):
         result = run_child_analysis(_request(analysis))
-    finally:
-        application_logger.removeHandler(caplog.handler)
     assert isinstance(result, expected_type)
     if expected_code is not None:
         assert isinstance(result, ChildAnalysisFailure)
