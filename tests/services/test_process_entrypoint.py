@@ -53,6 +53,7 @@ def _response(analysis_id: str) -> NonCompletedResponse:
             total_person_detections=0,
             tracks_created=0,
             valid_candidate_tracks=0,
+            ball_detections=0,
         ),
     )
 
