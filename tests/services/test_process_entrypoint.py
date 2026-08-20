@@ -11,7 +11,7 @@ from core.config import Settings
 from diagnostics.artifacts import ArtifactSession, CleanupResult
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
-from services.process_entrypoint import (
+from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisCancelled,
     ChildAnalysisFailure,
@@ -19,10 +19,9 @@ from services.process_entrypoint import (
     ChildAnalysisSuccess,
     ParentCancelled,
     ParentFailure,
-    initialize_analysis_child,
-    run_child_analysis,
     validate_child_result,
 )
+from services.process_entrypoint import initialize_analysis_child, run_child_analysis
 
 
 @pytest.fixture(autouse=True)

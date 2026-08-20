@@ -12,7 +12,7 @@ from process_entrypoint_spawn_support import (
 
 from core.config import Settings
 from schemas.analysis import NonCompletedResponse
-from services.process_entrypoint import (
+from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisRequest,
     ChildAnalysisSuccess,

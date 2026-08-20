@@ -10,7 +10,7 @@ from api.routes import create_process_analysis_job_processor
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services.analysis_queue import AnalysisJob, AnalysisJobState
 from services.callback_service import CallbackPayload, FailedCallbackPayload
-from services.process_entrypoint import (
+from services.process_contracts import (
     ChildAnalysisRequest,
     ParentCancelled,
     ParentChildResult,

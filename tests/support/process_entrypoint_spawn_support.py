@@ -7,7 +7,7 @@ import os
 from core.config import Settings
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
-from services.process_entrypoint import ChildAnalysisRequest, ChildAnalysisResult
+from services.process_contracts import ChildAnalysisRequest, ChildAnalysisResult
 
 
 def initialize_fake_analysis_child(settings: Settings) -> None:

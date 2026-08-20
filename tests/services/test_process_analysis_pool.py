@@ -13,7 +13,7 @@ import pytest
 from core.config import Settings
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services.process_analysis_pool import ProcessAnalysisPool
-from services.process_entrypoint import (
+from services.process_contracts import (
     ChildAnalysisCancelled,
     ChildAnalysisFailure,
     ChildAnalysisRequest,
@@ -21,8 +21,8 @@ from services.process_entrypoint import (
     ChildAnalysisSuccess,
     ParentCancelled,
     ParentFailure,
-    initialize_analysis_child,
 )
+from services.process_entrypoint import initialize_analysis_child
 
 
 class RecordingExecutor:
