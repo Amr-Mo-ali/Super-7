@@ -198,3 +198,39 @@ def test_callback_payload_failure_is_sanitized_after_pool_success(
     assert "C:/secret/video.mp4" not in messages
     assert "safe.mp4" not in messages
     assert "72.62.28.146" not in messages
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_state", "event"),
+    [
+        (_response(), AnalysisJobState.COMPLETED, "analysis_callback_error"),
+        (
+            ParentFailure("AnalysisBoom", "Analysis could not be completed."),
+            AnalysisJobState.FAILED,
+            "analysis_failure_callback_error",
+        ),
+    ],
+)
+def test_callback_exception_logs_are_sanitized(
+    caplog: pytest.LogCaptureFixture,
+    outcome: ParentChildResult,
+    expected_state: AnalysisJobState,
+    event: str,
+) -> None:
+    async def scenario() -> None:
+        caplog.set_level(logging.WARNING, logger="test.process.processor")
+        callback = FakeCallbackService(RuntimeError("secret-callback-marker"))
+        state = await create_process_analysis_job_processor(
+            FakeProcessPool(outcome), callback, logging.getLogger("test.process.processor")
+        )(_job())
+        assert state is expected_state
+        assert len(callback.payloads) == 1
+
+    asyncio.run(scenario())
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert event in messages
+    assert "analysis_id=analysis-1" in messages
+    assert "error_type=RuntimeError" in messages
+    assert "secret-callback-marker" not in messages
+    assert "safe.mp4" not in messages
+    assert "72.62.28.146" not in messages
