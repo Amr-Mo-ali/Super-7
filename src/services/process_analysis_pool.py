@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing.context import BaseContext
-from typing import Protocol
+from typing import Protocol, cast
 
 from core.config import Settings
 from services.process_entrypoint import (
@@ -51,13 +51,31 @@ class ProcessExecutorFactory(Protocol):
     ) -> _ProcessExecutor: ...
 
 
+def _create_process_executor(
+    *,
+    max_workers: int,
+    mp_context: BaseContext,
+    initializer: Callable[[Settings], None],
+    initargs: tuple[Settings],
+) -> _ProcessExecutor:
+    return cast(
+        _ProcessExecutor,
+        ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=mp_context,
+            initializer=initializer,
+            initargs=initargs,
+        ),
+    )
+
+
 class ProcessAnalysisPool:
     """Own exactly one spawned child pool while keeping parent behavior parent-owned."""
 
     def __init__(
         self,
         settings: Settings,
-        executor_factory: ProcessExecutorFactory = ProcessPoolExecutor,
+        executor_factory: ProcessExecutorFactory = _create_process_executor,
         logger: logging.Logger | None = None,
     ) -> None:
         self._settings = settings
