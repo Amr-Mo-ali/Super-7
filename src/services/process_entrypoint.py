@@ -250,6 +250,7 @@ def _validate_reference(value: str) -> None:
     path = Path(value)
     if (
         not value
+        or value != value.strip()
         or "\x00" in value
         or "/" in value
         or "\\" in value

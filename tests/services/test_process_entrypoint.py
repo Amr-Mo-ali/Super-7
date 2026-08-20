@@ -1,6 +1,7 @@
 """Focused evidence for the unused MVP-2B2 child entry point."""
 
 import pickle
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,7 @@ from services.process_entrypoint import (
 
 
 @pytest.fixture(autouse=True)
-def reset_runtime() -> None:
+def reset_runtime() -> Iterator[None]:
     process_entrypoint._reset_child_runtime_for_test()
     yield
     process_entrypoint._reset_child_runtime_for_test()
