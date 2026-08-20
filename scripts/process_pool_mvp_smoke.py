@@ -8,9 +8,11 @@ import statistics
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from time import perf_counter
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 
@@ -28,10 +30,12 @@ class RequestResult:
 
 
 def validate_options(args: argparse.Namespace) -> None:
-    if args.request_count <= 0 or args.concurrency <= 0 or args.concurrency > args.request_count:
-        raise ValueError(
-            "request count and concurrency must be positive, with concurrency no greater"
-        )
+    if args.request_count <= 0:
+        raise ValueError("request count must be positive")
+    if args.concurrency <= 0:
+        raise ValueError("admission concurrency must be positive")
+    if args.concurrency > args.request_count:
+        raise ValueError("admission concurrency must not exceed request count")
     if args.timeout <= 0:
         raise ValueError("timeout must be positive")
     if not args.callback_url:
@@ -80,7 +84,7 @@ def submit(base_url: str, payload: dict[str, str], timeout: float) -> RequestRes
     except (TypeError, json.JSONDecodeError):
         decoded = {}
     analysis_id = decoded.get("analysisId") if isinstance(decoded, dict) else None
-    if status == 202 and not isinstance(analysis_id, str):
+    if status == 202 and (not isinstance(analysis_id, str) or not analysis_id.strip()):
         return RequestResult(
             index,
             payload["videoId"],
@@ -151,8 +155,13 @@ def main(argv: list[str] | None = None) -> int:
             executor.map(lambda payload: submit(args.base_url, payload, args.timeout), payloads)
         )
     report = {
+        "metadata": {
+            "schema_version": "process-pool-mvp-smoke-v1",
+            "driver": "process_pool_mvp_smoke",
+            "created_at_utc": datetime.now(UTC).isoformat(),
+        },
         "options": {
-            "base_url": args.base_url,
+            "base_url": _sanitize_url(args.base_url),
             "request_count": args.request_count,
             "concurrency": args.concurrency,
             "timeout": args.timeout,
@@ -191,6 +200,13 @@ def _validate_reference(value: str) -> None:
 
 def _ms(started: float) -> int:
     return max(0, round((perf_counter() - started) * 1000))
+
+
+def _sanitize_url(value: str) -> str:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname or ""
+    netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 if __name__ == "__main__":
