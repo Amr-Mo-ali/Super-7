@@ -5,6 +5,11 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+from process_entrypoint_spawn_support import (
+    initialize_fake_analysis_child,
+    run_fake_child_analysis,
+)
+
 from core.config import Settings
 from schemas.analysis import NonCompletedResponse
 from services.process_entrypoint import (
@@ -12,10 +17,6 @@ from services.process_entrypoint import (
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
     validate_child_result,
-)
-from tests.support.process_entrypoint_spawn_support import (
-    initialize_fake_analysis_child,
-    run_fake_child_analysis,
 )
 
 
