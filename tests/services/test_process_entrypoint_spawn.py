@@ -6,13 +6,14 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from core.config import Settings
+from schemas.analysis import NonCompletedResponse
 from services.process_entrypoint import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
     validate_child_result,
 )
-from services.process_entrypoint_test_support import (
+from tests.support.process_entrypoint_spawn_support import (
     initialize_fake_analysis_child,
     run_fake_child_analysis,
 )
@@ -45,18 +46,16 @@ def test_spawned_child_reuses_one_process_and_cleans_artifacts(tmp_path: Path) -
         assert second_pid == first_pid
         assert isinstance(first_result, ChildAnalysisSuccess)
         assert isinstance(second_result, ChildAnalysisSuccess)
-        assert (
-            validate_child_result(
-                "spawn-one", CHILD_ANALYSIS_SCHEMA_VERSION, first_result
-            ).analysis_id
-            == "spawn-one"
+        validated_first = validate_child_result(
+            "spawn-one", CHILD_ANALYSIS_SCHEMA_VERSION, first_result
         )
-        assert (
-            validate_child_result(
-                "spawn-two", CHILD_ANALYSIS_SCHEMA_VERSION, second_result
-            ).analysis_id
-            == "spawn-two"
+        validated_second = validate_child_result(
+            "spawn-two", CHILD_ANALYSIS_SCHEMA_VERSION, second_result
         )
+        assert isinstance(validated_first, NonCompletedResponse)
+        assert isinstance(validated_second, NonCompletedResponse)
+        assert validated_first.analysis_id == "spawn-one"
+        assert validated_second.analysis_id == "spawn-two"
         assert not (debug_root / "spawn-one").exists()
         assert not (debug_root / "spawn-two").exists()
     finally:

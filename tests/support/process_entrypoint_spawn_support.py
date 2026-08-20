@@ -11,7 +11,7 @@ from services.process_entrypoint import ChildAnalysisRequest, ChildAnalysisResul
 
 
 def initialize_fake_analysis_child(settings: Settings) -> None:
-    """Initialize the production child graph, then install a deterministic calculation fake."""
+    """Initialize production child state, then install a deterministic calculation fake."""
     process_entrypoint.initialize_analysis_child(settings)
     process_entrypoint._analyze_uploaded = _fake_analyze_uploaded
 
