@@ -48,7 +48,11 @@ def create_app(
     analysis_queue: AnalysisQueue | None = None,
     process_analysis_pool: ProcessPoolLifecycle | None = None,
 ) -> FastAPI:
-    """Compose immutable settings and small injected MVP services."""
+    """Compose services; production CV runs in child-owned components via the process pool.
+
+    Parent component overrides remain only for router/legacy compatibility; production
+    analysis tests must inject ``process_analysis_pool`` rather than rely on them.
+    """
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
