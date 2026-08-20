@@ -8,14 +8,21 @@ from typing import cast
 import httpx
 import pytest
 from fastapi import FastAPI
+from process_pool_lifecycle_fake import FakeProcessPoolLifecycle
 from pydantic import HttpUrl
 
 from core.config import Settings
 from main import create_app
-from schemas.analysis import AnalyzeAcceptedResponse, AnalyzeRequest
+from schemas.analysis import (
+    AnalyzeAcceptedResponse,
+    AnalyzeRequest,
+    Diagnostics,
+    NonCompletedResponse,
+)
 from services.analysis_queue import AnalysisQueue
 from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
 from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.process_contracts import ParentFailure
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoMetadata, VideoValidator
 
@@ -150,7 +157,8 @@ def test_analyze_rejects_explicitly_when_the_queue_is_full(
 def test_lifespan_worker_delivers_one_final_callback() -> None:
     async def scenario() -> None:
         callback = FakeCallbackService()
-        app = _app(callback)
+        pool = FakeProcessPoolLifecycle([_process_response()])
+        app = _app(callback, process_pool=pool)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -160,6 +168,10 @@ def test_lifespan_worker_delivers_one_final_callback() -> None:
         assert callback.payloads[0].status == "no_players_detected"
         assert isinstance(callback.payloads[0], CallbackPayload)
         assert callback.payloads[0].detailed.model_dump(mode="json") == _detailed_nulls()
+        assert pool.start_calls == 1
+        assert pool.shutdown_calls == 1
+        assert len(pool.requests) == 1
+        assert not hasattr(pool.requests[0], "callback_url")
 
     asyncio.run(scenario())
 
@@ -167,7 +179,10 @@ def test_lifespan_worker_delivers_one_final_callback() -> None:
 def test_lifespan_worker_delivers_failure_callback() -> None:
     async def scenario() -> None:
         callback = FakeCallbackService()
-        app = _app(callback, FailingTracker())
+        pool = FakeProcessPoolLifecycle(
+            [ParentFailure("RuntimeError", "Analysis could not be completed.")]
+        )
+        app = _app(callback, process_pool=pool)
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -181,6 +196,8 @@ def test_lifespan_worker_delivers_failure_callback() -> None:
         }
         assert isinstance(callback.payloads[0], FailedCallbackPayload)
         assert "detailed" not in callback.payloads[0].model_dump(mode="json")
+        assert pool.start_calls == 1
+        assert pool.shutdown_calls == 1
 
     asyncio.run(scenario())
 
@@ -212,7 +229,11 @@ def test_execution_duration_excludes_inline_callback_delivery(
             sleep=delayed_retry,
             clock=clock,
         )
-        app = _app(callback, analysis_queue=AnalysisQueue(10, clock=clock))
+        app = _app(
+            callback,
+            analysis_queue=AnalysisQueue(10, clock=clock),
+            process_pool=FakeProcessPoolLifecycle([_process_response()]),
+        )
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -276,6 +297,7 @@ def _app(
     callback: CallbackService | FakeCallbackService,
     tracker: FakeTracker | FailingTracker | None = None,
     analysis_queue: AnalysisQueue | None = None,
+    process_pool: FakeProcessPoolLifecycle | None = None,
 ) -> FastAPI:
     return create_app(
         Settings(),
@@ -284,6 +306,23 @@ def _app(
         path_resolver=cast(VideoPathResolver, FakeResolver()),
         callback_service=cast(CallbackService, callback),
         analysis_queue=analysis_queue,
+        process_analysis_pool=process_pool or FakeProcessPoolLifecycle([_process_response()]),
+    )
+
+
+def _process_response() -> NonCompletedResponse:
+    return NonCompletedResponse(
+        analysis_id="analysis-1",
+        status="no_players_detected",
+        warnings=[],
+        diagnostics=Diagnostics(
+            frames_processed=0,
+            frames_with_player_detections=0,
+            total_person_detections=0,
+            tracks_created=0,
+            valid_candidate_tracks=0,
+            ball_detections=0,
+        ),
     )
 
 
