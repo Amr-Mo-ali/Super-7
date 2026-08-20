@@ -177,6 +177,59 @@ def test_parent_cancellation_maps_to_cancelled_queue_state_without_callback() ->
     asyncio.run(scenario())
 
 
+def test_startup_failure_shuts_down_pool_and_worker_cleanly() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(1)
+        pool = FakeProcessPoolLifecycle(start_error=RuntimeError("secret-start-marker"))
+        callback = _Callback()
+        app = _app(pool, queue, callback)
+        try:
+            async with app.router.lifespan_context(app):
+                raise AssertionError("startup should fail")
+        except RuntimeError as error:
+            assert str(error) == "secret-start-marker"
+        assert pool.start_calls == pool.shutdown_calls == 1
+        assert pool.requests == []
+        assert queue.metrics().worker_running is False
+        assert queue.metrics().accepting is False
+        assert callback.payloads == []
+        assert app.state.process_analysis_pool is pool
+        assert not any(task.get_name() == "analysis-worker" for task in asyncio.all_tasks())
+
+    asyncio.run(scenario())
+
+
+class _ShutdownObservingPool(FakeProcessPoolLifecycle):
+    def __init__(self, queue: AnalysisQueue) -> None:
+        super().__init__([_response])
+        self.queue = queue
+        self.shutdown_metrics: tuple[bool, bool] | None = None
+
+    async def shutdown(self) -> None:
+        metrics = self.queue.metrics()
+        self.shutdown_metrics = (metrics.accepting, metrics.worker_running)
+        await super().shutdown()
+
+
+def test_lifespan_stops_worker_before_pool_shutdown() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(1)
+        pool = _ShutdownObservingPool(queue)
+        app = _app(pool, queue, _Callback())
+        async with app.router.lifespan_context(app):
+            assert pool.start_calls == 1
+            assert queue.metrics().worker_running is True
+            assert queue.metrics().accepting is True
+        assert pool.shutdown_metrics == (False, False)
+        assert pool.shutdown_calls == 1
+        assert queue.metrics().accepting is False
+        assert queue.metrics().worker_running is False
+        assert pool.events[0] == "pool.start"
+        assert pool.events[-1] == "pool.shutdown"
+
+    asyncio.run(scenario())
+
+
 def _payload() -> dict[str, str]:
     return {
         "videoId": "video",
