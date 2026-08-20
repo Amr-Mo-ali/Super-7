@@ -1,5 +1,6 @@
 """Focused evidence for the unused MVP-2B2 child entry point."""
 
+import logging
 import pickle
 from collections.abc import Iterator
 from pathlib import Path
@@ -154,6 +155,45 @@ def test_runtime_initialization_and_parent_validation(tmp_path: Path) -> None:
         )
 
 
+def test_child_initialization_configures_logging_before_its_first_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    calls: list[str] = []
+    original_configure_logging = process_entrypoint.configure_logging
+    application_logger = process_entrypoint.get_logger("football_analysis")
+
+    def configure() -> None:
+        calls.append("configure")
+        original_configure_logging()
+
+    class InitializationProbe(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.name == "football_analysis.child":
+                assert calls == ["configure"]
+
+    monkeypatch.setattr(process_entrypoint, "configure_logging", configure)
+    probe = InitializationProbe()
+    application_logger.addHandler(probe)
+    try:
+        initialize_analysis_child(settings)
+        initialize_analysis_child(settings)
+    finally:
+        application_logger.removeHandler(probe)
+
+    assert calls == ["configure"]
+    assert (
+        len(
+            [
+                handler
+                for handler in application_logger.handlers
+                if getattr(handler, "_football_analysis_owned_handler", False)
+            ]
+        )
+        == 1
+    )
+
+
 class AnalysisBoom(RuntimeError):
     pass
 
@@ -232,7 +272,12 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
 
     monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", fake)
     caplog.set_level("WARNING", logger="football_analysis.child")
-    result = run_child_analysis(_request(analysis))
+    application_logger = process_entrypoint.get_logger("football_analysis")
+    application_logger.addHandler(caplog.handler)
+    try:
+        result = run_child_analysis(_request(analysis))
+    finally:
+        application_logger.removeHandler(caplog.handler)
     assert isinstance(result, expected_type)
     if expected_code is not None:
         assert isinstance(result, ChildAnalysisFailure)
