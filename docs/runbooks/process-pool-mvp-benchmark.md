@@ -38,6 +38,14 @@ $body = @{ videoId='video-001'; playerId='player-001'; videoUrl='known.mp4'; cal
 Measure-Command { Invoke-RestMethod http://127.0.0.1:8000/analyze -Method Post -ContentType 'application/json' -Body $body }
 ```
 
+For controlled admission smoke evidence, use the repository driver instead of a general load-testing tool:
+
+```powershell
+uv run python scripts/process_pool_mvp_smoke.py --base-url http://127.0.0.1:8000 --callback-url https://APPROVED-STAGING-CALLBACK.example/webhook --video-reference known.mp4 --request-count 3 --concurrency 1 --json-output smoke-evidence.json
+```
+
+It proves only HTTP admission responses and admission latency. It does not prove analysis completion, callback delivery, or per-job child PID attribution. Verify callback completion independently with the approved Apex staging endpoint and its existing integration contract.
+
 Use the callback receiver/backend mock to verify exactly one callback per completed or failed job and matching callback `request_id`/analysis ID. Cancellation currently sends no callback.
 
 ## Scenarios
