@@ -4,6 +4,9 @@ import argparse
 import importlib.util
 import io
 import json
+import sys
+from datetime import datetime
+from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError
 
@@ -13,6 +16,7 @@ _PATH = Path(__file__).parents[2] / "scripts" / "process_pool_mvp_smoke.py"
 _SPEC = importlib.util.spec_from_file_location("process_pool_mvp_smoke", _PATH)
 assert _SPEC is not None and _SPEC.loader is not None
 smoke = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = smoke
 _SPEC.loader.exec_module(smoke)
 
 
@@ -99,7 +103,7 @@ def test_submit_validates_admitted_identity(
 def test_submit_handles_http_rejection_and_transport_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    error = HTTPError("http://server", 503, "busy", {}, io.BytesIO(b'{"detail":"busy"}'))
+    error = HTTPError("http://server", 503, "busy", Message(), io.BytesIO(b'{"detail":"busy"}'))
     monkeypatch.setattr(smoke, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
     assert smoke.submit("http://server", smoke.build_payload(0, _args()), 1).status_code == 503
     monkeypatch.setattr(
@@ -149,5 +153,56 @@ def test_main_writes_sanitized_json_and_exit_codes(
     rendered = capsys.readouterr().out
     report = json.loads(output.read_text())
     assert code == 0 and report["metadata"]["driver"] == "process_pool_mvp_smoke"
+    assert report["metadata"]["schema_version"] == "process-pool-mvp-smoke-v1"
+    assert datetime.fromisoformat(report["metadata"]["created_at_utc"]).tzinfo is not None
+    assert report["requests"] and report["summary"]
     assert "callback.example" not in rendered and "callback.example" not in output.read_text()
     assert all(secret not in rendered for secret in ("u:p", "q=t", "#f"))
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            smoke.RequestResult(
+                0, "v", "p", "safe.mp4", 503, 1, None, "HTTP503", "admission rejected"
+            ),
+            0,
+        ),
+        (
+            smoke.RequestResult(
+                0, "v", "p", "safe.mp4", None, 1, None, "OSError", "transport failure"
+            ),
+            1,
+        ),
+        (
+            smoke.RequestResult(
+                0,
+                "v",
+                "p",
+                "safe.mp4",
+                202,
+                1,
+                None,
+                "MalformedResponse",
+                "admitted response lacks analysis identity",
+            ),
+            1,
+        ),
+    ],
+)
+def test_main_exit_codes(monkeypatch: pytest.MonkeyPatch, result: object, expected: int) -> None:
+    monkeypatch.setattr(smoke, "submit", lambda *_: result)
+    assert (
+        smoke.main(
+            [
+                "--base-url",
+                "http://server",
+                "--callback-url",
+                "https://callback.example/path",
+                "--video-reference",
+                "safe.mp4",
+            ]
+        )
+        == expected
+    )
