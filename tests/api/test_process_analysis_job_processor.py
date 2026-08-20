@@ -6,6 +6,7 @@ import logging
 import pytest
 from pydantic import HttpUrl, TypeAdapter
 
+import api.routes
 from api.routes import create_process_analysis_job_processor
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services.analysis_queue import AnalysisJob, AnalysisJobState
@@ -163,4 +164,37 @@ def test_unexpected_pool_error_is_sanitized_in_callback_and_logs(
     assert "error_type=RuntimeError" in messages
     assert "secret-pool-marker" not in messages
     assert "C:/secret/video.mp4" not in messages
+    assert "72.62.28.146" not in messages
+
+
+def test_callback_payload_failure_is_sanitized_after_pool_success(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken_payload(*_: object) -> CallbackPayload:
+        raise RuntimeError("secret-payload-marker C:/secret/video.mp4")
+
+    async def scenario() -> None:
+        caplog.set_level(logging.INFO, logger="test.process.processor")
+        callback = FakeCallbackService()
+        monkeypatch.setattr(api.routes, "_callback_payload", broken_payload)
+        state = await create_process_analysis_job_processor(
+            FakeProcessPool(_response()), callback, logging.getLogger("test.process.processor")
+        )(_job())
+        assert state is AnalysisJobState.FAILED
+        assert len(callback.payloads) == 1
+        assert isinstance(callback.payloads[0], FailedCallbackPayload)
+        assert callback.payloads[0].error == {
+            "code": "ProcessPoolError",
+            "message": "Analysis could not be completed.",
+        }
+
+    asyncio.run(scenario())
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "analysis_execution_finished" in messages
+    assert "analysis_id=analysis-1" in messages
+    assert "execution_outcome=failed" in messages
+    assert "error_type=RuntimeError" in messages
+    assert "secret-payload-marker" not in messages
+    assert "C:/secret/video.mp4" not in messages
+    assert "safe.mp4" not in messages
     assert "72.62.28.146" not in messages
