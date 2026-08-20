@@ -205,6 +205,8 @@ def _ms(started: float) -> int:
 def _sanitize_url(value: str) -> str:
     parsed = urlsplit(value)
     hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
     netloc = hostname if parsed.port is None else f"{hostname}:{parsed.port}"
     return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
