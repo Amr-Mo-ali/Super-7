@@ -12,7 +12,7 @@ from api.routes import _analyze_uploaded
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
-from core.logging import get_logger
+from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_composition import AnalysisComponents, create_analysis_components
 from services.process_contracts import (
@@ -48,6 +48,7 @@ def initialize_analysis_child(settings: Settings) -> None:
         if _runtime.settings != settings:
             raise RuntimeError("analysis child is already initialized with different settings")
         return
+    configure_logging()
     logger = get_logger("football_analysis.child")
     components = create_analysis_components(
         settings,

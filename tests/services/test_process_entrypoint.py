@@ -1,13 +1,16 @@
 """Focused evidence for the unused MVP-2B2 child entry point."""
 
+import logging
 import pickle
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from application_log_capture import capture_application_logs
 
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
+from core.logging import configure_logging as configure_application_logging
 from diagnostics.artifacts import ArtifactSession, CleanupResult
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services import process_entrypoint
@@ -154,6 +157,45 @@ def test_runtime_initialization_and_parent_validation(tmp_path: Path) -> None:
         )
 
 
+def test_child_initialization_configures_logging_before_its_first_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    calls: list[str] = []
+    original_configure_logging = configure_application_logging
+    application_logger = logging.getLogger("football_analysis")
+
+    def configure() -> None:
+        calls.append("configure")
+        original_configure_logging()
+
+    class InitializationProbe(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.name == "football_analysis.child":
+                assert calls == ["configure"]
+
+    monkeypatch.setattr("services.process_entrypoint.configure_logging", configure)
+    probe = InitializationProbe()
+    application_logger.addHandler(probe)
+    try:
+        initialize_analysis_child(settings)
+        initialize_analysis_child(settings)
+    finally:
+        application_logger.removeHandler(probe)
+
+    assert calls == ["configure"]
+    assert (
+        len(
+            [
+                handler
+                for handler in application_logger.handlers
+                if getattr(handler, "_football_analysis_owned_handler", False)
+            ]
+        )
+        == 1
+    )
+
+
 class AnalysisBoom(RuntimeError):
     pass
 
@@ -232,7 +274,8 @@ def test_cleanup_failure_is_sanitized_and_preserves_primary_outcome(
 
     monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", fake)
     caplog.set_level("WARNING", logger="football_analysis.child")
-    result = run_child_analysis(_request(analysis))
+    with capture_application_logs(caplog):
+        result = run_child_analysis(_request(analysis))
     assert isinstance(result, expected_type)
     if expected_code is not None:
         assert isinstance(result, ChildAnalysisFailure)

@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 
 import pytest
+from application_log_capture import capture_application_logs
 
 from api.request_lifecycle import RequestLifecycle
 from concurrency.admission import AdmissionController
@@ -236,7 +237,8 @@ def test_pipeline_failure_is_preserved_when_cleanup_also_fails(
             assert (await controller.metrics()).active_permits == 0
             assert await lifecycle.execute("after-cleanup-primary-failure", lambda _: 42) == 42
 
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
     cleanup = next(message for message in messages if "analysis_cleanup_finished" in message)
     assert "cleanup_succeeded=false" in cleanup
@@ -263,7 +265,8 @@ def test_artifact_cleanup_observations_cover_completed_and_failed_paths(
                     lambda _, __: (_ for _ in ()).throw(RuntimeError("pipeline failed")),
                 )
 
-    asyncio.run(scenario())
+    with capture_application_logs(caplog):
+        asyncio.run(scenario())
     messages = [record.getMessage() for record in caplog.records]
     assert any(
         "analysis_cleanup_finished analysis_id=cleanup-success cleanup_outcome=completed" in message
