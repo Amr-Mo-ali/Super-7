@@ -14,7 +14,7 @@ from main import create_app
 from schemas.analysis import Diagnostics, NonCompletedResponse
 from services.analysis_queue import AnalysisJob, AnalysisJobState, AnalysisQueue
 from services.callback_service import CallbackPayload, CallbackService, FailedCallbackPayload
-from services.process_contracts import ChildAnalysisRequest
+from services.process_contracts import ChildAnalysisRequest, ParentCancelled, ParentFailure
 from services.video_path_resolver import VideoPathResolver
 
 
@@ -121,6 +121,58 @@ def test_runtime_uses_parent_callback_and_child_request_contract() -> None:
         assert not hasattr(pool.requests[0], "callback_url")
         assert callback.payloads[0].request_id == analysis_id
         assert queue.state_of(analysis_id) is AnalysisJobState.COMPLETED
+
+    asyncio.run(scenario())
+
+
+def test_parent_failure_maps_to_failure_callback_and_failed_queue_state() -> None:
+    async def scenario() -> None:
+        pool = FakeProcessPoolLifecycle(
+            [ParentFailure("AnalysisBoom", "Analysis could not be completed.")]
+        )
+        queue = AnalysisQueue(1)
+        callback = _Callback()
+        app = _app(pool, queue, callback)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+            analysis_id = response.json()["analysisId"]
+            await queue.wait_until_idle()
+        assert response.status_code == 202
+        assert len(pool.requests) == len(callback.payloads) == 1
+        assert isinstance(callback.payloads[0], FailedCallbackPayload)
+        assert callback.payloads[0].request_id == analysis_id
+        assert callback.payloads[0].error == {
+            "code": "AnalysisBoom",
+            "message": "Analysis could not be completed.",
+        }
+        assert queue.state_of(analysis_id) is AnalysisJobState.FAILED
+        assert pool.start_calls == pool.shutdown_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_parent_cancellation_maps_to_cancelled_queue_state_without_callback() -> None:
+    def cancelled(request: ChildAnalysisRequest) -> ParentCancelled:
+        return ParentCancelled(request.analysis_id)
+
+    async def scenario() -> None:
+        pool = FakeProcessPoolLifecycle([cancelled])
+        queue = AnalysisQueue(1)
+        callback = _Callback()
+        app = _app(pool, queue, callback)
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post("/analyze", json=_payload())
+            analysis_id = response.json()["analysisId"]
+            await queue.wait_until_idle()
+        assert response.status_code == 202
+        assert pool.requests[0].analysis_id == analysis_id
+        assert queue.state_of(analysis_id) is AnalysisJobState.CANCELLED
+        assert callback.payloads == []
+        assert pool.start_calls == pool.shutdown_calls == 1
 
     asyncio.run(scenario())
 
