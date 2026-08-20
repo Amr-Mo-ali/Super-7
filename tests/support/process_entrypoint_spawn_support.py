@@ -13,7 +13,8 @@ from services.process_entrypoint import ChildAnalysisRequest, ChildAnalysisResul
 def initialize_fake_analysis_child(settings: Settings) -> None:
     """Initialize production child state, then install a deterministic calculation fake."""
     process_entrypoint.initialize_analysis_child(settings)
-    setattr(process_entrypoint, "_analyze_uploaded", _fake_analyze_uploaded)
+    # Install the spawned-child fake without adding a production test seam.
+    vars(process_entrypoint)["_analyze_uploaded"] = _fake_analyze_uploaded
 
 
 def run_fake_child_analysis(request: ChildAnalysisRequest) -> tuple[int, ChildAnalysisResult]:
