@@ -1,5 +1,25 @@
 # Super-7 engineering instructions
 
+## Mandatory onboarding and evidence guardrails
+
+Before changing code, read the canonical handoff in this order:
+
+1. [docs/handoff/README.md](docs/handoff/README.md)
+2. [docs/handoff/scoring-and-product-semantics.md](docs/handoff/scoring-and-product-semantics.md)
+3. [docs/handoff/system-and-runtime.md](docs/handoff/system-and-runtime.md)
+4. [docs/handoff/decisions-progress-and-backlog.md](docs/handoff/decisions-progress-and-backlog.md)
+5. [docs/handoff/production-evidence-and-operations.md](docs/handoff/production-evidence-and-operations.md)
+6. Relevant ADRs, contracts, and runbooks.
+
+- Do not fill null scores without new evidence.
+- Do not equate event confidence with skill.
+- Do not include game intelligence in Overall without a deliberate product and formula decision.
+- Do not change process count without measurement.
+- Do not introduce durability infrastructure as an incidental refactor.
+- Do not assume `playerId` identifies a visual track.
+- Do not store diagnostic evidence inside the production Git checkout.
+- Do not deploy from feature/documentation commits unless explicitly intended.
+
 ## Scope and layout
 
 Super-7 is a Python modular-monolith that analyzes football video and delivers an asynchronous callback. Core code is in `src/api`, `src/services`, `src/domain`, `src/core`, and `src/schemas`; tests are in `tests`; decisions and remediation records are in `docs`.
