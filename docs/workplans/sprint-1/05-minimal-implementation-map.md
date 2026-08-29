@@ -48,7 +48,11 @@ frames/duration/confidence/continuity, rejection reasons, and normalized-jump sp
 approved contract: `rank_segments()` orders by composite `segment_quality`, `select_segment()` takes
 the first candidate, it has no runner-up dominance gate, does not consume the dedicated-video input
 guarantee, and emits no establishment status/reason. This is **Implemented and production-wired**
-current behavior, verified in `segment_selection.py` and `tests/test_segment_selection.py`.
+current behavior, verified in `segment_selection.py` and `tests/test_segment_selection.py`. Future
+implementation discovery must separately inspect top-candidate qualification and plausible
+alternatives, including candidates rejected by rating-analysis qualification; it must not reuse that
+rating threshold as the only ambiguity boundary without evidence. No new framework or numeric
+threshold is proposed.
 
 Likely files/symbols: `src/schemas/analysis.py` (internal result/public presentation only after
 contract approval), `src/services/selection.py` and/or `segment_selection.py` (minimal eligibility

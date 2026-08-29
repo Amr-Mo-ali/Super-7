@@ -16,7 +16,10 @@ The product guarantee is that the video is intended to analyse the associated pl
 players may appear. The allowed proposed method is `dominant_visual_candidate`: candidates must
 qualify using existing evidence, with supported visible duration primary and current visible-frame,
 continuous-duration, detection-confidence, segment-quality and normalized-jump evidence supporting.
-Continuity is analyzability only. Numeric dominance definition is deliberately pending.
+Continuity is analyzability only. Top-candidate qualification and alternative plausibility are
+separate decisions: a plausible alternative need not be a fully qualifying rating-analysis
+candidate. Clear dominance means the top qualifying candidate is unambiguous relative to all
+plausible alternatives. Numeric plausibility/dominance definitions are deliberately pending.
 
 ## States, reasons, and establishment truth table
 
@@ -25,16 +28,22 @@ target establishment for the dedicated request—not verified real-world identit
 Target established does not mean target maintained. Future continuity is separate and Sprint 1 is
 conceptually `NOT_EVALUATED`.
 
-| Dedicated-video guarantee | Qualifying candidates | Clear dominance | Result | Ratings |
-|---|---:|---:|---|---|
-| absent/unknown | any | any | `NOT_ESTABLISHED` | unavailable |
-| present | 0 | no | `NOT_ESTABLISHED` / `no_qualifying_visual_target` | unavailable |
-| present | 1 | yes by definition | `ESTABLISHED` | per-rating gates apply |
-| present | more than 1 | no | `NOT_ESTABLISHED` / `ambiguous_visual_target` | unavailable |
-| present | more than 1 | yes | `ESTABLISHED` | per-rating gates apply |
+| Dedicated-video guarantee | Top candidate qualifies | Plausible alternative | Clear dominance | Result | Ratings |
+|---|---:|---:|---:|---|---|
+| absent/unknown | any | any | any | `NOT_ESTABLISHED` | unavailable |
+| present | no | any | no | `NOT_ESTABLISHED` / `no_qualifying_visual_target` | unavailable |
+| present | yes | no | yes | `ESTABLISHED` | per-rating gates apply |
+| present | yes | yes | no/not demonstrated | `NOT_ESTABLISHED` / `ambiguous_visual_target` | unavailable |
+| present | yes | yes | yes | `ESTABLISHED` | per-rating gates apply |
 
 “Clear dominance” is a contract concept in this task. Its numeric operational definition is not
 selected here. Other establishment failure is `target_not_established`.
+
+A plausible alternative is not necessarily a fully qualifying rating candidate. Qualification answers
+whether a candidate is analyzable. Dominance answers whether the selected candidate is unambiguous
+relative to other plausible visual candidates. These are separate decisions. A single qualifying
+candidate is not automatically dominant; `qualifying_candidate_count == 1 → ESTABLISHED` is
+forbidden proposed-contract behavior.
 
 ## Rating and Overall gating
 
@@ -55,8 +64,9 @@ unattributed-event surface is proposed for Sprint 1.
 
 ## Examples and limitations
 
-A dedicated clip with one qualifying candidate may be provisionally established; a dedicated clip
-with two plausible non-dominant candidates is unavailable. A video not covered by the input
+A dedicated clip with one qualifying candidate is established only when no plausible alternative
+remains ambiguous; a dedicated clip with two plausible non-dominant candidates is unavailable. A
+video not covered by the input
 guarantee is unavailable even if one candidate appears strongest. Security/privacy: no biometric,
 jersey or persistent identity claim is made; diagnostic exposure must not turn a temporary track ID
 into a public identity.

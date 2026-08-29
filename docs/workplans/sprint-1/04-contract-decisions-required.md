@@ -53,3 +53,12 @@ Apex/implementation confirmation.
 
 D5, D7, D9 and D10 remain API/product compatibility decisions awaiting Apex confirmation; no
 schema, callback, formula, or threshold has been approved for implementation here.
+
+### Dominance-policy hotfix — Documented decision / Proposed contract behavior
+
+Two future decisions are required: (1) top-candidate qualification policy and (2)
+plausible-alternative/dominance policy. Rating-analysis qualification must not be reused as the sole
+ambiguity boundary without evidence: a slightly sub-threshold visual candidate can still be a
+plausible alternative. Future selector discovery must inspect all candidate information, including
+candidates rejected by rating-analysis qualification. No new framework or numeric threshold is
+proposed.

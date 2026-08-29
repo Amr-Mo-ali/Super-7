@@ -102,3 +102,21 @@ automatic target-before-tracking hierarchy. At that check, `git status --short` 
 seven modified files under `docs/workplans/sprint-1/` (including this verification record) and the
 two new Markdown files above. `git diff --stat` showed the seven tracked workplan files only (137
 insertions, 17 deletions); Git does not include the two untracked new files in ordinary diff stat.
+
+## 2026-08-29 dominance hotfix
+
+Starting branch/HEAD: `the-new-inhancement` /
+`fa84d18e4d4432a15941a1995c20707edd8b1971`; starting working tree was clean. Modified files:
+`docs/contracts/target-selection-contract-v1.md`,
+`docs/decisions/ADR-005-dominant-visual-target-mvp.md`, and
+`docs/workplans/sprint-1/{00-discovery-log,04-contract-decisions-required,05-minimal-implementation-map,README}.md`.
+
+Commands executed: `rg -n -i -S` for `yes by definition`, qualifying-candidate, dominance and
+plausible-alternative terms; `git diff --check`; `rg -n "[ \t]+$"` for trailing whitespace; a
+PowerShell repository-relative Markdown link check; `git status --short`; and `git diff --stat`.
+Results: no unsafe automatic-establishment wording remains; all remaining single-qualifier wording
+states the prohibition. `git diff --check` produced no content error; trailing whitespace was none;
+all repository-relative links resolve. Final status contains exactly the six Markdown files above.
+`git diff --stat` reports those six files: 49 insertions and 16 deletions. Git emitted only
+LF-to-CRLF working-copy warnings. Runtime tests were intentionally not run; no runtime code, test,
+API/schema, formula, model, infrastructure, deployment, commit, or push changed.

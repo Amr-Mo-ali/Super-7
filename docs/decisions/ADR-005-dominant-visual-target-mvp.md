@@ -23,8 +23,10 @@ For the current MVP, the proposed selection method is `dominant_visual_candidate
 qualifying visual candidates primarily by supported visible duration, using existing qualification
 signals (visible frames, supported continuous duration, mean detection confidence, current
 segment-quality requirements, and normalized-jump protection). Continuity is analyzability evidence
-only, never identity maintenance. A candidate is `ESTABLISHED` only when it qualifies and is clearly
-dominant over plausible alternatives; exact operational policy and thresholds are unresolved.
+only, never identity maintenance. Qualification and dominance are separate: one qualifying candidate
+may coexist with a plausible alternative that falls below normal rating-analysis qualification. A
+candidate is `ESTABLISHED` only when it qualifies and no plausible alternative remains unresolved
+enough to make visual selection ambiguous. Exact operational policy and thresholds are unresolved.
 
 ## Definitions and semantics
 
@@ -77,7 +79,9 @@ tracker redesign, manual UI, pitch calibration, or new infrastructure is include
 
 ## Risks, validation, and revisit
 
-Accepted risks: selected dominant player can still be unintended; users can violate the input
+A risk to prevent is unsafe single-qualifier acceptance: one qualifying candidate alone must not
+establish a target without alternative-plausibility/dominance assessment. Accepted risks: selected
+dominant player can still be unintended; users can violate the input
 guarantee; tracking can fragment/switch; cuts/occlusions are unsupported; thresholds are unvalidated;
 correct clips may be rejected and ambiguous clips may pass; ratings are uncalibrated; Physical is
 image-space; Game Intelligence is publicly unsupported.
@@ -91,8 +95,8 @@ everything is not useful and coverage must never rise through unsafe identity as
 
 Revisit for unacceptable wrong-player/ambiguous rates, low eligible coverage, ID switches, cuts,
 multiplayer/verified-identity/full-match/real-world-metric requirements, or a committed tactical
-feature. Rollout requires Apex confirmation, threshold/validation discovery, contract tests and a
-compatibility plan. Rollback removes the future gate under the approved release plan; it does not
+feature. Rollout requires Apex confirmation, dominance-policy discovery, threshold/validation
+evidence, contract tests and a compatibility plan. Rollback removes the future gate under the approved release plan; it does not
 create persistence or change existing formula weights.
 
 ## Evidence

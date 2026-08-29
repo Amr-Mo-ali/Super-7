@@ -103,3 +103,7 @@ callback/API compatibility, schema/versioning, and input-guarantee enforcement. 
 validation remain blocked. Correct automatic order is Request/input guarantee → Detection/tracking
 → qualifying candidates → establishment → selected target segment → evidence → rating eligibility
 → public response.
+
+Dominance hotfix: one qualifying candidate is not automatically dominant. Proposed establishment
+also requires no unresolved plausible alternative; operational qualification/plausibility/dominance
+definitions remain blocked on implementation discovery and validation evidence.
