@@ -9,6 +9,10 @@ All timestamps are UTC. Commands are reproduced in sanitized form; no URL, token
 personal player data, or raw diagnostic evidence is included. File creation below is the only
 intentional workspace change.
 
+Time-recording correction: original discovery entries record known dates but did not capture exact
+UTC times; those historical entries are preserved rather than reconstructed. This correction pass
+uses full UTC timestamps for new entries.
+
 | # | Time | Action / purpose | Evidence inspected / command | Result | Classification | Files changed | Question / next action |
 |---:|---|---|---|---|---|---|---|
 | 1 | 2026-08-27 | Read task and mandatory onboarding | pasted brief; `AGENTS.md`; all five `docs/handoff/*.md` | Discovery-only scope and evidence guardrails confirmed. | Documented decision | none | Inspect contracts, ADRs, runbooks and source. |
@@ -19,6 +23,12 @@ intentional workspace change.
 | 6 | 2026-08-27 | Create required discovery pack | `apply_patch` | Added only `docs/workplans/sprint-1/*`; no runtime files changed. | Proposed | this directory | Verify links, diff, and focused tests. |
 | 7 | 2026-08-27 | Run focused deterministic tests | `uv run pytest -q <selector/rating/contract/processor tests>`; direct `.venv` pytest fallback | Neither launcher reached pytest: local cache/interpreter child creation failed with permission errors. No test result is claimed. | Unknown / requires verification | none | Re-run in an environment where the project Python launcher may create child processes. |
 | 8 | 2026-08-27 | Verify documentation diff and links | `git diff --check`; PowerShell repository-relative Markdown-link check; `git status --short` | No `git diff --check` errors; link check resolved every repository-relative discovery-doc link. Git reports only untracked `docs/workplans/`. `git diff --check` does not inspect untracked files. | Implemented but not production-wired | none | Human/review-tool Markdown rendering still advisable. |
+| 9 | 2026-08-27 | Documentation-correction provenance check and correction | `git rev-parse HEAD`; `git diff --name-status 7920375… f2d1e834…`; `git log -1 f2d1e834…`; continuation brief | Current HEAD is documentation commit `f2d1e834…`; range contains only the eight Sprint 1 Markdown files. Per continuation brief, it was committed and pushed after the original discovery work. Local evidence verifies the commit/range, not remote push receipt. | Implemented but not production-wired | Sprint 1 Markdown only | Correct provenance, traceability, rating audit and decision register. |
+| 10 | 2026-08-27 | Verify correction documentation | `git diff --check`; PowerShell repository-relative Markdown-link check; targeted terminology search; `git status --short` | No whitespace errors; all repository-relative Sprint 1 links resolve. Git reports only the eight modified Sprint 1 Markdown files. Git emitted LF-to-CRLF warnings for these working-copy files; no content error was reported. | Implemented but not production-wired | Sprint 1 Markdown only | Correction complete; approval decisions remain blocked. |
+| 11 | 2026-08-27 | Validate detailed-rating and Overall symbol references | `Get-Content -Raw src/services/detailed_rating/engine.py src/services/player_rating/engine.py` | Confirmed `DetailedRatingEngine._event_score`, `_ball_control`, `_visible_movement_activity`, and `PlayerRatingEngine._overall` references used by the expanded rating audit. | Implemented and production-wired | none | No runtime change; documentation references are verified. |
+| 12 | 2026-08-27T19:24:32.0386968Z | Capture correction-pass Git evidence and initial status | `git status --short`; `git show --stat --summary f2d1e834…`; baseline-to-documentation `git diff --stat` and `--name-status` | Initial correction tree has exactly eight modified Sprint 1 Markdown files. Commit/range show eight documentation-only additions (325 insertions); no runtime behavior changed between baseline and documentation commit. | Implemented but not production-wired | none | Add hierarchy, future metrics and truthful final verification. |
+| 13 | 2026-08-27T19:25:31.4048622Z | Inspect every modified discovery document and run correction checks | Read all eight Sprint 1 Markdown files; `git diff --check`; `rg` trailing-whitespace check; link checker; scope/status/stat check; search for Markdown tooling | All eight inspected. No `git diff --check` content error, no trailing whitespace, and all repository-relative links resolve. Only eight Sprint 1 Markdown files are modified. Git emitted LF-to-CRLF warnings. No repository Markdown-specific checker was found. No tests reattempted; original environment limitation remains. | Implemented but not production-wired | none | Final documentation summary only. |
+| 14 | 2026-08-27T19:26:13.3951438Z | Final correction validation | `git diff --check`; trailing-whitespace scan; repository-relative link check; scope check; `git diff --stat`; `git status --short` | No diff-check content error, trailing whitespace, broken repository-relative links, or out-of-scope changes. Eight Sprint 1 Markdown files only; captured stat was 246 insertions and 76 deletions. LF-to-CRLF warnings remain informational. | Implemented but not production-wired | none | Human and Apex review remains the next permitted step. |
 
 ## Commands and checks
 
@@ -34,8 +44,16 @@ intentional workspace change.
 | `.venv\\Scripts\\python.exe -m pytest -q <focused tests>` | Fallback behavioral verification | not executed: UV trampoline permission error before pytest startup | no |
 | `git diff --check` | Whitespace inspection | completed / 0; applies to tracked diff only, hence excludes newly untracked files | no |
 | PowerShell Markdown-link check | Verify discovery-doc repository-relative links | completed / 0; all resolved | no |
+| `git diff --name-status 7920375… f2d1e834…` | Verify baseline-to-documentation range | completed / 0; eight Sprint 1 Markdown additions only | no |
+| `git diff --check`; link/terminology checks | Validate correction documentation | completed / 0; links resolve, only Sprint 1 Markdown modified; LF-to-CRLF warnings observed | no |
+| `Get-Content -Raw <detailed/player rating engines>` | Validate audit symbol references | completed / 0 | no |
+| `git show --stat --summary f2d1e834…`; baseline-range diff stat/name-status | Capture required provenance evidence | completed / 0; documentation-only additions | no |
+| read-all-documents; diff/whitespace/link/scope/Markdown-tool checks | Final correction verification | completed / 0; all static checks pass, LF-to-CRLF warnings; no Markdown checker available | no |
+| final diff/whitespace/link/scope/stat/status checks | Final correction validation | completed / 0; all checks pass; only Sprint 1 Markdown modified | no |
 
 Assumptions avoided: `playerId == track_id`; event confidence equals skill; pixels equal metres or
 fitness; documentation proves runtime behavior; track continuity proves initial identity; null is
-zero; and current scores are calibrated. No inference, live request, deployment, commit, push,
-configuration mutation, package install, or model download was performed.
+zero; and current scores are calibrated. The original discovery session performed no inference,
+live request, deployment, configuration mutation, package install, model download, commit or push.
+Afterward, the documentation was committed as `f2d1e834…` and, per this correction request, pushed;
+this correction does not rewrite that history.

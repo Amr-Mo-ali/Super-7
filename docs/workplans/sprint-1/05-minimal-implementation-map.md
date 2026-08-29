@@ -14,8 +14,31 @@ if target selection is NOT_ESTABLISHED:
     no player ratings
 ```
 
-This is **Proposed**, not implemented. Existing selected-track diagnostics may remain available
-internally as analyzability evidence, but must not be presented as requested-player proof.
+This is **Proposed**, not implemented. Current automatic selection establishes analyzability only,
+not verified real-world identity or a `playerId` binding. Existing selected-track diagnostics may
+remain internally as analyzability evidence, but must not be presented as requested-player proof.
+No manual point or bounding-box seed exists in the current request schema or selector flow.
+Proposed `target_selection_status` is limited to `ESTABLISHED`/`NOT_ESTABLISHED`; a future separate
+`identity_continuity_status` may be `MAINTAINED`, `UNCERTAIN`, `LOST`, or `NOT_EVALUATED`. Sprint 1
+does not implement either state or continuity maintenance. **Target established does not mean target
+maintained.** After approval, Sprint 1 implements only minimum initial target safety and truthful
+rating semantics; continuity remains `NOT_EVALUATED`, with no Re-ID, tracklet recovery, or tracker
+redesign.
+
+The intended **Proposed** conceptual hierarchy is not one late pipeline phase:
+
+```text
+Request
+→ Target eligibility
+→ Tracking
+→ Segment/continuity eligibility
+→ Evidence
+→ Per-rating eligibility
+→ Public response
+```
+
+Overall must consume rating-availability decisions from this hierarchy, not merely Python
+non-null values.
 
 Likely files/symbols: `src/schemas/analysis.py` (internal result/public presentation only after
 contract approval), `src/services/selection.py` and/or `segment_selection.py` (minimal eligibility
@@ -24,7 +47,7 @@ value), `src/api/routes.py` (pipeline gate), `src/api/public_rating_mapper.py` a
 selection/rating/route/contract tests. A single frozen eligibility value plus reason code is enough;
 do not introduce a policy framework.
 
-Proposed reason codes: `target_identity_not_established`, `ambiguous_visual_target`,
+Proposed reason codes: `target_not_established`, `ambiguous_visual_target`,
 `no_qualifying_visual_target`. The exact public spelling/shape requires D1–D10 approval. Data flow
 would change from `selected visual segment → ratings` to `selected visual segment → eligibility →
 ratings only when established → callback`. Rollback is a controlled reversion of the gate after
@@ -41,4 +64,24 @@ surface is trivially small.
 
 Explicit non-goals: identity continuity, Re-ID, jersey OCR, team classification, manual UI, GSR,
 pitch calibration/homography, tracker/model redesign, durable queue/database, concurrency or
-deployment changes. Missing approved establishment evidence blocks implementation.
+deployment changes. If legacy automatic selection is always `NOT_ESTABLISHED`, immediately adding
+the gate could make all current player ratings unavailable. Implementation is therefore blocked
+until D1, D2, D11, D12 and D13 are approved; Sprint 1 must not silently disable all ratings without
+a deliberate product and Apex decision. Missing approved establishment evidence blocks
+implementation.
+
+## Future validation measures (Proposed)
+
+No validation dataset is created by this task. A future approved validation plan should measure
+wrong-player analysis rate, unsafe acceptance rate, correct rejection rate, eligible-clip rate,
+supported-analysis coverage per clip, and aggregate supported-analysis coverage. Define:
+
+```text
+supported_analysis_coverage =
+identity-supported analyzed duration /
+total candidate analysis duration
+```
+
+Safety has priority. A zero wrong-player rate achieved by rejecting everything is not a useful
+product; coverage must never be increased by unsafe identity assumptions. These metrics do not
+validate real-world identity and require labelled/approved future evidence.

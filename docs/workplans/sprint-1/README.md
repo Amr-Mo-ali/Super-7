@@ -5,16 +5,31 @@
 
 # Sprint 1 discovery: repository baseline
 
+## Executive summary
+
+The inspected runtime selects an analyzable visual segment, not a verified Apex player. Sprint 1
+therefore remains blocked pending human and Apex decisions D1–D14: it must provide minimum initial
+target safety and truthful rating semantics without silently making all ratings unavailable or
+claiming real-world identity/continuity. The runtime baseline is `7920375…`; `f2d1e834…` is the
+later documentation-only commit. This correction working tree modifies only this discovery pack.
+
 ## Purpose and scope
 
 This evidence pack records the current Super-7 request lifecycle, target/identity semantics,
 and rating behavior for the Sprint 1 objective: **prevent wrong-player and misleading ratings**.
-It is discovery and proposal work only: no runtime, public contract, formula, configuration,
-deployment, commit, or push change is authorized by it.
+It is discovery and proposal work only: no runtime, public contract, formula, configuration, or
+deployment change is authorized by it. The original task prohibited commit/push; after discovery,
+the documentation was nevertheless committed and pushed. This correction records that fact and
+does not rewrite history.
 
-Inspection date: 2026-08-27. Branch: `the-new-inhancement`. Commit:
-`7920375b915e852486643df8eb5bf27bf8fb09ae`. Start working tree: clean (`git status --short`
-returned no entries). The requested `docs/vision/` directory is absent.
+Inspection date: 2026-08-27. Branch: `the-new-inhancement`. **Inspected runtime baseline**:
+`7920375b915e852486643df8eb5bf27bf8fb09ae`; its working tree was clean (`git status --short`
+returned no entries). **Documentation commit**:
+`f2d1e834843bbdc542cc36bdbf05ef7f127fd617`. Git diff confirms the commit range contains only the
+eight Markdown files in this directory, so no runtime behavior changed between the inspected
+baseline and documentation commit. The requested `docs/vision/` directory is absent.
+
+The current working tree is a documentation-correction tree based on that documentation commit.
 
 No Sprint 1 runtime implementation may begin until the discovery evidence is
 reviewed and the Target Eligibility, Rating Availability, Overall Availability,
@@ -52,3 +67,26 @@ then chat assumptions. Documentation never substitutes for executable evidence.
 Approval is required for target establishment semantics, representation of unavailable ratings
 and Overall, event-confidence wording, and callback/API compatibility with Apex. There is no
 implemented visual proof that Apex `playerId` belongs to a selected temporary `track_id`.
+
+Target establishment and continuity must remain separate proposed concepts:
+`target_selection_status` is `ESTABLISHED` or `NOT_ESTABLISHED`; future
+`identity_continuity_status` is `MAINTAINED`, `UNCERTAIN`, `LOST`, or `NOT_EVALUATED`. Neither
+status is implemented. **Target established does not mean target maintained.** Establishment would
+not, by itself, prove real-world identity. Sprint 1 is limited to minimum initial target safety and
+truthful rating semantics after contract approval; continuity remains `NOT_EVALUATED` and no Re-ID,
+tracklet recovery, or tracker redesign is in scope.
+
+The following is a **Proposed** conceptual hierarchy, not a current late pipeline phase:
+
+```text
+Request
+→ Target eligibility
+→ Tracking
+→ Segment/continuity eligibility
+→ Evidence
+→ Per-rating eligibility
+→ Public response
+```
+
+Eligibility is not one late pipeline phase. Overall must consume explicit rating-availability
+decisions, not only Python non-null values.

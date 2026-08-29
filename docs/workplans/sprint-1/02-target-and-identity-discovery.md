@@ -57,3 +57,13 @@ not current API/runtime states. Current automatic evidence can establish only th
 meets configurable quality thresholds; it cannot safely establish ownership by the requested
 player, even for single-player videos, because no request-to-visual proof exists. Sprint 1 should
 not address continuity/Re-ID, cross-cut recovery, or tracker redesign.
+
+Target establishment is an initial eligibility decision, not real-world identity verification.
+Identity maintenance is a later question about the chosen target over time; existing segment
+continuity (`TrackSegment.continuity_ratio`) is only a ranking/analyzability input and must not be
+renamed or represented as `identity_continuity_status`.
+
+**Target established does not mean target maintained.** The intended hierarchy is **Proposed**:
+Request → Target eligibility → Tracking → Segment/continuity eligibility → Evidence → Per-rating
+eligibility → Public response. Sprint 1 may implement only minimum initial target safety after
+contract approval; it does not implement continuity, Re-ID, tracklet recovery, or tracker redesign.
