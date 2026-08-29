@@ -60,6 +60,7 @@ then chat assumptions. Documentation never substitutes for executable evidence.
 
 - [Handoff index](../../handoff/README.md), [scoring semantics](../../handoff/scoring-and-product-semantics.md), and [runtime](../../handoff/system-and-runtime.md)
 - [ADR-001](../../decisions/ADR-001-video-scoring-semantics.md), [ADR-002](../../decisions/ADR-002-overall-rating-current-state.md), [ADR-003](../../decisions/ADR-003-null-and-evidence-policy.md)
+- [ADR-005: dominant visual target](../../decisions/ADR-005-dominant-visual-target-mvp.md) and [target-selection contract v1](../../contracts/target-selection-contract-v1.md) — **Proposed, awaiting Apex contract confirmation**
 - [Job contract](../../contracts/analysis-job-contract-v1.md), [process-pool runbook](../../runbooks/process-pool-mvp-benchmark.md), and [concurrency baseline](../../runbooks/concurrency-baseline.md)
 
 ## Blockers
@@ -79,10 +80,11 @@ tracklet recovery, or tracker redesign is in scope.
 The following is a **Proposed** conceptual hierarchy, not a current late pipeline phase:
 
 ```text
-Request
-→ Target eligibility
-→ Tracking
-→ Segment/continuity eligibility
+Request and input guarantee
+→ Detection and tracking
+→ Build qualifying visual candidates
+→ Visual-target establishment eligibility
+→ Selected target segment
 → Evidence
 → Per-rating eligibility
 → Public response
@@ -90,3 +92,14 @@ Request
 
 Eligibility is not one late pipeline phase. Overall must consume explicit rating-availability
 decisions, not only Python non-null values.
+
+## Current decision status
+
+Conceptually approved: dedicated-video input association; `dominant_visual_candidate`; ambiguous or
+unqualified targets are unavailable; target/continuity separation; target-gated ratings; Technical
+plus one additional core category for proposed Overall availability; public Game Intelligence null;
+and Physical Activity as image-space visual activity. Apex still must confirm public diagnostics,
+callback/API compatibility, schema/versioning, and input-guarantee enforcement. Thresholds and
+validation remain blocked. Correct automatic order is Request/input guarantee → Detection/tracking
+→ qualifying candidates → establishment → selected target segment → evidence → rating eligibility
+→ public response.

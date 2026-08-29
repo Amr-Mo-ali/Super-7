@@ -6,8 +6,8 @@
 # Discovery log
 
 All timestamps are UTC. Commands are reproduced in sanitized form; no URL, token, IP address,
-personal player data, or raw diagnostic evidence is included. File creation below is the only
-intentional workspace change.
+personal player data, or raw diagnostic evidence is included. Only Sprint 1 documentation files
+were intentionally created or modified; no runtime files were changed.
 
 Time-recording correction: original discovery entries record known dates but did not capture exact
 UTC times; those historical entries are preserved rather than reconstructed. This correction pass
@@ -57,3 +57,18 @@ zero; and current scores are calibrated. The original discovery session performe
 live request, deployment, configuration mutation, package install, model download, commit or push.
 Afterward, the documentation was committed as `f2d1e834…` and, per this correction request, pushed;
 this correction does not rewrite that history.
+
+## Contract approval documentation activity
+
+The original discovery entries retain their historical timestamp limitations. The task brief read
+occurred before a tool-provided UTC timestamp was captured and is recorded as such rather than
+inventing a time. Subsequent entries use captured full UTC timestamps.
+
+| UTC timestamp | Action | Purpose | Files/symbols inspected | Command | Result | Classification | Files changed | Decision affected | Unresolved question | Next action |
+|---|---|---|---|---|---|---|---|---|---|---|
+| not captured | Read contract-approval brief | Establish documentation-only scope and approved product facts. | User-provided brief | `Get-Content -Raw <attachment>` | Brief supplied dominant-candidate contract requirements. | Documented decision | none | D1–D15 | Apex API confirmation remains pending. | Complete onboarding/source verification. |
+| 2026-08-29T12:09:36.5374540Z | Inspect selector and relevant rating flow | Verify contract feasibility and current selector limits. | `segment_selection.py:build_segments,rank_segments,select_segment`; `selection.py:WeightedTargetPlayerSelector`; route/rating mappers; focused tests | `Get-Content -Raw <source/tests>`; `git log`; baseline diff | Default segment mode sorts composite quality and selects first; no runner-up dominance/status/input-guarantee binding. | Implemented and production-wired | none | D1, D2, D3, D6, D12, D13 | Operational dominance rule/threshold unknown. | Create ADR and proposed behavioral contract. |
+| 2026-08-29T12:09:36.5374540Z | Create proposed contract artifacts | Formalize approved product semantics without runtime change. | Discovery pack and prior ADRs | `apply_patch` | Added `ADR-005-dominant-visual-target-mvp.md` and `target-selection-contract-v1.md`. | Proposed | ADR and contract | D1–D14 | Apex public/API confirmation pending. | Align discovery documents. |
+| 2026-08-29T12:09:36.5374540Z | Align discovery documentation | Correct pipeline and record semantic decisions. | Sprint 1 README, target/identity, ratings, decision register, implementation map | `apply_patch` | Added documented-decision sections, approved semantic addendum, and automatic-flow order. | Documented decision | Sprint 1 Markdown | D1–D15 | Thresholds and public shape unresolved. | Static verification and final record. |
+| 2026-08-29T12:12:33.7075214Z | Run contract-documentation static checks | Verify scope, links, whitespace, Git state and Markdown tooling. | New ADR/contract and modified workplan files | `git status`; `git diff --stat`; `git diff --check`; `rg`; PowerShell link checker | Branch/HEAD `the-new-inhancement`/`f8664cd…`; only intended Markdown files changed; diff check clean; no trailing whitespace; links resolve; no Markdown tooling found. | Implemented but not production-wired | none | D1–D15 | Tests remain unexecuted; thresholds/API pending. | Update verification record. |
+| 2026-08-29T12:14:03.4634315Z | Recheck corrected hierarchy and final static state | Confirm automatic ordering, conceptual-language safety, whitespace, links and diff scope. | ADR, contract, all changed Sprint 1 documents | `rg`; `git status`; `git diff --check`; whitespace/link check; `git diff --stat` | No stale automatic target-before-tracking order found; required caveats remain present; no diff-check/trailing-whitespace/link error. Seven modified Sprint 1 docs plus two new Markdown docs are the only changes. | Implemented but not production-wired | none | D1–D15 | Apex/API confirmation and thresholds remain unresolved. | Final response. |

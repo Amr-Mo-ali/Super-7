@@ -29,3 +29,27 @@ threshold is selected here. `target_selection_status` and `identity_continuity_s
 
 Implementation remains blocked by D1, D2, D11, D12 and D13. There is no repository evidence that
 Apex guarantees the requested player is visible in the submitted clip.
+
+## Contract-approval addendum — documented decision status
+
+The entries above preserve discovery history. The following reflects the approved product semantics
+from the Sprint 1 contract brief; API/schema compatibility and operational thresholds remain pending
+Apex/implementation confirmation.
+
+| ID | Product semantic status | API/threshold status | Current conclusion |
+|---|---|---|---|
+| D1 | Approved conceptually: restricted automatic establishment is allowed under the dedicated-video guarantee. | Public representation pending Apex; threshold pending validation. | `dominant_visual_candidate`, not identity verification. |
+| D2 | Approved: current legacy selected segment is not automatically established. | Future implementation must apply the contract. | Existing selector is insufficient alone. |
+| D3 | Approved: ambiguity yields `NOT_ESTABLISHED`. | Reason/public shape pending Apex. | `ambiguous_visual_target`. |
+| D4 | Approved: establishment and continuity are separate. | No continuity state implementation in Sprint 1. | Continuity conceptually `NOT_EVALUATED`. |
+| D6 | Approved: target failure makes ratings/Overall unavailable. | Callback/API change pending Apex. | Technical + one other core category proposed for Overall. |
+| D8-A | Approved: public Game Intelligence unavailable/null for MVP. | Existing public field behavior cannot change without Apex agreement. | Internal heuristic only under non-overclaiming diagnostics if retained. |
+| D8-B | Approved: Physical Activity means image-space visual movement/activity. | Final public name/schema pending Apex. | It may remain available for established target if existing gate passes. |
+| D11 | Approved product guarantee: request video is dedicated to `playerId`, but other players may appear. | Enforcement/attestation remains an Apex workflow question. | It never proves `playerId == track_id`. |
+| D12 | Approved concept: restricted dominant-candidate auto-selection. | Dominance definition/thresholds unresolved. | Primary evidence is supported visible duration. |
+| D13 | Approved: ambiguous/multiplayer without clear dominance returns unavailable ratings. | Public reason/status pending Apex. | No silent first-place acceptance. |
+| D14 | Approved: unattributed observations remain internal in Sprint 1. | No public unattributed-event surface. | Player ratings remain unavailable. |
+| D15 | Retain documentation history; no rewrite. | No API impact. | Documentation commit is retained. |
+
+D5, D7, D9 and D10 remain API/product compatibility decisions awaiting Apex confirmation; no
+schema, callback, formula, or threshold has been approved for implementation here.

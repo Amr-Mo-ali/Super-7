@@ -63,7 +63,27 @@ Identity maintenance is a later question about the chosen target over time; exis
 continuity (`TrackSegment.continuity_ratio`) is only a ranking/analyzability input and must not be
 renamed or represented as `identity_continuity_status`.
 
-**Target established does not mean target maintained.** The intended hierarchy is **Proposed**:
-Request → Target eligibility → Tracking → Segment/continuity eligibility → Evidence → Per-rating
-eligibility → Public response. Sprint 1 may implement only minimum initial target safety after
+**Target established does not mean target maintained.** The intended automatic hierarchy is
+**Proposed**: Request/input guarantee → Detection/tracking → qualifying visual candidates →
+visual-target establishment eligibility → selected target segment → evidence → per-rating
+eligibility → public response. Sprint 1 may implement only minimum initial target safety after
 contract approval; it does not implement continuity, Re-ID, tracklet recovery, or tracker redesign.
+
+Future manual-seed flow only is: Request → target-seed validation → detection/tracking association
+→ visual-target establishment → continuity evaluation → evidence → rating eligibility.
+
+## Documented decision — approved product input and provisional target policy
+
+**Documented decision:** Apex associates `playerId` with a video captured/uploaded specifically to
+analyse that player; other players may appear. This dedicated-video product guarantee supports
+provisional selection but is not visual identity evidence and never proves `playerId == track_id`.
+
+The approved conceptual method is `dominant_visual_candidate`: qualifying visual candidates are
+ranked primarily by supported visible duration, with existing qualification evidence retained.
+Top rank alone is insufficient; absent qualification or unresolved plausible alternatives yields
+`NOT_ESTABLISHED`. Exact dominance thresholds remain **Unknown / requires verification**. This
+decision is provisional selection, not biometric/jersey/real-world/persistent identity verification.
+
+Continuity remains outside Sprint 1. Future fallback sequence: manual point, continuity gate, then
+appearance Re-ID only if measured failures justify it. See [ADR-005](../../decisions/ADR-005-dominant-visual-target-mvp.md)
+and the [proposed contract](../../contracts/target-selection-contract-v1.md).

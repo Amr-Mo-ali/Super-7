@@ -68,3 +68,37 @@ commit, or push changed during this correction task. No CV inference or live req
 Known limitation: ADR-001/002 describe a `KeyError` if available Game Intelligence is passed into
 `PlayerRatingEngine.summarize`, while production mapping keeps it separate. No football validation
 or live behavior was measured. All behavior proposed by this workplan remains labelled Proposed.
+
+## 2026-08-29 contract-approval documentation pass
+
+Starting branch and HEAD: `the-new-inhancement` at
+`f8664cd3446324bb1507d8b98c7ddfaff32bc21f`. Starting working tree was clean; the older Sprint 1
+correction work is contained in that documentation commit and was preserved. Created files:
+`docs/decisions/ADR-005-dominant-visual-target-mvp.md` and
+`docs/contracts/target-selection-contract-v1.md`. Modified files:
+`docs/workplans/sprint-1/00-discovery-log.md`, `02-target-and-identity-discovery.md`,
+`03-rating-semantics-discovery.md`, `04-contract-decisions-required.md`,
+`05-minimal-implementation-map.md`, and `README.md`.
+
+Commands executed (sanitized): full required document/source reads; `git branch --show-current`;
+`git rev-parse HEAD`; `git status --short`; `git diff --stat`; `git diff --check`; an `rg` trailing
+whitespace scan; a PowerShell repository-relative Markdown link check; and an `rg` search for
+Markdown tooling. Results: branch/HEAD above; the final pre-record status contained those six
+modified workplan documents plus the two untracked new Markdown documents; `git diff --stat`
+reported six tracked workplan files (92 insertions, 7 deletions) and intentionally does not include
+untracked files; `git diff --check` reported no content error; no trailing whitespace was found;
+all repository-relative links resolved; no Markdown-specific tool was found in `pyproject.toml` or
+`.github`. Git emitted LF-to-CRLF working-copy warnings for existing modified workplan files.
+
+Tests were not edited or run: this task is contract/documentation-only and no runtime behavior was
+tested or changed. The earlier pytest result remains **Unknown / requires verification** because
+the environment prevented pytest startup. No CV inference, live request, callback delivery,
+configuration change, deployment, commit, or push occurred in this pass.
+
+Final static recheck at `2026-08-29T12:14:03.4634315Z`: `git diff --check` produced no content
+error; the Markdown trailing-whitespace scan found none; repository-relative links resolved; and a
+terminology/order search found the required non-identity and non-fitness caveats plus no stale
+automatic target-before-tracking hierarchy. At that check, `git status --short` contained exactly
+seven modified files under `docs/workplans/sprint-1/` (including this verification record) and the
+two new Markdown files above. `git diff --stat` showed the seven tracked workplan files only (137
+insertions, 17 deletions); Git does not include the two untracked new files in ordinary diff stat.

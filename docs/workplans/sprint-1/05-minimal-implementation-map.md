@@ -25,13 +25,14 @@ maintained.** After approval, Sprint 1 implements only minimum initial target sa
 rating semantics; continuity remains `NOT_EVALUATED`, with no Re-ID, tracklet recovery, or tracker
 redesign.
 
-The intended **Proposed** conceptual hierarchy is not one late pipeline phase:
+The intended **Proposed** automatic-flow hierarchy is not one late pipeline phase:
 
 ```text
-Request
-→ Target eligibility
-→ Tracking
-→ Segment/continuity eligibility
+Request and input guarantee
+→ Detection and tracking
+→ Build qualifying visual candidates
+→ Visual-target establishment eligibility
+→ Selected target segment
 → Evidence
 → Per-rating eligibility
 → Public response
@@ -39,6 +40,15 @@ Request
 
 Overall must consume rating-availability decisions from this hierarchy, not merely Python
 non-null values.
+
+Smallest future shape: existing tracking output → qualifying candidates → dominant-candidate
+eligibility result → rating-availability gate. Likely reusable evidence is `TrackSegment` visible
+frames/duration/confidence/continuity, rejection reasons, and normalized-jump splitting in
+`src/services/segment_selection.py`. The default segment selector does **not** implement the full
+approved contract: `rank_segments()` orders by composite `segment_quality`, `select_segment()` takes
+the first candidate, it has no runner-up dominance gate, does not consume the dedicated-video input
+guarantee, and emits no establishment status/reason. This is **Implemented and production-wired**
+current behavior, verified in `segment_selection.py` and `tests/test_segment_selection.py`.
 
 Likely files/symbols: `src/schemas/analysis.py` (internal result/public presentation only after
 contract approval), `src/services/selection.py` and/or `segment_selection.py` (minimal eligibility
@@ -74,7 +84,8 @@ implementation.
 
 No validation dataset is created by this task. A future approved validation plan should measure
 wrong-player analysis rate, unsafe acceptance rate, correct rejection rate, eligible-clip rate,
-supported-analysis coverage per clip, and aggregate supported-analysis coverage. Define:
+supported-analysis coverage per clip, aggregate supported-analysis coverage, ambiguous-selection
+rate, and no-qualifying-target rate. Define:
 
 ```text
 supported_analysis_coverage =
@@ -83,5 +94,7 @@ total candidate analysis duration
 ```
 
 Safety has priority. A zero wrong-player rate achieved by rejecting everything is not a useful
-product; coverage must never be increased by unsafe identity assumptions. These metrics do not
-validate real-world identity and require labelled/approved future evidence.
+product; coverage must never be increased by unsafe identity assumptions. Since Sprint 1 does not
+evaluate identity continuity, this cannot yet be fully validated as an identity metric; early
+measurement can only describe selected-segment coverage. These metrics require labelled/approved
+future evidence.

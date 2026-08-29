@@ -37,6 +37,16 @@ The proposed Sprint 1 hierarchy requires Overall to consume explicit per-rating 
 decisions, including initial target eligibility, rather than only testing whether a Python value is
 non-null. This is **Proposed** and does not change the inspected formula.
 
+## Proposed / approved semantic decision
+
+After implementation approval, target establishment gates every player-attributed rating. Proposed
+Overall requires an established target, available Technical, and at least one additional available
+core category (Physical Activity or Ball Involvement). This is not implemented. Public Game
+Intelligence is proposed unavailable/null for MVP and remains excluded from Overall. Physical
+Activity remains available only for an established target when its existing gate passes, with the
+defensible meaning image-space visual movement/activity indicator. Event confidence remains separate
+from skill; it cannot make a skill rating eligible by itself.
+
 Movement uses `src/services/movement/analyzer.py:BottomCenterMovementAnalyzer` tracked bounding-box
 bottom-centre image coordinates and pixel derivatives. Optional trajectory/camera components do not
 establish pitch/world coordinates or metres. `null` is distinct from zero and failed analysis;
