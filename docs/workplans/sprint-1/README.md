@@ -46,11 +46,9 @@ Event-versus-Skill, and Apex compatibility decisions are explicitly approved.
 7. [Verification results](06-verification-results.md) — completed documentation checks.
 8. [Dominant target implementation discovery](07-dominant-target-implementation-discovery.md) — proposed minimal design; implementation remains blocked.
 
-Task status: isolated pure target-selection contract implementation is complete and not
-production-wired. Human review has approved the single future internal resolver seam, but the
-integration-tests-only step remains stopped: existing response variants cannot represent a successful
-target-unavailable analysis with null ratings/Overall without a deferred result-projection and Apex
-compatibility decision. Pipeline integration and its tests remain blocked pending that decision.
+Task status: additive `CallbackPayload` availability schema and completed-result mapping are
+implemented and tested. Target-unavailable pipeline emission, resolver integration, and deployment
+remain pending; Public Rating V2 redesign is not required.
 
 ## Evidence language
 

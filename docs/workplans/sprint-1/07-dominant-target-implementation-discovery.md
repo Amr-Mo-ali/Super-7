@@ -219,3 +219,30 @@ Overall, or Overall-confidence fields; the public mapper treats it as a failure-
 required successful target-unavailable/null-rating behavior therefore cannot be specified using
 existing response fields. The integration-test task stops pending a human-approved representation
 decision; no resolver or route wiring was implemented.
+
+## Apex-confirmed response-contract stop (2026-08-30)
+
+The confirmed availability fields and reasons are now recorded in the governing contract and
+ADR-005. They establish semantics, but do not choose whether the future compatibility work changes
+the callback envelope, Public Rating V2, or their relation. The current callback removes the V2
+`player` object and Public Rating V2 lacks the confirmed top-level availability fields. This is an
+explicit stop condition for focused schema tests, because asserting either placement would itself
+be a public compatibility decision. **Contract confirmed; schema not implemented; mapper not
+implemented; pipeline gate not implemented; not deployed.**
+
+## Final CallbackPayload compatibility contract (2026-08-30)
+
+Human review selected `CallbackPayload` as the canonical Apex surface. The future schema/mapping is
+additive: preserve all current callback fields, reuse the existing V2 player dictionary, add
+`resultAvailability`, `unavailabilityReason`, `player`, and `overallConfidence`, and preserve
+`PlayerRatingSummary.overall.confidence` without derivation. Public Rating V2 redesign is not
+required. Six red callback contract tests now specify serialization and contradictory-state
+invariants; no source implementation, resolver wiring, or pipeline gate was added.
+
+## CallbackPayload green phase (2026-08-30)
+
+The approved additive callback schema and completed-result mapper are now implemented. Available
+callbacks preserve existing fields while adding the V2 player dictionary, availability/reason state,
+and exact pre-existing Overall confidence. The schema can represent unavailable callbacks and rejects
+contradictory unavailable states, but no target resolver, target gate, or unavailable pipeline
+emission is wired. This remains **Implemented but not production-wired** for target unavailability.

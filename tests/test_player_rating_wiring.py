@@ -186,6 +186,17 @@ def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
     assert payload.overall["value"] == pytest.approx(summary.overall.value)
     assert payload.overall["confidence"] == pytest.approx(summary.overall.confidence)
     assert payload.overall["status"] == "available"
+    serialized = payload.model_dump(mode="json", by_alias=True)
+    assert serialized["status"] == "COMPLETED"
+    assert serialized["resultAvailability"] == "AVAILABLE"
+    assert serialized["unavailabilityReason"] is None
+    assert serialized["player"] == {
+        "track_id": 1,
+        "selection_confidence": 0.9,
+        "visibility_ratio": 1.0,
+        "visible_duration_seconds": 10.0,
+    }
+    assert serialized["overallConfidence"] == pytest.approx(summary.overall.confidence)
     assert payload.detailed.model_dump(mode="json") == {
         "speed_and_fitness": None,
         "ball_control_and_individual_skill": None,
@@ -206,6 +217,10 @@ def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
         "detailed",
         "events",
         "error",
+        "result_availability",
+        "unavailability_reason",
+        "player",
+        "overall_confidence",
     }
     assert "scores" not in payload.model_dump(mode="json")
     assert "schema_version" not in payload.model_dump(mode="json")

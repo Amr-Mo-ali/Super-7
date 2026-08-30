@@ -2,6 +2,42 @@
 
 # Target-selection contract v1
 
+## Apex-confirmed response availability (2026-08-30)
+
+**Contract confirmed; schema not implemented; mapper not implemented; pipeline gate not
+implemented; not deployed.** Apex approved these exact public JSON names: `status`,
+`resultAvailability`, `unavailabilityReason`, `player`, `overall`, and `overallConfidence`.
+Available results use `status="COMPLETED"`, `resultAvailability="AVAILABLE"`, a null
+`unavailabilityReason`, and the existing backward-compatible player result. Unavailable results
+use `status="COMPLETED"`, `resultAvailability="UNAVAILABLE"`, `player=null`, `overall=null`,
+`overallConfidence=null`, and exactly one approved reason: `ambiguous_visual_target`,
+`no_qualifying_visual_target`, or `target_not_established`.
+
+Unavailable is not failed and null is not zero. A null player means a safe visual target was not
+established; it neither changes the request's business `playerId` nor proves visual identity.
+Available requires a player object and null reason. Unavailable requires a null player, approved
+non-null reason, and null Overall/Overall confidence; populated player or numeric Overall states
+are contradictory.
+
+Current code has two incompatible surfaces requiring a later compatibility decision: the callback
+payload has top-level `status` but strips `player`, while Public Rating V2 has `player` and
+`overall` but nests status inside `analysis` and has no `overallConfidence`,
+`resultAvailability`, or `unavailabilityReason`. This contract records no schema or mapper choice.
+
+### Final compatibility-surface decision
+
+`CallbackPayload` is the canonical Apex external contract. The future change is additive: all
+currently supported callback fields and meanings remain unchanged, including top-level `status` and
+`overall`. It must additionally serialize the confirmed camel-case aliases
+`resultAvailability`, `unavailabilityReason`, `player`, and `overallConfidence`. `player` reuses
+the existing Public Rating V2 player type (`dict[str, float | int]`) and its field names; Public
+Rating V2 redesign is neither approved nor required in this phase. The internal source for future
+`overallConfidence` is `PlayerRatingSummary.overall.confidence`; it must be forwarded, never
+fabricated or derived from Overall.
+
+**Contract confirmed; schema implementation pending; callback mapping pending; pipeline gate
+pending; not deployed.**
+
 ## Scope, actors, and terminology
 
 This proposed behavioral contract governs MVP automatic visual-target establishment, not an API

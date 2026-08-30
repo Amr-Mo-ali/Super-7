@@ -369,3 +369,56 @@ representation and changing a prohibited schema/mapper contract. No test file wa
 collection, red tests, existing green suites, Ruff, formatting, syntax, or test commands were not
 run. This is not an environment or fixture failure. Runtime, API, schema, formula, settings,
 dependency, model, infrastructure, deployment, commit, and push state remain unchanged.
+
+## 2026-08-30 Apex-confirmed response-contract stop
+
+At `2026-08-30T20:08:21.3825553Z`, Apex confirmed the target-result availability semantics and
+the exact field names `status`, `resultAvailability`, `unavailabilityReason`, `player`, `overall`,
+and `overallConfidence`. The governing contract and ADR now record: **Contract confirmed; schema
+not implemented; mapper not implemented; pipeline gate not implemented; not deployed.**
+
+Source inspection found an explicit public-surface conflict. `CallbackPayload` owns top-level
+`status` and `overall` but has no `player`, availability/reason fields, or top-level Overall
+confidence. `PublicRatingV2Response` owns `player` and `overall` but nests status in `analysis` and
+has no availability/reason/Overall-confidence fields; `_callback_payload` strips its player result.
+The task's callback-envelope stop condition therefore applies: a public-schema test would have to
+choose an unapproved compatibility surface. No test file, collection, red suite, baseline, Ruff, or
+syntax command was run. This is a contract-placement blocker, not a fixture or environment failure;
+no runtime change occurred.
+
+## 2026-08-30 CallbackPayload contract tests
+
+At `2026-08-30T20:17:02.1930686Z`, final human review designated `CallbackPayload` as the canonical
+Apex external surface. The future change is additive; the V2 player dictionary is reused unchanged,
+and the existing internal source for `overallConfidence` is
+`PlayerRatingSummary.overall.confidence`. Six focused tests were added in
+`tests/api/test_callback_target_availability_contract.py`; collection succeeded with **6 tests**.
+
+The new suite produced **6 expected failures** only: four `KeyError` failures because
+`resultAvailability` is not serialized, and two `pytest.raises(ValidationError)` failures because
+the current payload ignores unknown future fields and enforces none of the contradictory-state
+invariants. After correcting one test-helper duplicate-key defect before recording the final red
+run, no fixture, import, syntax, environment, CV, network, or callback-delivery failure remained.
+Existing callback/schema tests passed **16/16**, selector tests passed **28/28**, and the offline
+baseline passed **42/42**. The combined focused command reports **70 passed, 6 expected red**.
+Ruff check, format check, and test syntax compilation passed. Schema implementation, callback
+mapping, resolver wiring, pipeline gate, and deployment remain pending.
+
+## 2026-08-30 CallbackPayload green phase
+
+At `2026-08-30T20:22:40.1686989Z`, the approved red state was reconfirmed as six focused failures:
+four missing `resultAvailability` serialization assertions and two absent invariant-validation
+errors. `CallbackPayload` then gained additive camel-case aliases for result availability, reason,
+player, and Overall confidence. Its validator applies the approved invariants only when an explicit
+availability state is supplied, preserving existing noncompleted `CallbackPayload` construction
+without falsely labeling it available or unavailable.
+
+`_callback_payload` now maps only existing `CompletedResponse` results to `status="COMPLETED"`,
+`AVAILABLE`, the existing V2 player dictionary, and exact
+`PlayerRatingSummary.overall.confidence`; its nested existing Overall payload remains unchanged.
+No unavailable callback is emitted from the analysis pipeline. The contract suite passed **6/6**;
+callback/schema tests **16/16**; selector tests **28/28**; offline baseline **42/42**; and the
+combined focused suite **76/76**. Ruff check, final format check, `py_compile`, and import check
+passed. An intermediate format check correctly found only the newly edited mapper test layout and
+passed after Ruff formatted that test. Pytest warnings are solely the existing `.pytest_cache`
+permission warning.

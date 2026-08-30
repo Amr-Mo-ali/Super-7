@@ -6,6 +6,24 @@
 
 Date: 2026-08-29. Decision owners: Super-7 product-semantics owner and Apex contract owner.
 
+**2026-08-30 contract update:** Apex confirmed the public availability semantics: available uses
+`status=COMPLETED`, `resultAvailability=AVAILABLE`, null `unavailabilityReason`, and the existing
+player result; unavailable uses `status=COMPLETED`, `resultAvailability=UNAVAILABLE`,
+`player=null`, `overall=null`, `overallConfidence=null`, and one of
+`ambiguous_visual_target`, `no_qualifying_visual_target`, or `target_not_established`. Null is not
+zero, unavailable is not failed, and this does not verify `playerId` visually. **Contract confirmed;
+schema not implemented; mapper not implemented; pipeline gate not implemented; not deployed.**
+Current callback and Public Rating V2 field placement differs, so this ADR authorizes no schema,
+mapper, callback, or runtime change pending compatibility design.
+
+**2026-08-30 compatibility-surface decision:** `CallbackPayload`, not
+`PublicRatingV2Response`, is the canonical Apex contract. Its future additive fields are
+`resultAvailability`, `unavailabilityReason`, `player`, and `overallConfidence`; existing callback
+fields retain their names and meanings. `player` must reuse the V2 player dictionary and
+`overallConfidence` must carry `PlayerRatingSummary.overall.confidence` without derivation. Public
+Rating V2 redesign is not approved or required. Schema implementation, callback mapping, pipeline
+gate, and deployment remain pending.
+
 ## Context and problem
 
 `playerId` is Apex business identity, while ByteTrack `track_id` is temporary and analysis-local.

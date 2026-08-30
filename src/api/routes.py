@@ -226,12 +226,22 @@ def _callback_payload(
         request_id=result.analysis_id,
         video_id=request.video_id,
         player_id=request.player_id,
-        status=result.status,
+        status="COMPLETED" if isinstance(result, CompletedResponse) else result.status,
         summary=serialized.get("summary", {}),
         ratings=serialized.get("ratings", {}),
         overall=serialized.get("overall"),
         detailed=detailed,
         events=serialized.get("events", {}),
+        **(
+            {
+                "result_availability": "AVAILABLE",
+                "unavailability_reason": None,
+                "player": serialized["player"],
+                "overall_confidence": result.player_rating_summary.overall.confidence,
+            }
+            if isinstance(result, CompletedResponse) and result.player_rating_summary is not None
+            else {}
+        ),
     )
 
 
