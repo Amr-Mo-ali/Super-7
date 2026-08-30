@@ -246,3 +246,14 @@ callbacks preserve existing fields while adding the V2 player dictionary, availa
 and exact pre-existing Overall confidence. The schema can represent unavailable callbacks and rejects
 contradictory unavailable states, but no target resolver, target gate, or unavailable pipeline
 emission is wired. This remains **Implemented but not production-wired** for target unavailability.
+
+## Authoritative internal carrier contract (2026-08-30)
+
+`CompletedResponse` is the recommended authoritative internal carrier for a future successful but
+target-unavailable result. It is produced by `_analyze_uploaded`; the child serializes it in
+`ChildAnalysisSuccess.response_json`; parent validation restores it through `AnalyzeResponse`; and
+`_callback_payload` maps it to `CallbackPayload`. `NonCompletedResponse` is not suitable because it
+means a separate noncompleted result, and `ParentFailure` is process failure. The new five-test red
+contract proves current `CompletedResponse` cannot yet hold null selected-player and score state.
+Future green work must alter that carrier or an explicitly approved compatible successful-result
+representation, then map it; no resolver, target gate, or pipeline behavior is approved here.

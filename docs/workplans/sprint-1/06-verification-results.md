@@ -422,3 +422,26 @@ combined focused suite **76/76**. Ruff check, final format check, `py_compile`, 
 passed. An intermediate format check correctly found only the newly edited mapper test layout and
 passed after Ruff formatted that test. Pytest warnings are solely the existing `.pytest_cache`
 permission warning.
+
+## 2026-08-30 internal successful-unavailable contract tests
+
+At `2026-08-30T20:29:25.7226302Z`, source inspection selected `CompletedResponse` as the one
+authoritative successful internal carrier. The exact process path is:
+
+```text
+_analyze_uploaded -> CompletedResponse -> ChildAnalysisSuccess.response_json
+-> validate_child_result / AnalyzeResponse -> _callback_payload -> CallbackPayload
+```
+
+The direct in-process worker also passes that same `CompletedResponse` to `_callback_payload`.
+`NonCompletedResponse` is a separate noncompleted outcome and `ParentFailure` is a process failure;
+neither is an appropriate target-unavailable carrier. Five tests in
+`tests/api/test_internal_target_unavailability_contract.py` now specify successful unavailable
+semantics and the future callback mapping. Collection found **5 tests**; one available-result
+preservation test passes and **4 expected red failures** all report the current required
+`CompletedResponse.selected_player` and `CompletedResponse.scores` fields rejecting null. No test
+has an import, fixture, environment, CV, network, or delivery failure.
+
+The CallbackPayload suite remains **6/6** green; callback/schema **16/16**, selector **28/28**, and
+offline baseline **42/42** are green. Combined focused verification is **77 passed, 4 expected
+red**. Ruff check, format check, and syntax compilation pass. No runtime implementation occurred.
