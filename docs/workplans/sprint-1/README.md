@@ -44,9 +44,13 @@ Event-versus-Skill, and Apex compatibility decisions are explicitly approved.
 5. [Contract decisions](04-contract-decisions-required.md) — review required.
 6. [Minimal implementation map](05-minimal-implementation-map.md) — proposal only.
 7. [Verification results](06-verification-results.md) — completed documentation checks.
+8. [Dominant target implementation discovery](07-dominant-target-implementation-discovery.md) — proposed minimal design; implementation remains blocked.
 
-Task status: discovery complete; approval is the next permitted step. Runtime implementation is
-not authorized.
+Task status: isolated pure target-selection contract implementation is complete and not
+production-wired. Human review has approved the single future internal resolver seam, but the
+integration-tests-only step remains stopped: existing response variants cannot represent a successful
+target-unavailable analysis with null ratings/Overall without a deferred result-projection and Apex
+compatibility decision. Pipeline integration and its tests remain blocked pending that decision.
 
 ## Evidence language
 
@@ -82,9 +86,9 @@ The following is a **Proposed** conceptual hierarchy, not a current late pipelin
 ```text
 Request and input guarantee
 → Detection and tracking
-→ Build qualifying visual candidates
-→ Visual-target establishment eligibility
-→ Selected target segment
+→ Build `PlayerTrack` visual candidates
+→ Visual-target establishment eligibility and dominant track
+→ Selected target-track segment
 → Evidence
 → Per-rating eligibility
 → Public response
@@ -101,7 +105,7 @@ plus one additional core category for proposed Overall availability; public Game
 and Physical Activity as image-space visual activity. Apex still must confirm public diagnostics,
 callback/API compatibility, schema/versioning, and input-guarantee enforcement. Thresholds and
 validation remain blocked. Correct automatic order is Request/input guarantee → Detection/tracking
-→ qualifying candidates → establishment → selected target segment → evidence → rating eligibility
+→ qualifying `PlayerTrack` candidates → establishment/dominant track → selected target-track segment → evidence → rating eligibility
 → public response.
 
 Dominance hotfix: one qualifying candidate is not automatically dominant. Proposed establishment
