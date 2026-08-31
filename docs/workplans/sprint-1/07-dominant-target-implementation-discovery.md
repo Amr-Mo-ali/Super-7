@@ -335,3 +335,17 @@ offline-fixture verification limitation, not evidence of resolver behavior failu
 person, `playerId` remains business identity, and no target maintenance, Re-ID, team/jersey signal,
 calibration, scoring/formula change, API redesign, configuration/dependency/model/infrastructure
 change, deployment, commit, or push occurred.
+
+## Final baseline parity and offline fixture validation (2026-08-31)
+
+The earlier AVI fixture failure is not attributable to the resolver. A detached clean-HEAD worktree
+and the active resolver checkout used the same interpreter and pytest strategy, with `PYTHONPATH`
+proving imports from the respective source roots; both passed the exact AVI node. The previous
+`RuntimeError: Test environment cannot create an AVI fixture.` is therefore non-reproducible.
+
+The former 42-pass statement is historical observation only, not a certified current baseline. The
+permanently named **Reconstructed offline candidate baseline** collects 42 nodes and currently
+reports 41 passed plus one expected Windows symlink-privilege skip. It is separate from resolver
+coverage and does not alter the approved semantics or tests. Existing deterministic fixtures cover
+the dominant/ambiguous/no-qualifying/no-fallback, duplicate, margin, carrier, and callback cases;
+no new test is warranted.

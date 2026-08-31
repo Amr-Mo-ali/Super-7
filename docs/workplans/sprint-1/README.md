@@ -122,3 +122,9 @@ real-world identity, add Re-ID/maintenance, alter scores/formulas/settings/API/d
 authorize deployment. Resolver and affected integration coverage are green; independent repeat of
 the historical 42-test offline baseline remains pending an exact recorded command and a fixture
 environment with AVI-writer support.
+
+Correction (2026-08-31): the historical 42-pass baseline is not reproducible because its command
+was never recorded. It is not presented as current certification. The reconstructed offline candidate
+baseline now has 41 passed and one expected Windows symlink-privilege skip; detached clean-HEAD and
+active-checkout AVI fixture runs both pass, so the earlier AVI-writer failure is non-reproducible and
+not a resolver regression. Controlled offline video validation remains separate from deployment.

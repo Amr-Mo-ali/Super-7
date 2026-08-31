@@ -557,3 +557,38 @@ warn. The historical offline baseline is recorded as 42/42 but its exact command
 journal and prior briefs. A reconstructed 42-test candidate is not baseline evidence: local basetemp
 produced 40 passed, 1 skipped, and one environment-only OpenCV AVI-writer failure. No real video
 inference, live request, callback delivery, deployment, staging, commit, or push occurred.
+
+## 2026-08-31 final baseline parity and offline fixture validation
+
+The historical **42 passed** statement is downgraded to an unreproducible historical observation:
+neither its exact command nor its fixture environment was recorded. The permanent replacement name
+is **Reconstructed offline candidate baseline**:
+
+```powershell
+python -m pytest -q --basetemp E:\super7\.test-tmp-parity-current tests/test_analyze.py tests/test_selection.py tests/test_segment_selection.py tests/test_callback_service.py tests/test_player_tracker_isolation.py tests/test_video_validator.py tests/test_video_path_resolver.py
+```
+
+It collects 42 nodes and now passes **41**, skips **1**, and emits one `.pytest_cache` warning in
+8.78 seconds. The skipped node is
+`tests/test_video_path_resolver.py::test_rejects_a_symlink_that_escapes_storage_root`; Windows
+returned `WinError 1314` because symlink privilege is unavailable. It is not an AVI or resolver
+failure.
+
+The earlier failing node was
+`tests/test_video_validator.py::test_validator_extracts_metadata_from_decodable_video`, whose exact
+error was `RuntimeError: Test environment cannot create an AVI fixture.` at `VideoWriter(... MJPG)`
+initialization. OpenCV is 4.14.0 and reports FFMPEG and DirectShow video-I/O support. A detached
+clean-HEAD worktree at `73a5ddc2be28ade2b12f04d0b54b8a588a331713` and the active checkout used the
+same `E:\\super7\\.venv\\Scripts\\python.exe`, identical pytest options, and distinct workspace-local
+base temps. Explicit `PYTHONPATH` proof showed imports from each respective `src` root. Both runs
+passed the AVI node, so classification is **non-reproducible prior fixture failure; not a resolver
+regression and not a persistent environment limitation**.
+
+Existing deterministic coverage validates dominant established exact-segment flow; ambiguity and
+no-qualifying successful-unavailable paths; no cross-track fallback; generic defensive unavailable
+mapping; duplicate-frame evidence; inclusive margin behavior; parent/child unavailable round-trip;
+and callback null player/Overall/confidence. No new test was necessary. Results are focused
+resolver/carrier/callback/mapper **55/55**, process **20/20** with local basetemp, and combined
+affected **75/75**. Source-root mypy, Ruff, formatting, syntax/import, diff, link, whitespace, and
+scope validation remain required final checks. No runtime/config/dependency/model/live/deployment,
+commit, or push change occurred; `.vscode/settings.json` remains untouched.
