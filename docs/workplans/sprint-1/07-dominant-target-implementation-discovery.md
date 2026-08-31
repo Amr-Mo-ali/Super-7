@@ -304,3 +304,34 @@ and scores before use, failing clearly if an invalid state bypasses model valida
 This is a narrow type-safety boundary repair only. It preserves available V2 values and formulas,
 does not redesign the V2 unavailable shape, and does not implement or alter the pending resolver
 route integration. The four route-contract failures therefore remain the intended review gate.
+
+## Resolver green integration and audit (2026-08-31)
+
+The separately approved production wiring is now **Implemented and production-wired**. The resolver
+accepts only the already-returned `TrackingRun`, route FPS, and existing settings; it does not own
+tracking, read video, merge IDs, or add thresholds. It evaluates unique keyed visual evidence first,
+then builds and ranks segments only for the established winning temporary track. No qualifying
+segment changes the result to `NOT_ESTABLISHED` with `no_qualifying_visual_target`; another track’s
+segment is never substituted.
+
+`_analyze_uploaded` calls the tracker once, calls the resolver once, and carries the resolver’s exact
+segment into `_completed`. The old global segment-first and legacy-selector production alternatives
+are removed from this route, so they cannot compete or provide a fallback. The unavailable branch
+returns before `_completed` and therefore before player-attributed movement, interaction, technical
+event, pass, shot, score, and rating work. It emits the approved completed-unavailable carrier for
+each approved reason without fabricating player, score, rating, Overall, or Overall-confidence data.
+
+Audit found the larger route diff necessary rather than incidental: the unavailable carrier needs a
+dedicated builder because `_completed` begins target-attributed analysis, while exact segment
+adaptation and minimal logging are required boundaries. No runtime churn was removed. Resolver and
+selection tests pass **32/32**, internal/callback/mapper tests **23/23**, combined affected tests
+**75/75**, and process tests **20/20** with a workspace-local pytest temp. Changed-file and
+source-root mypy, Ruff, formatting, compilation/import, and diff checks pass. The historical 42-test
+offline baseline cannot be independently certified because its command was not recorded; a
+reconstructed candidate hit environmental Windows Temp/OpenCV AVI-writer limits. This is an
+offline-fixture verification limitation, not evidence of resolver behavior failure.
+
+`ESTABLISHED` remains provisional visual-target establishment only; `track_id` is not a verified
+person, `playerId` remains business identity, and no target maintenance, Re-ID, team/jersey signal,
+calibration, scoring/formula change, API redesign, configuration/dependency/model/infrastructure
+change, deployment, commit, or push occurred.

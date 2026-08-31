@@ -112,3 +112,13 @@ validation remain blocked. Correct automatic order is Request/input guarantee â†
 Dominance hotfix: one qualifying candidate is not automatically dominant. Proposed establishment
 also requires no unresolved plausible alternative; operational qualification/plausibility/dominance
 definitions remain blocked on implementation discovery and validation evidence.
+
+Update (2026-08-31): the separately approved resolver green integration is **Implemented and
+production-wired**. `_analyze_uploaded` now uses one existing tracking result to establish a
+provisional dominant visual target before selecting a segment, and returns the approved successful
+unavailable result without player-attributed downstream work when establishment fails. The prior
+global segment-first route path is removed. This does not verify Apex `playerId`, establish
+real-world identity, add Re-ID/maintenance, alter scores/formulas/settings/API/dependencies, or
+authorize deployment. Resolver and affected integration coverage are green; independent repeat of
+the historical 42-test offline baseline remains pending an exact recorded command and a fixture
+environment with AVI-writer support.

@@ -1,11 +1,13 @@
 """Pure track-first dominant visual target selection for Sprint 1."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
 
 from core.config import Settings
-from services.segment_selection import TrackSegment, rank_segments
+from services.player_tracker import TrackingRun
+from services.segment_selection import TrackSegment, build_segments, rank_segments
 from services.selection import PlayerTrack
 
 
@@ -37,7 +39,7 @@ class TargetEligibilityResult:
 
 def unique_track_evidence(
     track: PlayerTrack,
-    frame_keys: dict[int, object],
+    frame_keys: Mapping[int, object],
     *,
     frames_processed: int,
     fps: float,
@@ -56,7 +58,7 @@ def unique_track_evidence(
 
 def evaluate_dominant_target(
     tracks: tuple[PlayerTrack, ...],
-    frame_keys_by_track: dict[int, dict[int, object]],
+    frame_keys_by_track: Mapping[int, Mapping[int, object]],
     *,
     frames_processed: int,
     fps: float,
@@ -122,6 +124,44 @@ def select_winning_track_segment(
         ),
         None,
     )
+
+
+def resolve_dominant_target(
+    run: TrackingRun,
+    *,
+    fps: float,
+    settings: Settings,
+) -> tuple[TargetEligibilityResult, TrackSegment | None]:
+    """Resolve one scoreable segment from the existing tracking result only."""
+    target = evaluate_dominant_target(
+        run.tracks,
+        run.player_boxes or {},
+        frames_processed=run.diagnostics.frames_processed,
+        fps=fps,
+        settings=settings,
+    )
+    if target.status is not TargetSelectionStatus.ESTABLISHED:
+        return target, None
+
+    segments = build_segments(
+        run.player_boxes or {},
+        run.player_confidences or {},
+        run.ball_points or {},
+        fps,
+        settings,
+    )
+    selected_segment = select_winning_track_segment(target, segments)
+    if selected_segment is None:
+        return (
+            TargetEligibilityResult(
+                TargetSelectionStatus.NOT_ESTABLISHED,
+                "no_qualifying_visual_target",
+            ),
+            None,
+        )
+    if selected_segment.track_id != target.selected_track_id:
+        raise ValueError("dominant target segment does not match the established track")
+    return target, selected_segment
 
 
 def _qualified(track: PlayerTrack, evidence: TrackEvidence, settings: Settings) -> bool:

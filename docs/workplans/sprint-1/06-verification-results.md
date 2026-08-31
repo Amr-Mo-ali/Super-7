@@ -519,3 +519,41 @@ offline baseline **42/42**; and the explicitly green combined matrix **93/93**. 
 syntax/import, and diff validation pass. The resolver-integration contract remains **4 expected red
 failures** for unchanged reasons: no resolver invocation and unavailable paths still entering
 `_completed` under the separately deferred green phase.
+
+## 2026-08-31 dominant-target resolver integration audit
+
+Starting state: branch `the-new-inhancement`, HEAD
+`5dfa18b9d827fb8c8e02c52e10751b09c73c6a67`; modified runtime paths were
+`src/api/routes.py` and `src/services/dominant_target_selection.py`. The unrelated untracked
+`.vscode/settings.json` was inspected only and remains untouched, unstaged, and undeleted.
+
+The normal and whitespace-insensitive route diffs are identical in substance: the larger route diff
+is required replacement of the previous global segment-first and legacy-selector alternatives with
+the approved resolver gate. Required hunks are resolver imports; removal of unreachable old-selection
+imports; route control-flow replacement; exact segment adaptation; minimal structured logging; and
+the completed-unavailable builder. `del selector` preserves the existing function signature without
+an unused parameter. No formatting-only, line-ending, duplicated movement, unrelated cleanup, or
+defect hunk was found; no runtime line was removed in this audit.
+
+Source audit confirms one `tracker.analyze` branch executes per analysis and the resolver consumes
+that returned `TrackingRun` only. It uses keyed box observations as unique-frame evidence with the
+run processed-frame count and route FPS, then ranks segments only for an established winning temporary
+track. The exact selected segment reaches `_completed`; no route-level ranking or legacy selector
+remains. A winning track without a qualifying segment becomes
+`NOT_ESTABLISHED`/`no_qualifying_visual_target`, with no cross-track fallback.
+
+For `NOT_ESTABLISHED`, all three approved reasons are retained and `_unavailable_completed` returns
+`CompletedResponse(status="completed", result_availability="UNAVAILABLE")` with null player, scores,
+and rating summary. It returns before `_completed`, so player-attributed movement, interaction,
+technical-event, pass, shot, scoring, and rating work is skipped. This is provisional visual-target
+establishment only: `track_id` is not verified identity, `playerId` remains Apex business identity,
+and no Re-ID or maintenance claim is introduced.
+
+Results: resolver route plus dominant selection **32/32**; internal/callback/mapper set **23/23**;
+combined affected suite **75/75**; process suite **20/20** using workspace-local `--basetemp`;
+affected-file and source-root mypy (`104` files) green; changed-file Ruff/format, compile/import
+smoke, and `git diff --check` green. Default pytest Temp access is denied and `.pytest_cache` writes
+warn. The historical offline baseline is recorded as 42/42 but its exact command is absent from the
+journal and prior briefs. A reconstructed 42-test candidate is not baseline evidence: local basetemp
+produced 40 passed, 1 skipped, and one environment-only OpenCV AVI-writer failure. No real video
+inference, live request, callback delivery, deployment, staging, commit, or push occurred.
