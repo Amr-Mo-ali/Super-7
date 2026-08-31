@@ -11,7 +11,9 @@ from typing import Any, Final
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+
+from schemas.analysis import ResultAvailability, TargetUnavailabilityReason
 
 _RETRY_DELAYS: Final = (1.0, 2.0, 4.0)
 
@@ -31,6 +33,8 @@ class DetailedRatings(BaseModel):
 class CallbackPayload(BaseModel):
     """Successful or non-failed analysis callback payload."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     request_id: str
     video_id: str
     player_id: str
@@ -41,6 +45,38 @@ class CallbackPayload(BaseModel):
     detailed: DetailedRatings
     events: dict[str, Any]
     error: dict[str, str] | None = None
+    result_availability: ResultAvailability | None = Field(default=None, alias="resultAvailability")
+    unavailability_reason: TargetUnavailabilityReason | None = Field(
+        default=None, alias="unavailabilityReason"
+    )
+    player: dict[str, float | int] | None = None
+    overall_confidence: float | None = Field(default=None, alias="overallConfidence", ge=0, le=1)
+
+    @model_validator(mode="after")
+    def _validate_target_result_availability(self) -> "CallbackPayload":
+        if self.result_availability is None:
+            return self
+        if self.result_availability == "AVAILABLE":
+            if (
+                self.status != "COMPLETED"
+                or self.player is None
+                or self.unavailability_reason is not None
+            ):
+                raise ValueError(
+                    "available callbacks require COMPLETED status, player, and no reason"
+                )
+            return self
+        if (
+            self.status != "COMPLETED"
+            or self.player is not None
+            or self.overall is not None
+            or self.overall_confidence is not None
+            or self.unavailability_reason is None
+        ):
+            raise ValueError(
+                "unavailable callbacks require completed null-player/null-overall state"
+            )
+        return self
 
 
 class FailedCallbackPayload(BaseModel):

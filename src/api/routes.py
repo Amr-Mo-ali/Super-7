@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
@@ -24,7 +24,6 @@ from diagnostics.artifacts import ArtifactSession
 from diagnostics.job_events import log_job_event
 from diagnostics.performance import current_collector
 from schemas.analysis import (
-    AmbiguousResponse,
     AnalyzeQueuedResponse,
     AnalyzeRequest,
     AnalyzeResponse,
@@ -34,6 +33,7 @@ from schemas.analysis import (
     Diagnostics,
     DribbleCandidateResponse,
     FeatureMetric,
+    FeaturesResponse,
     InteractionAnalysisResponse,
     InteractionSegmentResponse,
     NonCompletedResponse,
@@ -44,6 +44,7 @@ from schemas.analysis import (
     ShotCandidateResponse,
     ShotDetectionResponse,
     StageGate,
+    TargetUnavailabilityReason,
     TechnicalEventAnalysisResponse,
     TrackingResponse,
     VideoResponse,
@@ -60,6 +61,7 @@ from services.camera_motion import CameraMotionEstimator
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
 from services.detailed_rating.engine import DetailedRatingEngine
+from services.dominant_target_selection import TargetSelectionStatus, resolve_dominant_target
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
 from services.interactions.models import (
@@ -90,13 +92,9 @@ from services.segment_ball import QUALITY_VERSION as SEGMENT_BALL_QUALITY_VERSIO
 from services.segment_ball import RECONSTRUCTION_VERSION, reconstruct
 from services.segment_selection import (
     TrackSegment,
-    build_segments,
-    rank_segments,
     ranking_components,
-    rejection_diagnostics,
-    select_segment,
 )
-from services.selection import Selection, TargetPlayerSelector
+from services.selection import PlayerTrack, Selection, TargetPlayerSelector
 from services.shot_detection import SHOT_DETECTION_VERSION, ShotDetectionResult, ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
 from services.technical_events.models import (
@@ -206,11 +204,33 @@ def _callback_payload(
     result: AnalyzeResponse,
 ) -> CallbackPayload:
     """Build the backend callback body from an already-finalized analysis result."""
+    if isinstance(result, CompletedResponse) and result.result_availability == "UNAVAILABLE":
+        return CallbackPayload(
+            request_id=result.analysis_id,
+            video_id=request.video_id,
+            player_id=request.player_id,
+            status="COMPLETED",
+            summary={},
+            ratings={},
+            overall=None,
+            detailed=DetailedRatings(),
+            events={},
+            resultAvailability="UNAVAILABLE",
+            unavailabilityReason=result.unavailability_reason,
+            player=None,
+            overallConfidence=None,
+        )
+    if isinstance(result, CompletedResponse):
+        assert result.selected_player is not None
+        assert result.scores is not None
     arbitration = event_arbitration(result) if isinstance(result, CompletedResponse) else None
     public_result = public_rating_v2(result, arbitration)
     serialized = public_result.model_dump(mode="json")
-    detailed = (
-        DetailedRatingEngine().evaluate(
+    detailed = DetailedRatings()
+    if isinstance(result, CompletedResponse):
+        assert result.selected_player is not None
+        assert result.scores is not None
+        detailed = DetailedRatingEngine().evaluate(
             result.scores.physical,
             result.technical_event_analysis,
             result.diagnostics.technical_event_analysis_quality,
@@ -219,19 +239,26 @@ def _callback_payload(
             arbitration,
             result.selected_player.track_id,
         )
-        if isinstance(result, CompletedResponse)
-        else DetailedRatings()
-    )
     return CallbackPayload(
         request_id=result.analysis_id,
         video_id=request.video_id,
         player_id=request.player_id,
-        status=result.status,
+        status="COMPLETED" if isinstance(result, CompletedResponse) else result.status,
         summary=serialized.get("summary", {}),
         ratings=serialized.get("ratings", {}),
         overall=serialized.get("overall"),
         detailed=detailed,
         events=serialized.get("events", {}),
+        **(
+            {
+                "result_availability": "AVAILABLE",
+                "unavailability_reason": None,
+                "player": serialized["player"],
+                "overall_confidence": result.player_rating_summary.overall.confidence,
+            }
+            if isinstance(result, CompletedResponse) and result.player_rating_summary is not None
+            else {}
+        ),
     )
 
 
@@ -551,6 +578,7 @@ def _analyze_uploaded(
     request_metadata: dict[str, Any],
 ) -> AnalyzeResponse:
     """Existing synchronous analysis path, executed by the lifecycle worker boundary."""
+    del selector
     checker = CancellationChecker(cancellation)
     profiler = current_collector()
     checker.check("upload validation")
@@ -596,89 +624,54 @@ def _analyze_uploaded(
             0,
             request_metadata,
         )
-    selection_diagnostics = run.diagnostics
-    ranked: tuple[Selection, ...]
-    segments: tuple[TrackSegment, ...] = ()
-    ranked_segments: tuple[TrackSegment, ...] = ()
     selection_started = perf_counter()
     checker.check("player selection")
-    if (
-        settings.target_selection_mode == "segment"
-        and run.player_boxes is not None
-        and run.player_confidences is not None
-    ):
-        if profiler is None:
-            segments = build_segments(
-                run.player_boxes,
-                run.player_confidences,
-                run.ball_points or {},
-                metadata.fps,
-                settings,
-            )
-        else:
-            with profiler.stage("player_selection"):
-                segments = build_segments(
-                    run.player_boxes,
-                    run.player_confidences,
-                    run.ball_points or {},
-                    metadata.fps,
-                    settings,
-                )
-        rejected, breakdown = rejection_diagnostics(run.tracks, segments, metadata.fps)
-        selection_diagnostics = replace(
-            run.diagnostics,
-            rejected_tracks=tuple(rejected),
-            rejected_track_reason_breakdown=breakdown,
-        )
-        ranked_segments = rank_segments(segments)
-        selected = select_segment(segments)
-        ranked = (selected,) if selected is not None else ()
+    if profiler is None:
+        target, selected_segment = resolve_dominant_target(run, fps=metadata.fps, settings=settings)
     else:
-        if profiler is None:
-            ranked = selector.rank(run.tracks)
-        else:
-            with profiler.stage("player_selection"):
-                ranked = selector.rank(run.tracks)
+        with profiler.stage("player_selection"):
+            target, selected_segment = resolve_dominant_target(
+                run, fps=metadata.fps, settings=settings
+            )
     selection_time_ms = round((perf_counter() - selection_started) * 1000)
-    if not ranked:
-        return _noncompleted(
+    if target.status is not TargetSelectionStatus.ESTABLISHED:
+        _log_dominant_target_resolution(
+            logger, analysis_id, target.status.value, target.reason, len(run.tracks), None
+        )
+        return _unavailable_completed(
             analysis_id,
-            "no_valid_tracks",
-            "No track passed the configured quality thresholds.",
-            selection_diagnostics,
-            0,
+            settings,
+            tracker.model_version,
+            metadata,
+            run,
+            target.reason,
+            started,
+            detection_tracking_time_ms,
+            selection_time_ms,
+            reproducibility,
             request_metadata,
         )
-    if len(ranked) > 1 and ranked[0].score - ranked[1].score < settings.selection_margin:
-        return AmbiguousResponse(
-            analysis_id=analysis_id,
-            status="ambiguous_target",
-            candidate_count=len(ranked),
-            warnings=[
-                "The system could not identify one target player with sufficient confidence."
-            ],
-            metadata=request_metadata,
-        )
-    _log_target_track_evidence(logger, analysis_id, ranked[0], metadata, run)
-    _log_target_track_candidates(
+    if selected_segment is None or target.selected_track_id is None:
+        raise ValueError("established dominant target requires a qualifying segment")
+    if selected_segment.track_id != target.selected_track_id:
+        raise ValueError("selected segment does not match the established dominant target")
+    selection = _selection_from_dominant_segment(selected_segment)
+    _log_dominant_target_resolution(
         logger,
         analysis_id,
-        ranked[0],
-        ranked,
-        metadata,
-        run,
-        settings,
-        segments,
-        ranked_segments,
+        target.status.value,
+        target.reason,
+        len(run.tracks),
+        selected_segment,
     )
     return _completed(
         settings,
         tracker.model_version,
         metadata,
-        ranked[0],
+        selection,
         extractor,
         run,
-        len(ranked),
+        1,
         ball_proximity_analyzer,
         movement_analyzer,
         interaction_analyzer,
@@ -689,7 +682,7 @@ def _analyze_uploaded(
         physical_scorer,
         analysis_id,
         started,
-        selection_diagnostics,
+        run.diagnostics,
         PipelineTiming(
             player_detection_time_ms=detection_tracking_time_ms,
             tracking_time_ms=detection_tracking_time_ms,
@@ -699,6 +692,119 @@ def _analyze_uploaded(
         debug_source,
         checker,
         request_metadata,
+    )
+
+
+def _selection_from_dominant_segment(segment: TrackSegment) -> Selection:
+    """Adapt the resolver's exact segment without selecting a different target."""
+    return Selection(
+        PlayerTrack(
+            segment.track_id,
+            segment.visible_frames,
+            segment.end_frame - segment.start_frame + 1,
+            segment.visible_frames,
+            0,
+            segment.mean_confidence,
+            segment.ball_proximity_frames,
+            True,
+        ),
+        "dominant_visual_target_segment",
+        segment.segment_quality,
+        segment.continuity_ratio,
+        0.0,
+        segment.segment_id,
+        segment.start_frame,
+        segment.end_frame,
+        segment.duration_seconds,
+    )
+
+
+def _log_dominant_target_resolution(
+    logger: logging.Logger,
+    analysis_id: str,
+    status: str,
+    reason: str,
+    candidate_count: int,
+    segment: TrackSegment | None,
+) -> None:
+    """Emit minimal resolver observability without box or identity payloads."""
+    logger.info(
+        "dominant_target_resolution analysis_id=%s status=%s reason=%s candidate_count=%s "
+        "selected_track_id=%s segment_start_frame=%s segment_end_frame=%s "
+        "segment_duration_seconds=%s",
+        analysis_id,
+        status,
+        reason,
+        candidate_count,
+        segment.track_id if segment else None,
+        segment.start_frame if segment else None,
+        segment.end_frame if segment else None,
+        segment.duration_seconds if segment else None,
+    )
+
+
+def _unavailable_completed(
+    analysis_id: str,
+    settings: Settings,
+    model_version: str,
+    metadata: VideoMetadata,
+    run: TrackingRun,
+    reason: str,
+    started: float,
+    detection_tracking_time_ms: int,
+    selection_time_ms: int,
+    analysis_metadata: dict[str, str | None],
+    request_metadata: dict[str, Any],
+) -> CompletedResponse:
+    """Return a completed response when no dominant visual target is established."""
+    unavailable_reason: TargetUnavailabilityReason
+    if reason == "ambiguous_visual_target":
+        unavailable_reason = "ambiguous_visual_target"
+    elif reason == "no_qualifying_visual_target":
+        unavailable_reason = "no_qualifying_visual_target"
+    elif reason == "target_not_established":
+        unavailable_reason = "target_not_established"
+    else:
+        raise ValueError(f"unsupported target-unavailability reason: {reason}")
+    unavailable_feature = FeatureMetric(reason="target_not_established")
+    diagnostic_values = asdict(run.diagnostics)
+    diagnostic_values["rejected_tracks"] = diagnostic_values["rejected_tracks"] or ()
+    diagnostic_values["rejected_track_reason_breakdown"] = (
+        diagnostic_values["rejected_track_reason_breakdown"] or {}
+    )
+    return CompletedResponse(
+        analysis_id=analysis_id,
+        status="completed",
+        video=VideoResponse(**asdict(metadata)),
+        selected_player=None,
+        tracking=TrackingResponse(
+            frames_processed=run.diagnostics.frames_processed,
+            lost_track_count=sum(track.lost_track_count for track in run.tracks),
+            longest_continuous_visible_segment=max(
+                (track.longest_segment for track in run.tracks), default=0
+            ),
+        ),
+        features=FeaturesResponse(
+            ball_proximity_time_seconds=unavailable_feature,
+            movement_intensity=unavailable_feature,
+            direction_changes=unavailable_feature,
+        ),
+        scores=None,
+        player_rating_summary=None,
+        result_availability="UNAVAILABLE",
+        unavailability_reason=unavailable_reason,
+        diagnostics=Diagnostics(**diagnostic_values, valid_candidate_tracks=len(run.tracks)),
+        warnings=[f"Analysis completed without an established dominant visual target: {reason}."],
+        analysis_version=settings.analysis_version,
+        model_version=model_version,
+        processing_time_ms=round((perf_counter() - started) * 1000),
+        timing=PipelineTiming(
+            player_detection_time_ms=detection_tracking_time_ms,
+            tracking_time_ms=detection_tracking_time_ms,
+            segment_selection_time_ms=selection_time_ms,
+        ),
+        metadata=request_metadata,
+        analysis_metadata=analysis_metadata,
     )
 
 
@@ -2005,6 +2111,7 @@ def _validate_completed_diagnostics(response: CompletedResponse) -> None:
     """Prevent successful responses from asserting impossible stage counters."""
     diagnostics = response.diagnostics
     player = response.selected_player
+    assert player is not None
     failures: list[str] = []
     if diagnostics.tracks_created <= 0:
         failures.append("selected player requires tracks_created > 0")

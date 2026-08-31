@@ -154,6 +154,21 @@ def test_public_ratings_preserve_engine_evidence_gates_and_unsupported_categorie
         assert rating.reason == "unsupported_by_current_pipeline"
 
 
+def test_unavailable_completed_response_is_not_projected_as_available_public_ratings() -> None:
+    raw = _completed(_summary()).model_dump(mode="json")
+    raw.update(
+        result_availability="UNAVAILABLE",
+        unavailability_reason="ambiguous_visual_target",
+        selected_player=None,
+        scores=None,
+        player_rating_summary=None,
+    )
+    unavailable = CompletedResponse.model_validate(raw)
+
+    with pytest.raises(ValueError, match="cannot be projected"):
+        public_rating_v2(unavailable)
+
+
 def test_public_overall_stays_unavailable_when_engine_has_one_supported_category() -> None:
     summary = _summary(_technical(), _physical(None), _interactions(coverage=0.0))
     response = public_rating_v2(_completed(summary))
@@ -186,6 +201,17 @@ def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
     assert payload.overall["value"] == pytest.approx(summary.overall.value)
     assert payload.overall["confidence"] == pytest.approx(summary.overall.confidence)
     assert payload.overall["status"] == "available"
+    serialized = payload.model_dump(mode="json", by_alias=True)
+    assert serialized["status"] == "COMPLETED"
+    assert serialized["resultAvailability"] == "AVAILABLE"
+    assert serialized["unavailabilityReason"] is None
+    assert serialized["player"] == {
+        "track_id": 1,
+        "selection_confidence": 0.9,
+        "visibility_ratio": 1.0,
+        "visible_duration_seconds": 10.0,
+    }
+    assert serialized["overallConfidence"] == pytest.approx(summary.overall.confidence)
     assert payload.detailed.model_dump(mode="json") == {
         "speed_and_fitness": None,
         "ball_control_and_individual_skill": None,
@@ -206,6 +232,10 @@ def test_callback_payload_contains_engine_backed_ratings_and_overall() -> None:
         "detailed",
         "events",
         "error",
+        "result_availability",
+        "unavailability_reason",
+        "player",
+        "overall_confidence",
     }
     assert "scores" not in payload.model_dump(mode="json")
     assert "schema_version" not in payload.model_dump(mode="json")
