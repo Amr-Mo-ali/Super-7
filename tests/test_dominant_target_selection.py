@@ -6,22 +6,29 @@ each failing test identifies its missing contract behavior instead of aborting t
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from math import inf, nan
 
 from core.config import Settings
+from services.dominant_target_selection import (
+    TargetEligibilityResult,
+    TargetSelectionStatus,
+    TrackEvidence,
+    evaluate_dominant_target,
+    select_winning_track_segment,
+    unique_track_evidence,
+)
 from services.segment_selection import TrackSegment
 from services.selection import PlayerTrack
 
 
-def _policy():  # type: ignore[no-untyped-def]
-    """Expose the minimal planned internal API without making an absent module a collection error."""
-    from services.dominant_target_selection import (  # noqa: PLC0415
-        TargetSelectionStatus,
-        evaluate_dominant_target,
-        select_winning_track_segment,
-        unique_track_evidence,
-    )
-
+def _policy() -> tuple[
+    type[TargetSelectionStatus],
+    Callable[..., TargetEligibilityResult],
+    Callable[..., TrackSegment | None],
+    Callable[..., TrackEvidence],
+]:
+    """Expose the implemented dominant-target policy under test."""
     return (
         TargetSelectionStatus,
         evaluate_dominant_target,
@@ -82,7 +89,7 @@ def _evidence(
     *,
     processed: int = 100,
     fps: float = 10.0,
-):  # type: ignore[no-untyped-def]
+) -> TrackEvidence:
     *_, unique_track_evidence = _policy()
     return unique_track_evidence(track, frame_keys, frames_processed=processed, fps=fps)
 
@@ -94,7 +101,7 @@ def _selection(
     settings: Settings | None = None,
     processed: int = 100,
     fps: float = 10.0,
-):  # type: ignore[no-untyped-def]
+) -> TargetEligibilityResult:
     _, evaluate_dominant_target, *_ = _policy()
     return evaluate_dominant_target(
         tracks,
@@ -300,6 +307,7 @@ def test_track_a_wins_even_when_track_b_has_higher_quality_segment() -> None:
     chosen = select_winning_track_segment(
         target, (_segment(1, 1, quality=0.5), _segment(2, 1, quality=0.99))
     )
+    assert chosen is not None
     assert target.selected_track_id == 1 and chosen.track_id == 1
 
 
@@ -315,6 +323,7 @@ def test_two_segments_from_winning_track_are_not_identity_alternatives() -> None
     chosen = select_winning_track_segment(
         target, (_segment(1, 1, quality=0.5), _segment(1, 2, quality=0.9))
     )
+    assert chosen is not None
     assert target.selected_track_id == 1 and chosen.segment_id == 2
 
 
@@ -330,6 +339,7 @@ def test_only_winning_track_segments_are_considered() -> None:
     chosen = select_winning_track_segment(
         target, (_segment(1, 1, quality=0.6), _segment(2, 1, quality=0.99))
     )
+    assert chosen is not None
     assert chosen.track_id == target.selected_track_id == 1
 
 
@@ -342,12 +352,11 @@ def test_best_qualifying_segment_within_winning_track_is_selected() -> None:
         fps=10.0,
         settings=Settings(),
     )
-    assert (
-        select_winning_track_segment(
-            target, (_segment(1, 1, quality=0.5), _segment(1, 2, quality=0.9))
-        ).segment_id
-        == 2
+    chosen = select_winning_track_segment(
+        target, (_segment(1, 1, quality=0.5), _segment(1, 2, quality=0.9))
     )
+    assert chosen is not None
+    assert chosen.segment_id == 2
 
 
 def test_winning_track_without_qualifying_segment_never_falls_back() -> None:

@@ -592,3 +592,11 @@ resolver/carrier/callback/mapper **55/55**, process **20/20** with local basetem
 affected **75/75**. Source-root mypy, Ruff, formatting, syntax/import, diff, link, whitespace, and
 scope validation remain required final checks. No runtime/config/dependency/model/live/deployment,
 commit, or push change occurred; `.vscode/settings.json` remains untouched.
+
+## Lifecycle diagnosis verification (2026-08-31)
+
+**Classification: Empirically observed pre-existing lifecycle defect; no fix applied.** The failing node is `tests/integration/test_phase_11_6_backend_flow.py::test_complete_request_lifecycle_delivers_callback_and_updates_backend`.
+
+Active checkout: isolated **10/10 failed** in fresh processes; containing file **6 passed / 1 failed**; integration directory **24 passed / 1 failed**; full suite **388 passed / 1 failed / 1 Windows symlink-privilege skip**. A detached clean worktree at `72b62ea7abd88bc758e50e8f0c40c63964f806cb`, with the same `E:\super7\.venv\Scripts\python.exe`, explicit clean-root `PYTHONPATH`, and imports proven from its own `src`, produced isolated **10/10 failed**, containing file **6/1**, and full suite **388/1/1 skipped**. The typing-test edits were therefore not imported and are not implicated.
+
+The test waits only for fake callback insertion. Callback delivery occurs before the parent processor returns `AnalysisJobState.COMPLETED`; then FastAPI lifespan shutdown cancels the still-active worker task. `AnalysisWorker._run` handles `CancelledError` by terminalizing the job as `CANCELLED` with `cancellation_reason=worker_shutdown`. Captured logs consistently show successful execution, shutdown with one active analysis, then `final_state=CANCELLED`. This is deterministic and pre-existing, not order-dependent or platform-specific. A separate lifecycle repair and regression tests are required before CI parity is green. No runtime, test, configuration, dependency, CI, deployment, commit, or push change occurred during diagnosis.

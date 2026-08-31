@@ -2,20 +2,29 @@
 
 import logging
 from pathlib import Path
-from typing import cast
+from typing import Never, cast
 
 import pytest
 
 import api.routes as routes
 from concurrency.cancellation import CancellationManager
 from core.config import Settings
+from diagnostics.artifacts import ArtifactSession
 from schemas.analysis import CompletedResponse
+from services.ball_proximity import BallProximityAnalyzer
 from services.dominant_target_selection import TargetEligibilityResult, TargetSelectionStatus
+from services.feature_extractor import FeatureExtractor
+from services.interactions.analyzer import BallInteractionAnalyzerProtocol
+from services.movement.analyzer import MovementAnalyzer
+from services.pass_detection import PassDetector
 from services.player_detector import BoundingBox
 from services.player_tracker import TrackingDiagnostics, TrackingRun
+from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.segment_selection import TrackSegment
-from services.selection import PlayerTrack, Selection
-from services.video_validator import VideoMetadata
+from services.selection import PlayerTrack, Selection, TargetPlayerSelector
+from services.shot_detection import ShotDetector
+from services.technical_events.analyzer import TechnicalEventAnalyzer
+from services.video_validator import VideoMetadata, VideoValidator
 
 
 class _Validator:
@@ -35,6 +44,13 @@ class _Tracker:
         del path, metadata
         self.calls += 1
         return self._run
+
+
+class _UnexpectedDependency:
+    """Fails loudly if an intentionally bypassed collaborator is invoked."""
+
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"unexpected dependency access: {name}")
 
 
 def _run() -> TrackingRun:
@@ -61,24 +77,24 @@ def _analyze(
         monkeypatch.setattr(routes, "_completed", lambda *_args, **_kwargs: completed)
     return routes._analyze_uploaded(
         Settings(),
-        _Validator(),
+        cast(VideoValidator, _Validator()),
         tracker,
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
+        cast(TargetPlayerSelector, _UnexpectedDependency()),
+        cast(FeatureExtractor, _UnexpectedDependency()),
+        cast(BallProximityAnalyzer, _UnexpectedDependency()),
+        cast(MovementAnalyzer, _UnexpectedDependency()),
+        cast(BallInteractionAnalyzerProtocol, _UnexpectedDependency()),
+        cast(TechnicalEventAnalyzer, _UnexpectedDependency()),
+        cast(PassDetector, _UnexpectedDependency()),
+        cast(ShotDetector, _UnexpectedDependency()),
         logging.getLogger("test.dominant-target-route"),
-        object(),
+        cast(PhysicalActivityScorerProtocol, _UnexpectedDependency()),
         "analysis-1",
         0.0,
         0.0,
         Path(__file__),
         CancellationManager("analysis-1"),
-        cast(object, object()),
+        cast(ArtifactSession, _UnexpectedDependency()),
         {},
     )
 

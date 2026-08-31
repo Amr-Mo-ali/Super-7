@@ -1,5 +1,7 @@
 """Red contract tests for Apex's additive target-result callback availability surface."""
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -16,28 +18,52 @@ _V2_PLAYER: dict[str, float | int] = {
     "visibility_ratio": 0.72,
     "visible_duration_seconds": 8.4,
 }
-_OVERALL = {"value": 75.0, "confidence": 0.81, "status": "available"}
+_OVERALL: dict[str, float | str] = {"value": 75.0, "confidence": 0.81, "status": "available"}
 
 
-def _callback(**availability: object) -> CallbackPayload:
-    """Build the existing valid callback while specifying future additive fields."""
-    fields: dict[str, object] = {
-        "request_id": "request-789",
-        "video_id": "video-123",
-        "player_id": "player-456",
-        "status": "COMPLETED",
-        "summary": {"passes": 2},
-        "ratings": {"technical_skill": {"value": 75.0}},
-        "overall": _OVERALL,
-        "detailed": DetailedRatings(),
-        "events": {"timeline": []},
-    }
-    fields.update(availability)
-    return CallbackPayload(**fields)
+def _callback(
+    *,
+    resultAvailability: str | None = None,
+    unavailabilityReason: str | None = None,
+    player: dict[str, float | int] | None = None,
+    overall: dict[str, float | str] | None = _OVERALL,
+    overallConfidence: float | None = None,
+) -> CallbackPayload:
+    """Build the existing valid callback while specifying additive availability fields."""
+    return CallbackPayload.model_validate(
+        {
+            "request_id": "request-789",
+            "video_id": "video-123",
+            "player_id": "player-456",
+            "status": "COMPLETED",
+            "summary": {"passes": 2},
+            "ratings": {"technical_skill": {"value": 75.0}},
+            "overall": overall,
+            "detailed": DetailedRatings(),
+            "events": {"timeline": []},
+            "resultAvailability": resultAvailability,
+            "unavailabilityReason": unavailabilityReason,
+            "player": player,
+            "overallConfidence": overallConfidence,
+        }
+    )
 
 
-def _json(**availability: object) -> dict[str, object]:
-    return _callback(**availability).model_dump(mode="json", by_alias=True)
+def _json(
+    *,
+    resultAvailability: str | None = None,
+    unavailabilityReason: str | None = None,
+    player: dict[str, float | int] | None = None,
+    overall: dict[str, float | str] | None = _OVERALL,
+    overallConfidence: float | None = None,
+) -> dict[str, object]:
+    return _callback(
+        resultAvailability=resultAvailability,
+        unavailabilityReason=unavailabilityReason,
+        player=player,
+        overall=overall,
+        overallConfidence=overallConfidence,
+    ).model_dump(mode="json", by_alias=True)
 
 
 def test_available_callback_serializes_additive_target_result_fields() -> None:
@@ -108,7 +134,7 @@ def test_unavailable_callback_rejects_contradictory_target_result_values() -> No
         {"unavailabilityReason": "unapproved_reason"},
     )
     for contradictory in contradictions:
-        unavailable = {
+        unavailable: dict[str, Any] = {
             "resultAvailability": "UNAVAILABLE",
             "unavailabilityReason": "ambiguous_visual_target",
             "player": None,
@@ -117,7 +143,7 @@ def test_unavailable_callback_rejects_contradictory_target_result_values() -> No
         }
         unavailable.update(contradictory)
         with pytest.raises(ValidationError):
-            _callback(**unavailable)
+            CallbackPayload.model_validate(unavailable)
 
 
 def test_existing_callback_fields_remain_serialized_when_available_fields_are_supplied() -> None:
