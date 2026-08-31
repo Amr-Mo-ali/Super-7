@@ -2,9 +2,16 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from services.player_rating.models import PlayerRatingSummary
+
+type ResultAvailability = Literal["AVAILABLE", "UNAVAILABLE"]
+type TargetUnavailabilityReason = Literal[
+    "ambiguous_visual_target",
+    "no_qualifying_visual_target",
+    "target_not_established",
+]
 
 
 class AnalyzeRequest(BaseModel):
@@ -331,7 +338,7 @@ class CompletedResponse(BaseModel):
     analysis_id: str
     status: Literal["completed"]
     video: VideoResponse
-    selected_player: SelectedPlayer
+    selected_player: SelectedPlayer | None
     tracking: TrackingResponse
     features: FeaturesResponse
     interaction_analysis: InteractionAnalysisResponse = Field(
@@ -342,8 +349,10 @@ class CompletedResponse(BaseModel):
     )
     pass_detection: PassDetectionResponse = Field(default_factory=PassDetectionResponse)
     shot_detection: ShotDetectionResponse = Field(default_factory=ShotDetectionResponse)
-    scores: ScoresResponse
+    scores: ScoresResponse | None
     player_rating_summary: PlayerRatingSummary | None = None
+    result_availability: ResultAvailability | None = None
+    unavailability_reason: TargetUnavailabilityReason | None = None
     diagnostics: "Diagnostics"
     warnings: list[str]
     analysis_version: str
@@ -356,6 +365,29 @@ class CompletedResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     analysis_metadata: dict[str, str | None] = Field(default_factory=dict)
     debug_artifacts: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_result_availability(self) -> "CompletedResponse":
+        if self.result_availability in (None, "AVAILABLE"):
+            if (
+                self.selected_player is None
+                or self.scores is None
+                or self.unavailability_reason is not None
+            ):
+                raise ValueError(
+                    "available completed results require selected player, scores, and no reason"
+                )
+            return self
+        if (
+            self.selected_player is not None
+            or self.scores is not None
+            or self.player_rating_summary is not None
+            or self.unavailability_reason is None
+        ):
+            raise ValueError(
+                "unavailable completed results require null player, scores, ratings, and a reason"
+            )
+        return self
 
 
 class AmbiguousResponse(BaseModel):

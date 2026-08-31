@@ -47,9 +47,11 @@ Event-versus-Skill, and Apex compatibility decisions are explicitly approved.
 8. [Dominant target implementation discovery](07-dominant-target-implementation-discovery.md) — proposed minimal design; implementation remains blocked.
 
 Task status: additive `CallbackPayload` availability schema and completed-result mapping are
-implemented and tested. The internal successful-unavailable carrier contract is now red-tested
-against `CompletedResponse`; its green implementation, resolver integration, target-unavailable
-pipeline emission, and deployment remain pending. Public Rating V2 redesign is not required.
+implemented and tested. `CompletedResponse` now strictly carries both legacy/explicit available
+and explicit successful-unavailable states, including parent/child serialization and unavailable
+callback projection. Resolver integration, target-unavailable pipeline emission, and deployment
+remain pending. A route-level resolver-integration contract is red and awaiting separate human
+review; Public Rating V2 redesign is not required.
 
 ## Evidence language
 

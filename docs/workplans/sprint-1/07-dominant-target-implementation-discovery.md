@@ -257,3 +257,37 @@ means a separate noncompleted result, and `ParentFailure` is process failure. Th
 contract proves current `CompletedResponse` cannot yet hold null selected-player and score state.
 Future green work must alter that carrier or an explicitly approved compatible successful-result
 representation, then map it; no resolver, target gate, or pipeline behavior is approved here.
+
+## Internal carrier green phase (2026-08-31)
+
+The approved compatible green implementation extends `CompletedResponse`; no result envelope was
+added. The neutral `schemas.analysis` vocabulary owns `AVAILABLE`/`UNAVAILABLE` and the three
+approved reason literals, and `CallbackPayload` reuses those types rather than maintaining a second
+string list. There is no circular import.
+
+Omitted metadata retains legacy available compatibility only when selected player and scores are
+present with no reason. Explicit AVAILABLE has the same requirements. Explicit UNAVAILABLE is still
+`status="completed"` but strictly requires null selected player, scores, and player rating summary,
+plus an approved reason. Child JSON serialization and `AnalyzeResponse` validation preserve that
+state as `CompletedResponse`; it is not converted to `NonCompletedResponse` or failure.
+
+For this explicit internal state only, `_callback_payload` returns the approved completed unavailable
+callback form: reason preserved, `player=null`, `overall=null`, and
+`overallConfidence=null`, without fabricated rating or evidence values. The available mapper path
+remains unchanged. `_analyze_uploaded`, `resolve_dominant_target`, tracking, target gating, rating
+formulas, settings, and production pipeline emission remain intentionally deferred.
+
+## Resolver-integration red contract (2026-08-31)
+
+The approved tests-only route contract now fixes the production seam for later review:
+`api.routes.resolve_dominant_target(run, *, fps, settings)` must consume the one `TrackingRun`
+already returned by `tracker.analyze` and return a `TargetEligibilityResult` with a
+`TrackSegment | None`. When established, `_analyze_uploaded` must carry that exact selected segment
+into `_completed`; it must not return to cross-track segment ranking. When not established, it must
+return the accepted explicit unavailable `CompletedResponse` with the resolver's approved reason
+and must not invoke `_completed` or target-attributed rating work.
+
+The four tests are deliberately red against current behavior: the route remains segment-first,
+does not import/call the resolver, and proceeds into `_completed`. This is a review gate only. No
+resolver implementation, production route wiring, target-unavailable emission, formula/API/config
+change, inference, delivery, deployment, commit, or push is authorized by this test contract.

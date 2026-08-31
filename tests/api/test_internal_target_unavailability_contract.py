@@ -19,6 +19,11 @@ from schemas.analysis import (
 )
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
 from services.player_rating.engine import PlayerRatingEngine
+from services.process_contracts import (
+    CHILD_ANALYSIS_SCHEMA_VERSION,
+    ChildAnalysisSuccess,
+    validate_child_result,
+)
 from services.scoring.models import PhysicalScoreEvidence, PhysicalScoreResult
 from services.scoring.technical import TechnicalScoreResult
 
@@ -142,6 +147,7 @@ def _request() -> AnalyzeRequest:
 def test_available_completed_response_preserves_player_ratings_and_confidence() -> None:
     result = _available()
     assert isinstance(result, CompletedResponse)
+    assert result.selected_player is not None
     assert result.selected_player.track_id == 1
     assert result.player_rating_summary is not None
     assert result.player_rating_summary.overall.confidence is not None
@@ -164,6 +170,15 @@ def test_unavailable_internal_result_is_not_noncompleted_or_failed() -> None:
     assert not isinstance(result, NonCompletedResponse)
     assert result.status == "completed"
     assert not hasattr(result, "error")
+    child_success = ChildAnalysisSuccess(
+        result.analysis_id, result.model_dump_json(), "test", "test", 0
+    )
+    restored = validate_child_result(
+        result.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, child_success
+    )
+    assert isinstance(restored, CompletedResponse)
+    assert restored.result_availability == "UNAVAILABLE"
+    assert restored.unavailability_reason == "ambiguous_visual_target"
 
 
 def test_unavailable_internal_result_rejects_contradictory_player_and_rating_data() -> None:

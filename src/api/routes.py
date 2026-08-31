@@ -206,11 +206,33 @@ def _callback_payload(
     result: AnalyzeResponse,
 ) -> CallbackPayload:
     """Build the backend callback body from an already-finalized analysis result."""
+    if isinstance(result, CompletedResponse) and result.result_availability == "UNAVAILABLE":
+        return CallbackPayload(
+            request_id=result.analysis_id,
+            video_id=request.video_id,
+            player_id=request.player_id,
+            status="COMPLETED",
+            summary={},
+            ratings={},
+            overall=None,
+            detailed=DetailedRatings(),
+            events={},
+            resultAvailability="UNAVAILABLE",
+            unavailabilityReason=result.unavailability_reason,
+            player=None,
+            overallConfidence=None,
+        )
+    if isinstance(result, CompletedResponse):
+        assert result.selected_player is not None
+        assert result.scores is not None
     arbitration = event_arbitration(result) if isinstance(result, CompletedResponse) else None
     public_result = public_rating_v2(result, arbitration)
     serialized = public_result.model_dump(mode="json")
-    detailed = (
-        DetailedRatingEngine().evaluate(
+    detailed = DetailedRatings()
+    if isinstance(result, CompletedResponse):
+        assert result.selected_player is not None
+        assert result.scores is not None
+        detailed = DetailedRatingEngine().evaluate(
             result.scores.physical,
             result.technical_event_analysis,
             result.diagnostics.technical_event_analysis_quality,
@@ -219,9 +241,6 @@ def _callback_payload(
             arbitration,
             result.selected_player.track_id,
         )
-        if isinstance(result, CompletedResponse)
-        else DetailedRatings()
-    )
     return CallbackPayload(
         request_id=result.analysis_id,
         video_id=request.video_id,
@@ -2015,6 +2034,7 @@ def _validate_completed_diagnostics(response: CompletedResponse) -> None:
     """Prevent successful responses from asserting impossible stage counters."""
     diagnostics = response.diagnostics
     player = response.selected_player
+    assert player is not None
     failures: list[str] = []
     if diagnostics.tracks_created <= 0:
         failures.append("selected player requires tracks_created > 0")

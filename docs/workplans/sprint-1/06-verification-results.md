@@ -445,3 +445,51 @@ has an import, fixture, environment, CV, network, or delivery failure.
 The CallbackPayload suite remains **6/6** green; callback/schema **16/16**, selector **28/28**, and
 offline baseline **42/42** are green. Combined focused verification is **77 passed, 4 expected
 red**. Ruff check, format check, and syntax compilation pass. No runtime implementation occurred.
+
+## 2026-08-31 internal successful-unavailable green phase
+
+Starting branch/HEAD was `the-new-inhancement` / `550e89e473e9c0fb7890c69211ea303a382db7ee` with
+a clean worktree. The approved red command reconfirmed **1 passed, 4 failed** solely because
+`CompletedResponse` rejected null `selected_player` and `scores`.
+
+`schemas.analysis` now owns the shared constrained availability and reason vocabulary;
+`CallbackPayload` imports it, preserving its serialized values and approved external behavior.
+`CompletedResponse` keeps legacy available construction compatible when metadata is omitted and
+player/scores are present. Explicit `AVAILABLE` has the same invariant. Explicit `UNAVAILABLE`
+requires null player, scores, and rating summary plus one approved reason; contradictory states
+are rejected. No football-score semantics were added.
+
+The internal contract is **5/5** green, including serialization through
+`ChildAnalysisSuccess.response_json` and restoration by `validate_child_result` as a
+`CompletedResponse` with its availability/reason intact. The mapper returns a completed
+unavailable `CallbackPayload` with null `player`, `overall`, and `overallConfidence`, while
+preserving only honest empty summary/rating/event maps and empty detailed ratings. Existing
+available callback behavior remains covered by the callback/schema suite.
+
+Verification: callback availability **6/6**; existing callback/schema **16/16**; parent/child
+process tests **15/15** (with a workspace-local pytest base temp because the default Windows temp
+directory is denied); dominant-target suite **28/28**; offline baseline **42/42**; combined focused
+suite **81/81**. Ruff check and format check, mypy over affected files, `py_compile`, and import
+loading passed. Pytest emitted only the known `.pytest_cache` permission warning. Resolver wiring,
+pipeline emission, inference, live callback delivery, deployment, settings, dependencies, scoring,
+and Public Rating V2 remain unchanged.
+
+## 2026-08-31 resolver-integration red contract
+
+Human review approved resolver-integration **tests only**. The new
+`tests/api/test_dominant_target_route_contract.py` specifies the documented minimal seam:
+`resolve_dominant_target(run, *, fps, settings)` consumes the one already-produced `TrackingRun`
+and returns `TargetEligibilityResult` plus `TrackSegment | None`.
+
+One test requires an established result to use that same run once and pass the resolver-selected
+track/segment identity to `_completed`. The parameterized unavailable test requires each approved
+reason to produce an explicit unavailable `CompletedResponse` and never enter `_completed` or
+player-attributed rating completion. The suite is intentionally **4 red failures**: the current
+segment-first route never invokes the resolver and enters `_completed` for all unavailable cases.
+These are behavioral contract failures only; no import, fixture, syntax, environment, CV, network,
+or callback-delivery failure occurred. Ruff check and formatting for the new test pass. Existing
+dominant-target plus internal-carrier tests remain **33/33** green. No runtime code changed in this
+phase. The route-contract test itself compiles and passes Ruff. A source-root mypy run is not green:
+it reports existing optional-field narrowing gaps in `public_rating_mapper.py` after the accepted
+carrier change. Correcting those runtime paths is outside this tests-only authorization and remains
+for a separately approved implementation review.

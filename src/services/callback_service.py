@@ -7,19 +7,15 @@ from collections.abc import Awaitable, Callable
 from ipaddress import ip_address
 from socket import SOCK_STREAM, getaddrinfo
 from time import perf_counter
-from typing import Any, Final, Literal
+from typing import Any, Final
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
+from schemas.analysis import ResultAvailability, TargetUnavailabilityReason
+
 _RETRY_DELAYS: Final = (1.0, 2.0, 4.0)
-type CallbackResultAvailability = Literal["AVAILABLE", "UNAVAILABLE"]
-type TargetUnavailabilityReason = Literal[
-    "ambiguous_visual_target",
-    "no_qualifying_visual_target",
-    "target_not_established",
-]
 
 
 class DetailedRatings(BaseModel):
@@ -49,9 +45,7 @@ class CallbackPayload(BaseModel):
     detailed: DetailedRatings
     events: dict[str, Any]
     error: dict[str, str] | None = None
-    result_availability: CallbackResultAvailability | None = Field(
-        default=None, alias="resultAvailability"
-    )
+    result_availability: ResultAvailability | None = Field(default=None, alias="resultAvailability")
     unavailability_reason: TargetUnavailabilityReason | None = Field(
         default=None, alias="unavailabilityReason"
     )
