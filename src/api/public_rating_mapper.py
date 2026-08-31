@@ -46,6 +46,12 @@ def public_rating_v2(
             warnings=warnings,
             retryable=status == "failed",
         )
+    if result.result_availability == "UNAVAILABLE":
+        raise ValueError("Unavailable completed responses cannot be projected as Public Rating V2.")
+    selected_player = result.selected_player
+    scores = result.scores
+    if selected_player is None or scores is None:
+        raise ValueError("Available completed responses require selected player and scores.")
     rating_summary = result.player_rating_summary
     if rating_summary is None:
         raise ValueError("Completed response is missing its PlayerRatingEngine summary.")
@@ -110,10 +116,10 @@ def public_rating_v2(
             "resolution": {"width": result.video.width, "height": result.video.height},
         },
         player={
-            "track_id": result.selected_player.track_id,
-            "selection_confidence": result.selected_player.confidence,
-            "visibility_ratio": result.selected_player.visibility_ratio,
-            "visible_duration_seconds": result.selected_player.segment_duration_seconds
+            "track_id": selected_player.track_id,
+            "selection_confidence": selected_player.confidence,
+            "visibility_ratio": selected_player.visibility_ratio,
+            "visible_duration_seconds": selected_player.segment_duration_seconds
             or result.video.duration_seconds,
         },
         ratings=ratings,
@@ -132,7 +138,7 @@ def public_rating_v2(
         },
         quality={
             "tracking": {
-                "visibility_ratio": result.selected_player.visibility_ratio,
+                "visibility_ratio": selected_player.visibility_ratio,
                 "status": "good",
             },
             "movement": {
@@ -202,23 +208,27 @@ def _public_rating(rating: InternalRatingValue) -> PublicRatingValue:
 def _game_evidence(
     result: CompletedResponse, arbitration: ArbitrationResult
 ) -> GameIntelligenceEvidence:
-    physical = result.scores.physical
+    selected_player = result.selected_player
+    scores = result.scores
+    if selected_player is None or scores is None:
+        raise ValueError("Available completed responses require selected player and scores.")
+    physical = scores.physical
     physical_evidence = physical.evidence if isinstance(physical, PhysicalScoreResponse) else None
-    technical = result.scores.technical
+    technical = scores.technical
     interaction = result.interaction_analysis
     events = result.technical_event_analysis
     arbitrated = arbitration.events
     passes = [item for item in arbitrated if item.event_type == "pass"]
     shots = [item for item in arbitrated if item.event_type == "shot"]
     return GameIntelligenceEvidence(
-        visible_duration_seconds=result.selected_player.segment_duration_seconds
+        visible_duration_seconds=selected_player.segment_duration_seconds
         or result.video.duration_seconds,
-        visibility_ratio=result.selected_player.visibility_ratio,
+        visibility_ratio=selected_player.visibility_ratio,
         continuity_ratio=(
             result.tracking.longest_continuous_visible_segment
-            / max(result.selected_player.visible_frames, 1)
+            / max(selected_player.visible_frames, 1)
         ),
-        ball_proximity_ratio=result.selected_player.ball_proximity_ratio,
+        ball_proximity_ratio=selected_player.ball_proximity_ratio,
         interaction_time_seconds=interaction.possible_ball_interaction_time_seconds.value,
         interaction_count=int(interaction.possible_ball_interaction_count.value or 0),
         longest_interaction_seconds=interaction.longest_possible_ball_interaction_seconds.value,
@@ -255,6 +265,9 @@ def _game_evidence(
 
 
 def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...]:
+    selected_player = result.selected_player
+    if selected_player is None:
+        raise ValueError("Available completed responses require a selected player.")
     candidates: list[EventCandidateRef] = []
     for controlled in result.technical_event_analysis.controlled_movement_candidates:
         candidates.append(
@@ -264,7 +277,7 @@ def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...
                 controlled.start_frame,
                 None,
                 controlled.end_frame,
-                result.selected_player.track_id,
+                selected_player.track_id,
                 None,
                 controlled.confidence,
                 None,
@@ -280,7 +293,7 @@ def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...
                 dribble.start_frame,
                 None,
                 dribble.end_frame,
-                result.selected_player.track_id,
+                selected_player.track_id,
                 None,
                 dribble.confidence,
                 None,
@@ -296,7 +309,7 @@ def _event_candidates(result: CompletedResponse) -> tuple[EventCandidateRef, ...
                 loss.event_frame,
                 None,
                 loss.event_frame,
-                result.selected_player.track_id,
+                selected_player.track_id,
                 None,
                 loss.confidence,
                 None,

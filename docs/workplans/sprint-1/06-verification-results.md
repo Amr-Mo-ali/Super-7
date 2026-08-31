@@ -493,3 +493,29 @@ phase. The route-contract test itself compiles and passes Ruff. A source-root my
 it reports existing optional-field narrowing gaps in `public_rating_mapper.py` after the accepted
 carrier change. Correcting those runtime paths is outside this tests-only authorization and remains
 for a separately approved implementation review.
+
+## 2026-08-31 public rating mapper type-safety hotfix
+
+The approved hotfix started at `the-new-inhancement` /
+`4133f75fbf23b32bade9fac121c82e8621502efb` with the accepted carrier and red route-contract
+changes already present. The exact affected-file mypy command initially reported **14**
+`union-attr` errors: `CompletedResponse.selected_player` and `scores` became optional for the
+accepted unavailable state while `public_rating_v2`, `_game_evidence`, and `_event_candidates`
+still dereferenced them as unconditional available data.
+
+The mapper is reached by normal callback flow only for available completed results because
+`_callback_payload` returns explicit unavailable callbacks earlier. Direct mapper callers can still
+provide either completed state, so `public_rating_v2` now rejects explicit unavailable completion
+with a clear error. The available branch checks selected player and scores before mapping; the two
+helper paths repeat the relevant runtime validation before dereference. No cast, ignore, fabricated
+player, empty score, zero rating, formula, or response-model change was used. A focused mapper
+regression test proves an unavailable completed response cannot be projected as available V2 ratings;
+the existing available mapping tests remain unchanged.
+
+Post-change mypy is **green** for `src/api/public_rating_mapper.py`. Mapper/internal tests are
+**16/16**; callback availability **6/6**; existing callback/schema **17/17** (the mapper regression
+adds one test); parent/child **15/15** with workspace-local pytest temp; dominant-target **28/28**;
+offline baseline **42/42**; and the explicitly green combined matrix **93/93**. Ruff and format,
+syntax/import, and diff validation pass. The resolver-integration contract remains **4 expected red
+failures** for unchanged reasons: no resolver invocation and unavailable paths still entering
+`_completed` under the separately deferred green phase.

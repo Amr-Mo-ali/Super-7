@@ -154,6 +154,21 @@ def test_public_ratings_preserve_engine_evidence_gates_and_unsupported_categorie
         assert rating.reason == "unsupported_by_current_pipeline"
 
 
+def test_unavailable_completed_response_is_not_projected_as_available_public_ratings() -> None:
+    raw = _completed(_summary()).model_dump(mode="json")
+    raw.update(
+        result_availability="UNAVAILABLE",
+        unavailability_reason="ambiguous_visual_target",
+        selected_player=None,
+        scores=None,
+        player_rating_summary=None,
+    )
+    unavailable = CompletedResponse.model_validate(raw)
+
+    with pytest.raises(ValueError, match="cannot be projected"):
+        public_rating_v2(unavailable)
+
+
 def test_public_overall_stays_unavailable_when_engine_has_one_supported_category() -> None:
     summary = _summary(_technical(), _physical(None), _interactions(coverage=0.0))
     response = public_rating_v2(_completed(summary))

@@ -291,3 +291,16 @@ The four tests are deliberately red against current behavior: the route remains 
 does not import/call the resolver, and proceeds into `_completed`. This is a review gate only. No
 resolver implementation, production route wiring, target-unavailable emission, formula/API/config
 change, inference, delivery, deployment, commit, or push is authorized by this test contract.
+
+## Public mapper type-safety hotfix (2026-08-31)
+
+The accepted optional internal carrier state made direct `CompletedResponse` field dereferences in
+`public_rating_v2` type-unsafe. Normal unavailable callbacks do not reach that mapper because the
+callback boundary maps them first; direct callers still can, so the mapper now explicitly rejects
+`result_availability="UNAVAILABLE"` rather than projecting fabricated player-attributed V2 data.
+Its available path and the two lower-level evidence/event helpers verify non-null selected player
+and scores before use, failing clearly if an invalid state bypasses model validation.
+
+This is a narrow type-safety boundary repair only. It preserves available V2 values and formulas,
+does not redesign the V2 unavailable shape, and does not implement or alter the pending resolver
+route integration. The four route-contract failures therefore remain the intended review gate.
