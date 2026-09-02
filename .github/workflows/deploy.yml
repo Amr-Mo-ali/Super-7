@@ -1,35 +1,131 @@
 name: Deploy
 
 on:
-  # Run only after the existing CI workflow completes for main.
-  workflow_run:
-    workflows: ["CI"]
-    types:
-      - completed
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      deploy_sha:
+        description: Exact reviewed 40-character commit SHA from main
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: production-deploy
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate reviewed deployment SHA
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      deploy_sha: ${{ steps.validate.outputs.deploy_sha }}
+      ci_head_sha: ${{ steps.validate.outputs.ci_head_sha }}
+      ci_conclusion: ${{ steps.validate.outputs.ci_conclusion }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit ancestry and exact CI success
+        id: validate
+        env:
+          REQUESTED_SHA: ${{ inputs.deploy_sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          deploy_sha="${REQUESTED_SHA,,}"
+          if [[ ! "$deploy_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "deploy_sha must be exactly 40 hexadecimal characters."
+            exit 1
+          fi
+
+          git fetch --no-tags --quiet origin main:refs/remotes/origin/main
+          if ! git cat-file -e "${deploy_sha}^{commit}"; then
+            echo "deploy_sha is not an existing commit."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$deploy_sha" origin/main; then
+            echo "deploy_sha is not an ancestor of origin/main."
+            exit 1
+          fi
+
+          ci_run="$(gh api --method GET --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${deploy_sha}&branch=main&event=push&status=completed&per_page=100" \
+            | jq -s --arg sha "$deploy_sha" '
+                [.[].workflow_runs[] | select(
+                  .head_sha == $sha and
+                  .head_branch == "main" and
+                  .event == "push" and
+                  .status == "completed" and
+                  .conclusion == "success"
+                )] | sort_by(.run_number) | last // empty
+              ')"
+          if [[ -z "$ci_run" ]]; then
+            echo "No successful completed CI run exists for deploy_sha."
+            exit 1
+          fi
+
+          ci_head_sha="$(jq -r '.head_sha' <<<"$ci_run")"
+          ci_conclusion="$(jq -r '.conclusion' <<<"$ci_run")"
+          if [[ "$ci_head_sha" != "$deploy_sha" || "$ci_conclusion" != "success" ]]; then
+            echo "CI evidence does not match the requested SHA."
+            exit 1
+          fi
+
+          {
+            echo "deploy_sha=$deploy_sha"
+            echo "ci_head_sha=$ci_head_sha"
+            echo "ci_conclusion=$ci_conclusion"
+          } >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy to production
-    if: github.event.workflow_run.conclusion == 'success'
+    needs:
+      - validate
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.validate.result == 'success' &&
+      needs.validate.outputs.ci_head_sha == needs.validate.outputs.deploy_sha &&
+      needs.validate.outputs.ci_conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
+    env:
+      DEPLOY_SHA: ${{ needs.validate.outputs.deploy_sha }}
     steps:
+      - name: Reconfirm full SHA and exact CI success
+        env:
+          VALIDATED_DEPLOY_SHA: ${{ needs.validate.outputs.deploy_sha }}
+          VALIDATED_HEAD_SHA: ${{ needs.validate.outputs.ci_head_sha }}
+          VALIDATED_CI_CONCLUSION: ${{ needs.validate.outputs.ci_conclusion }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          full_sha_length=40
+          if [[ ! "$VALIDATED_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Validated deploy_sha is not a full 40-character SHA."
+            exit 1
+          fi
+          if [[ "$VALIDATED_HEAD_SHA" != "$VALIDATED_DEPLOY_SHA" || "$VALIDATED_CI_CONCLUSION" != "success" ]]; then
+            echo "Validated CI evidence does not match deploy_sha."
+            exit 1
+          fi
+          test "${#VALIDATED_DEPLOY_SHA}" -eq "$full_sha_length"
+
       - name: Pull, build, and restart production service
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: DEPLOY_SHA
           script_stop: true
           command_timeout: 15m
           script: |
@@ -69,13 +165,32 @@ jobs:
               exit 1
             fi
 
-            if [ "$(git branch --show-current)" != "main" ]; then
-              echo "Deployment failed: production Git branch is not main."
+            deploy_sha="${DEPLOY_SHA:-}"
+            if [[ ! "$deploy_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Deployment failed: DEPLOY_SHA is not a full lowercase SHA."
               deployment_failed
               exit 1
             fi
 
-            git pull --ff-only origin main
+            git fetch --no-tags --quiet origin main:refs/remotes/origin/main
+            if ! git cat-file -e "${deploy_sha}^{commit}"; then
+              echo "Deployment failed: requested SHA is not a commit."
+              deployment_failed
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$deploy_sha" origin/main; then
+              echo "Deployment failed: requested SHA is not an ancestor of origin/main."
+              deployment_failed
+              exit 1
+            fi
+
+            git checkout --detach "$deploy_sha"
+            if [ "$(git rev-parse HEAD)" != "$deploy_sha" ]; then
+              echo "Deployment failed: checked-out HEAD does not equal DEPLOY_SHA."
+              deployment_failed
+              exit 1
+            fi
+
             docker compose config --quiet
             docker compose build
             docker compose up -d
@@ -93,6 +208,6 @@ jobs:
               fi
             done
 
-            echo "Deployment failed: $health_url did not return HTTP 2xx within $((max_attempts * retry_delay_seconds)) seconds."
+            echo "Deployment failed: readiness did not return HTTP 2xx within $((max_attempts * retry_delay_seconds)) seconds."
             deployment_failed
             exit 1

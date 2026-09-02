@@ -154,3 +154,84 @@ Unresolved or externally verified questions:
 still deploy an unpinned latest `main` state. GO for a separately reviewed
 implementation phase that includes manual dispatch plus explicit reviewed-SHA
 selection/validation, retaining the existing guards and deployment commands.
+
+## Green implementation evidence
+
+The deployment workflow now implements the approved manual, reviewed-SHA
+contract. Its only trigger is `workflow_dispatch` with required string input
+`deploy_sha`, and its permissions are limited to `contents: read` and
+`actions: read`. A preceding `validate` job normalizes and validates a full
+40-character hexadecimal SHA, fetches `origin/main`, verifies commit existence
+and ancestry, and uses read-only Actions API metadata to require a completed
+successful `ci.yml` run whose `head_sha` is exactly the requested commit.
+
+The validation job owns the canonical `deploy_sha` output. The dependent
+production job consumes only that output, reconfirms the SHA/CI relationship,
+and transfers it through the SSH action's `envs: DEPLOY_SHA` mechanism. The
+remote script repeats clean-tree, fetch, format, commit, ancestry, detached
+checkout, and `git rev-parse HEAD` equality checks before Compose config/build
+and `up -d`; the latest-main `git pull` behavior is removed. The production
+Environment, serialized `production-deploy` concurrency, existing secrets,
+Compose commands, health checks, and diagnostic failure handling remain.
+
+The contract suite is green: `13 passed` with one local pytest cache-permission
+warning. YAML parsing, syntax compilation, Ruff check, Ruff format check,
+Markdown link validation, and `git diff --check` also pass. Verification is
+static/local only: no GitHub API, SSH, Docker, dispatch, network, or production
+execution was performed. Environment reviewer settings and branch protection
+remain external and unknown; automatic rollback and all previously listed
+deployment expansions remain deferred. No deployment was performed.
+
+## Tests-first contract (red phase)
+
+The approved future contract is now encoded in
+`tests/ci/test_manual_deploy_workflow_contract.py` (13 deterministic tests).
+It requires `workflow_dispatch` only; a required full 40-character
+`deploy_sha`; fresh `origin/main` fetch and ancestry validation; exact CI
+success for that SHA; a validation job whose output feeds the deployment job;
+explicit server-side SHA transfer, checkout, and `HEAD` verification before
+Compose mutation; and preservation of the `production` environment and
+serialized `production-deploy` concurrency. The current `git pull --ff-only
+origin main` path is explicitly forbidden.
+
+The tests inspect the workflow locally using only the standard library. They
+perform no YAML dependency installation, network/API call, SSH, Docker,
+GitHub dispatch, or production access. Existing workflow-related test coverage
+is absent, so this module is the first repository-local workflow contract.
+
+The original red run against the pre-implementation workflow had the
+preserved environment and concurrency tests passing while the manual-trigger,
+reviewed-SHA, exact-CI, validation-dependency, validated-output, pinned-
+checkout, and no-latest-main tests failed. Those failures were intentional
+contract failures; the subsequent green implementation is recorded above.
+Automatic rollback,
+blue/green or canary deployment, registries, Kubernetes/GitOps/Terraform,
+staging or multi-region environments, Environment reviewer changes, and
+branch-protection changes remain explicitly deferred.
+
+## Corrective patch evidence
+
+The human-review audit identified three blockers and they are now corrected:
+both hosted and remote fetches explicitly update
+`refs/remotes/origin/main`; the Actions request uses read-only `--method GET`
+with `head_sha`, `branch=main`, `event=push`, and `status=completed` filters and
+independently checks every returned run predicate; and both jobs require the
+workflow execution ref `refs/heads/main` in addition to SHA ancestry.
+
+The contract tests were refactored to parse the workflow with the existing
+PyYAML `BaseLoader`, preserving the literal top-level `on` key. Triggers,
+inputs, jobs, guards, outputs, dependencies, permissions, environment,
+concurrency, action steps, environments, SSH `envs`, and parsed shell/script
+values are tested semantically rather than through whole-file text matching.
+Regression coverage now totals 15 tests, including comment resistance,
+explicit fetch mapping, API method/filter/returned-event checks, and main-ref
+dispatch protection.
+
+The intermediate red run after test-first refinement was `15 collected; 4
+failed, 11 passed`, exclusively for the missing guards, ambiguous fetches, and
+incomplete API semantics. After the workflow correction, the contract suite is
+`15 passed` (one local pytest cache-permission warning). No external GitHub,
+SSH, Docker, dispatch, network, or production execution was performed.
+Environment deployment-branch restrictions remain an external setting to
+verify before live use; automatic rollback and other deferred deployment
+expansions remain unchanged.
