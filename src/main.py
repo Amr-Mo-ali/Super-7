@@ -94,7 +94,10 @@ def create_app(
         resolved_process_pool, resolved_callback_service, get_logger("football_analysis.api")
     )
     worker = AnalysisWorker(
-        resolved_analysis_queue, processor, get_logger("football_analysis.worker")
+        resolved_analysis_queue,
+        processor,
+        get_logger("football_analysis.worker"),
+        resolved_settings.analysis_shutdown_grace_seconds,
     )
 
     @asynccontextmanager
