@@ -380,3 +380,74 @@ Observation period: 2026-09-03 14:27–14:38 UTC
 - Manual rollback has not been exercised
 - `SERVER_USER` remains unknown
 - Overall deployment authorization remains pending final human approval
+
+## First manual production deployment — 2026-09-03
+
+### Workflow
+
+- Deploy run ID: `33792863277`
+- URL: [https://github.com/Amr-Mo-ali/Super-7/actions/runs/33792863277](https://github.com/Amr-Mo-ali/Super-7/actions/runs/33792863277)
+- Trigger: `workflow_dispatch`
+- Workflow ref: `main`
+- Target SHA: `54c6d00aacc1edba0c458c67de359b6fbe1f9882`
+- Validation job completed successfully in 7 seconds
+- Exact SHA ancestry and exact successful CI evidence passed
+- Production job waited for Environment approval
+- `Amr-Mo-ali` approved production deliberately
+- Deploy job completed successfully in 9 minutes 41 seconds
+- Total run duration included the approval wait
+- No automatic deployment trigger was involved
+
+### Workflow warning
+
+- GitHub emitted a non-blocking Node.js 20 deprecation annotation for
+  `actions/checkout@v4`
+- GitHub forced the action to Node.js 24
+- The warning did not fail this deployment
+- Updating the action version remains a separately reviewed maintenance item
+
+### Post-deployment production verification
+
+Observation time: approximately 2026-09-03 19:16 UTC
+
+- Repository working tree: clean
+- Deployed SHA: `54c6d00aacc1edba0c458c67de359b6fbe1f9882`
+- `origin/main` SHA: `54c6d00aacc1edba0c458c67de359b6fbe1f9882`
+- Repository is in detached HEAD state by design
+- Docker Compose configuration remained valid
+- Container: `super-7-football-analysis-1`
+- Container status: running and healthy
+- Restart count: 0
+- Container start time: `2026-09-03T19:09:03.696241309Z`
+- New production image: `sha256:70d7229b71ddf5a880ae821f04646f537db550c6b0e9b400d1dbbcfc9800457f`
+- Five OpenAPI requests returned HTTP 200
+- Observed response times: `0.028791s`, `0.009155s`, `0.013168s`,
+  `0.002119s`, `0.002922s`
+- Observed CPU: approximately 0.25%
+- Observed memory: approximately 63.97 MiB
+- Logs contained normal detector/application startup entries
+- No `ERROR`, `WARNING`, `Traceback`, or `Exception` was observed in the
+  inspected deployment log window
+
+### Rollback preservation
+
+- Rollback tag remains: `football-analysis:rollback-f69c741`
+- Rollback image remains: `sha256:1815c0670b0f362327c72a3777101901328369b7a6b2d4a95394aeb4c899ea2f`
+- No rollback was required or executed
+- Rollback remains manual and untested
+- Do not prune either image yet
+
+### Limitations
+
+- OpenAPI health proves service availability, not analysis correctness
+- No real video/model inference smoke test has been performed
+- No callback delivery smoke test has been performed
+- `.env` remains mode `644` because `SERVER_USER` is unknown
+- Automatic rollback remains unavailable
+- Independent production approval is not present
+- Production approval was self-approval
+
+### Classification
+
+First reviewed-SHA manual production deployment completed successfully;
+functional analysis and callback smoke validation remain pending.
