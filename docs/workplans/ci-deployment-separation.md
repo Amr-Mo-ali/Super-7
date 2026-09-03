@@ -300,3 +300,83 @@ deployment approval was granted, no production mutation occurred, and
 production was not accessed. Automatic rollback remains deferred. The
 owner-provided observations were recorded without querying GitHub APIs or
 accessing secrets.
+
+## Production preflight and rollback preparation — 2026-09-03
+
+### Production preflight
+
+Observation period: 2026-09-03 14:27–14:38 UTC
+
+- Server: `srv1529697`
+- Observed shell user: `root`
+- Application directory: `/opt/Super-7`
+- Repository working tree: clean
+- Current branch: `main`
+- Current production SHA: `f69c7415a05cc2c4bccc35b2c4c5f5f57ff07201`
+- Target deployment SHA: `54c6d00aacc1edba0c458c67de359b6fbe1f9882`
+- Docker Compose configuration: valid
+- Container: `super-7-football-analysis-1`
+- Service: `football-analysis`
+- Container state: running and healthy
+- Restart policy: `unless-stopped`
+- Current image: `sha256:1815c0670b0f362327c72a3777101901328369b7a6b2d4a95394aeb4c899ea2f`
+- OpenAPI returned HTTP 200 in approximately 0.003–0.006 seconds
+- Later CPU observation was approximately 0.22%
+- `docker top` showed Uvicorn around 0.2% CPU
+- No matching analysis, callback, warning, error, or traceback entries appeared
+  in the inspected 60-minute log window
+- Idle status is observational, not a durable queue-state guarantee
+
+#### Resources
+
+- 4 CPU cores
+- Approximately 15 GiB RAM
+- Approximately 14 GiB available RAM
+- No swap
+- Approximately 162 GiB disk available
+- Disk usage approximately 17%
+- Docker build cache approximately 17.41 GB
+- No prune was performed
+
+#### Models/configuration
+
+- `models/yolo11n.pt` exists
+- Observed model size: 5,613,764 bytes
+- `.env` exists
+- `.env` owner: `root:root`
+- `.env` permissions: `644`
+- `SERVER_USER` remains unknown
+- `.env` permission hardening is deferred
+- The `644` permissions must not be described as secure
+
+#### Shutdown
+
+- Container-specific stop timeout is unset
+- Docker Compose default stop grace is 10 seconds
+- Application analysis shutdown grace is 5 seconds
+- Explicit `stop_grace_period` remains deferred
+- Deployment must occur only while analysis appears idle
+
+### Rollback preparation
+
+- Rollback SHA: `f69c7415a05cc2c4bccc35b2c4c5f5f57ff07201`
+- Rollback tag: `football-analysis:rollback-f69c741`
+- Rollback image: `sha256:1815c0670b0f362327c72a3777101901328369b7a6b2d4a95394aeb4c899ea2f`
+- The tag was created and verified
+- The running container remained healthy
+- OpenAPI remained HTTP 200
+- Tagging changed Docker image metadata only
+- No container restart, stop, rebuild, or replacement occurred
+- Docker prune must not run before deployment validation completes
+
+### Limitations
+
+- Manual deployment has not started
+- No workflow dispatch or Environment approval occurred
+- The target SHA is not deployed
+- No new image was built
+- No real video/model inference was run
+- Automatic rollback does not exist
+- Manual rollback has not been exercised
+- `SERVER_USER` remains unknown
+- Overall deployment authorization remains pending final human approval
