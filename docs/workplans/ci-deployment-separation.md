@@ -235,3 +235,23 @@ SSH, Docker, dispatch, network, or production execution was performed.
 Environment deployment-branch restrictions remain an external setting to
 verify before live use; automatic rollback and other deferred deployment
 expansions remain unchanged.
+
+## Empirically validated main-branch CI without automatic deployment
+
+Validation date: 2026-09-03
+
+Validated main commit: `54c6d00aacc1edba0c458c67de359b6fbe1f9882`
+CI run: [33756521268](https://github.com/Amr-Mo-ali/Super-7/actions/runs/33756521268)
+
+The successful CI run completed with `status: completed` and
+`conclusion: success`; its `headSha` exactly matched the validated `main`
+commit. The deployment workflow on `main` exposes `workflow_dispatch`. The
+`workflow_runs[]` text present in that file belongs to the GitHub Actions API
+`jq` query and is not a `workflow_run` trigger.
+
+Querying Deploy runs for the exact main SHA returned no results. No automatic
+deployment occurred after the merge. This is empirical evidence of CI running
+on `main` without automatic deployment. Manual production deployment was not
+tested; GitHub Environment protections were not verified; rollback was not
+tested; and production was not changed. No workflow dispatch, SSH, Docker, or
+runtime operation occurred.
