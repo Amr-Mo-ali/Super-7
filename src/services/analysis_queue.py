@@ -105,7 +105,14 @@ class AnalysisQueue:
         return _milliseconds(timing.started_at - timing.enqueued_at)
 
     def mark_finished(self, job: AnalysisJob, state: AnalysisJobState) -> float | None:
-        was_running = self._states.get(job.analysis_id) is AnalysisJobState.RUNNING
+        current_state = self._states.get(job.analysis_id)
+        if current_state in {
+            AnalysisJobState.COMPLETED,
+            AnalysisJobState.FAILED,
+            AnalysisJobState.CANCELLED,
+        }:
+            return None
+        was_running = current_state is AnalysisJobState.RUNNING
         self._states[job.analysis_id] = state
         self._queue.task_done()
         if was_running:
@@ -158,11 +165,14 @@ class AnalysisWorker:
         queue: AnalysisQueue,
         processor: Callable[[AnalysisJob], Awaitable[AnalysisJobState]],
         logger: logging.Logger,
+        shutdown_grace_seconds: float = 5.0,
     ) -> None:
         self._queue = queue
         self._processor = processor
         self._logger = logger
         self._task: asyncio.Task[None] | None = None
+        self._active_job: AnalysisJob | None = None
+        self._shutdown_grace_seconds = shutdown_grace_seconds
         self._shutdown_started = False
         self._shutdown_finished = False
         self._cancelled_queued_job_count = 0
@@ -176,7 +186,15 @@ class AnalysisWorker:
     async def shutdown(self) -> None:
         self.begin_shutdown()
         if self._task is not None:
-            self._task.cancel()
+            if self._active_job is None:
+                self._task.cancel()
+            else:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(self._task), timeout=self._shutdown_grace_seconds
+                    )
+                except TimeoutError:
+                    self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
@@ -233,6 +251,8 @@ class AnalysisWorker:
 
     async def _run(self) -> None:
         while True:
+            if self._shutdown_started:
+                return
             job = await self._queue.next_job()
             queue_wait_ms = self._queue.mark_running(job)
             if queue_wait_ms is None:
@@ -252,6 +272,7 @@ class AnalysisWorker:
                 self._queue.metrics(),
                 queue_wait_ms=queue_wait_ms,
             )
+            self._active_job = job
             try:
                 state = await self._processor(job)
             except asyncio.CancelledError:
@@ -264,7 +285,11 @@ class AnalysisWorker:
             except Exception:
                 state = AnalysisJobState.FAILED
                 self._logger.exception("analysis_job_failed analysis_id=%s", job.analysis_id)
-            self._finish_started_job(job, state)
+                self._finish_started_job(job, state)
+            else:
+                self._finish_started_job(job, state)
+            finally:
+                self._active_job = None
 
     def _finish_started_job(
         self,

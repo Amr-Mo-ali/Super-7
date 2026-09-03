@@ -59,9 +59,14 @@ def _response(request: ChildAnalysisRequest) -> NonCompletedResponse:
     )
 
 
-def _app(pool: FakeProcessPoolLifecycle, queue: AnalysisQueue, callback: _Callback) -> FastAPI:
+def _app(
+    pool: FakeProcessPoolLifecycle,
+    queue: AnalysisQueue,
+    callback: _Callback,
+    settings: Settings | None = None,
+) -> FastAPI:
     return create_app(
-        Settings(),
+        settings or Settings(),
         path_resolver=cast(VideoPathResolver, _Resolver()),
         analysis_queue=queue,
         callback_service=cast(CallbackService, callback),
@@ -265,7 +270,7 @@ def test_shutdown_cancels_active_parent_wait_and_rejects_admission() -> None:
         pool = _ShutdownBlockingPool(
             execute_started, execute_release, shutdown_started, shutdown_release
         )
-        app = _app(pool, queue, callback)
+        app = _app(pool, queue, callback, Settings(analysis_shutdown_grace_seconds=0.01))
 
         async def run_lifespan() -> None:
             async with app.router.lifespan_context(app):

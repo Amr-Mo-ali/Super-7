@@ -168,7 +168,12 @@ def test_worker_cancellation_finalizes_the_started_analysis_once(
             await blocked.wait()
             return AnalysisJobState.COMPLETED
 
-        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.cancellation"))
+        worker = AnalysisWorker(
+            queue,
+            processor,
+            logging.getLogger("test.queue.cancellation"),
+            shutdown_grace_seconds=0.01,
+        )
         assert await queue.submit(_job("running"))
         assert await queue.submit(_job("waiting"))
         await worker.start()
@@ -214,7 +219,10 @@ def test_worker_cancellation_during_inline_callback_phase_finalizes_the_job(
             return AnalysisJobState.COMPLETED
 
         worker = AnalysisWorker(
-            queue, processor, logging.getLogger("test.queue.callback_cancellation")
+            queue,
+            processor,
+            logging.getLogger("test.queue.callback_cancellation"),
+            shutdown_grace_seconds=0.01,
         )
         assert await queue.submit(_job("callback-running"))
         await worker.start()
@@ -233,6 +241,76 @@ def test_worker_cancellation_during_inline_callback_phase_finalizes_the_job(
     ]
     assert len(terminal) == 1
     assert "final_state=CANCELLED" in terminal[0]
+
+
+def test_shutdown_records_active_completion_and_does_not_start_waiting_job() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(2)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+
+        async def processor(job: AnalysisJob) -> AnalysisJobState:
+            processed.append(job.analysis_id)
+            started.set()
+            await release.wait()
+            return AnalysisJobState.COMPLETED
+
+        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.grace"), 0.1)
+        assert await queue.submit(_job("running"))
+        assert await queue.submit(_job("waiting"))
+        await worker.start()
+        await started.wait()
+        worker.begin_shutdown()
+        shutdown = asyncio.create_task(worker.shutdown())
+        release.set()
+        await shutdown
+        assert queue.state_of("running") is AnalysisJobState.COMPLETED
+        assert queue.state_of("waiting") is AnalysisJobState.CANCELLED
+        assert processed == ["running"]
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_records_active_failure_within_grace() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(1)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def processor(_: AnalysisJob) -> AnalysisJobState:
+            started.set()
+            await release.wait()
+            raise RuntimeError("expected failure")
+
+        worker = AnalysisWorker(
+            queue, processor, logging.getLogger("test.queue.grace_failure"), 0.1
+        )
+        assert await queue.submit(_job("failing"))
+        await worker.start()
+        await started.wait()
+        worker.begin_shutdown()
+        shutdown = asyncio.create_task(worker.shutdown())
+        release.set()
+        await shutdown
+        assert queue.state_of("failing") is AnalysisJobState.FAILED
+
+    asyncio.run(scenario())
+
+
+def test_idle_shutdown_is_prompt() -> None:
+    async def scenario() -> None:
+        queue = AnalysisQueue(1)
+
+        async def processor(_: AnalysisJob) -> AnalysisJobState:
+            raise AssertionError("idle worker must not process a job")
+
+        worker = AnalysisWorker(queue, processor, logging.getLogger("test.queue.idle"), 0.01)
+        await worker.start()
+        await asyncio.wait_for(worker.shutdown(), timeout=0.1)
+        assert queue.metrics().worker_running is False
+
+    asyncio.run(scenario())
 
 
 async def _wait_for(predicate: object) -> None:

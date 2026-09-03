@@ -1,6 +1,7 @@
 """Immutable runtime configuration for the MVP."""
 
 from dataclasses import dataclass, field
+from math import isfinite
 from os import environ
 
 from config.debug import DebugSettings
@@ -14,6 +15,7 @@ class Settings:
     max_upload_bytes: int = 100 * 1024 * 1024
     download_timeout_seconds: float = 30.0
     callback_timeout_seconds: float = 10.0
+    analysis_shutdown_grace_seconds: float = 5.0
     max_queued_analyses: int = 10
     video_storage_root: str = "/videos"
     max_duration_seconds: float = 15 * 60
@@ -205,6 +207,11 @@ class Settings:
             raise ValueError("download_timeout_seconds must be positive.")
         if self.callback_timeout_seconds <= 0:
             raise ValueError("callback_timeout_seconds must be positive.")
+        if (
+            not isfinite(self.analysis_shutdown_grace_seconds)
+            or self.analysis_shutdown_grace_seconds <= 0
+        ):
+            raise ValueError("analysis_shutdown_grace_seconds must be finite and positive.")
         if self.max_queued_analyses <= 0:
             raise ValueError("max_queued_analyses must be positive.")
         if self.request_deadline_seconds <= 0:
@@ -217,6 +224,9 @@ class Settings:
             max_upload_bytes=int(environ.get("MAX_UPLOAD_BYTES", 100 * 1024 * 1024)),
             download_timeout_seconds=float(environ.get("DOWNLOAD_TIMEOUT_SECONDS", 30.0)),
             callback_timeout_seconds=float(environ.get("CALLBACK_TIMEOUT_SECONDS", 10.0)),
+            analysis_shutdown_grace_seconds=float(
+                environ.get("ANALYSIS_SHUTDOWN_GRACE_SECONDS", 5.0)
+            ),
             max_queued_analyses=int(environ.get("MAX_QUEUED_ANALYSES", 10)),
             video_storage_root=environ.get("VIDEO_STORAGE_ROOT", "/videos"),
             max_duration_seconds=float(environ.get("MAX_DURATION_SECONDS", 15 * 60)),

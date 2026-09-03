@@ -54,3 +54,8 @@ flowchart TB
 Configuration is the immutable [`Settings`](../../src/core/config.py): environment-backed operational values include video root, model paths/device/thresholds, queue capacity, callback timeout, request/video limits and debug retention. Many football thresholds are static product configuration. Docker uses one Compose service, exposes `0.0.0.0:8000`, mounts `/models` and Apex video storage read-only, and healthchecks `/openapi.json` ([`Dockerfile`](../../Dockerfile), [`docker-compose.yml`](../../docker-compose.yml)). CI runs lint, format, mypy, tests and image build; deploy is main-only and guard-protected ([workflows](../../.github/workflows/)).
 
 Current limitations: no database/broker/outbox, no restart recovery, no atomic idempotency, no hard task kill, no multi-instance coordination, no callback delivery persistence or authentication/signature, and no parallel video execution.
+
+
+## Shutdown grace update (2026-08-31)
+
+`AnalysisWorker` now owns a bounded five-second active-analysis shutdown grace supplied by internal `Settings`. Shutdown still closes admission and cancels queued in-memory jobs; it waits only for the one active processor to return and records its actual `COMPLETED` or `FAILED` result. At grace expiry it cancels the remaining active worker task, preserving `CANCELLED` behavior. Idle workers stop promptly and the consumer does not start another queued job after shutdown begins. This does not make `RequestLifecycle.shutdown()` or process-pool shutdown bounded, add durability, change callback semantics, or alter the one-worker architecture. Before deployment, the container/process supervisor must allow more than five seconds before forceful termination.

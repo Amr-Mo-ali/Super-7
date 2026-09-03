@@ -5,6 +5,8 @@
 .mypy_cache/
 .ruff_cache/
 .vscode/
+.postman/
+postman/
 __pycache__/
 *.py[cod]
 dist/
