@@ -255,3 +255,48 @@ on `main` without automatic deployment. Manual production deployment was not
 tested; GitHub Environment protections were not verified; rollback was not
 tested; and production was not changed. No workflow dispatch, SSH, Docker, or
 runtime operation occurred.
+
+## Owner-verified minimum GitHub production protection configuration — 2026-09-03T13:33:28Z
+
+The repository owner supplied the following GitHub observations for
+`Amr-Mo-ali/Super-7` (public, default branch `main`). This section is
+owner-observed evidence, not a Codex API audit.
+
+### Observed
+
+- Default Actions workflow permissions are read-only; pull-request review
+  approval by the workflow token is disabled.
+- The `production` Environment exists with custom deployment branch policies.
+- The allowed deployment branch is `main`; administrators cannot bypass the
+  Environment protection.
+- The required reviewer is `Amr-Mo-ali`; self-review prevention is disabled.
+- Main branch protection enforces administrators, requires pull-request flow,
+  requires the `quality` status check from app `15368`, and uses strict
+  up-to-date checks.
+- Force pushes and branch deletion are disabled.
+- No repository rulesets were observed during the owner’s audit.
+
+### Protected and interpreted
+
+Production is restricted to `main` and requires deliberate approval by
+`Amr-Mo-ali`. Because self-review prevention is disabled, this is self-approval
+rather than independent peer approval. Main requires a pull request and the
+GitHub Actions `quality` check on an up-to-date branch; the protection applies
+to the repository administrator. The configuration is the approved minimum
+for the current solo-maintainer stage. A second independent reviewer remains a
+future improvement when another trusted maintainer is available.
+
+### Missing or limited
+
+Main’s required approving-review count is currently zero, so no peer approval
+is required. No independent peer review is claimed. No automated rollback or
+rollback test is claimed.
+
+### Unknown and scope limits
+
+This evidence does not audit every GitHub account or repository permission.
+Manual deployment has not been tested, no workflow was dispatched, no
+deployment approval was granted, no production mutation occurred, and
+production was not accessed. Automatic rollback remains deferred. The
+owner-provided observations were recorded without querying GitHub APIs or
+accessing secrets.
