@@ -612,3 +612,56 @@ actual terminal outcome.
 The original integration regression now passes **10/10** in fresh processes. Focused configuration/worker/integration coverage is **26/26**; integration directory **25/25**; dominant/callback **44/44**; parent/child **33/33**; and full pytest is **396 passed, 1 Windows symlink-privilege skip**. `uv run mypy src tests` and `uv run mypy src` pass, as do Ruff and formatting checks. The earlier expected total of 389 is historical; current remote HEAD collects additional tests.
 
 Deferred and unchanged: `RequestLifecycle.shutdown()` and `ProcessAnalysisPool.shutdown()` remain unbounded, restart recovery remains in-memory only, and queue persistence is not added. Container/supervisor forced-stop allowance must exceed five seconds before deployment; no Docker, Compose, CI, deployment, commit, or push change occurred.
+
+## Final repository-audit human review and incident correction — 2026-09-05
+
+The final documentation-only review started on `docs/ci-main-validation` at
+`22c1f8d310d124e23ef3c43ee247568be1e2a2de`. `git status --short` reported only untracked
+`docs/workplans/system-audit-2026-09-04.md`; `git status -sb` reported the branch tracking
+`origin/main` and ahead by four; both unstaged and cached `git diff --name-status` were empty. The
+index therefore had no changes. `git show --stat --summary HEAD` identified
+`docs(ci): record first manual production deployment` and only
+`docs/workplans/ci-deployment-separation.md`. `git rev-list --left-right --count
+origin/main...HEAD` returned `0 4`. The required production-to-HEAD name-status diff returned only
+`M docs/workplans/ci-deployment-separation.md`. These checks satisfied the stop gate: no runtime,
+test, workflow, configuration, dependency, or lockfile mutation existed.
+
+The complete review covered `docs/workplans/system-audit-2026-09-04.md`, this verification record,
+and `00-discovery-log.md`; the canonical handoff was read in mandated order, followed by relevant
+ADRs, contracts, runbooks, cited runtime/tests/workflows, and the manual-deployment record. Current
+findings, classifications, priorities, duplicates, command results, roadmap status, and file/line
+references were checked. Drifted citations were corrected for composition/queue/child entry,
+callback aliases and their existing test, rating engines, request/auth surfaces, deadline/readiness,
+the upload limit, interaction cap, exact dominance margin, contradictory callback test, artifact
+retention, and packaging/deploy sources. No finding was rejected, merged, downgraded, or silently
+weakened because the offline suite passed. F01 remains the highest-impact next implementation task;
+F02 and the rest of Sprint 1 remain incomplete. No ML calibration, production capacity, or latency
+claim was added.
+
+Owner evidence identifies the manually deployed production revision as
+`54c6d00aacc1edba0c458c67de359b6fbe1f9882`; the repository deployment record agrees. Local Git
+independently proves source equivalence: `git merge-base --is-ancestor <production-sha> HEAD`
+exited 0, `git merge-base <production-sha> HEAD` returned that exact SHA, and the four commits above
+it (`d2331ef`, `bc1a726`, `9b4c767`, `22c1f8d`) each modify only
+`docs/workplans/ci-deployment-separation.md`. The range name-status diff contains that one
+documentation path and no runtime difference. F01 is therefore confirmed in the deployed source,
+but its contribution to the reported attempt remains unverified.
+
+The incident correction preserves the remaining evidence boundary: no correlated raw callback
+transport field-name/presence evidence was captured; Apex DTO/controller/ORM mapping and its
+deployed SHA remain unavailable; and the database row alone cannot prove whether target
+unavailability, independent per-rating gates, callback alias loss, or persistence mapping produced
+each null field. The 46.856-second database timestamp interval has unknown boundaries and is not AI
+inference latency. Null ratings alone do not prove a correct target rejection.
+
+Final pre-commit documentation checks passed. The repository-relative Markdown-link validator
+resolved every link in all three audit documents; the trailing-whitespace scan found no match;
+`git diff --check` and the complete staged `git diff --cached --check` returned exit 0. The
+working-tree scope check found exactly the three authorized audit paths. The production SHA was the
+exact merge base and its diff to pre-audit HEAD contained only
+`docs/workplans/ci-deployment-separation.md`. Staging used the three explicit paths; cached
+name-status was exactly modified `00-discovery-log.md`, modified this file, and added
+`system-audit-2026-09-04.md`, with no unstaged path. The same scope/equivalence checks are repeated
+after commit. The full pytest/mypy/Ruff suite was not rerun because documentation verification found
+no concrete runtime reason. No real video/model inference, production call, GitHub API action, SSH,
+Docker, load test, deployment, or push occurred.
