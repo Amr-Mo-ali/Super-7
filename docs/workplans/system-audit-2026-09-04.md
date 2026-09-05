@@ -406,3 +406,83 @@ The single highest-impact next implementation task is **F01: fix and test canoni
 ## Documentation delivery / Git state
 
 Intended changes are this report plus append-only audit entries in `sprint-1/00-discovery-log.md` and `sprint-1/06-verification-results.md`. Existing historical entries are preserved. Before final-review mutation, no files were staged; this report was the sole dirty path and was untracked. Final-review authorization permits staging exactly these three documentation paths and creating one local documentation commit. No push, reset, stash, deployment, production access, GitHub API, SSH, Docker, load test, or real inference is part of delivery. Final scope/whitespace/link and production-to-audit runtime-equivalence checks are recorded in the appended verification entry.
+
+## F01 tests-first transport contract — 2026-09-05
+
+Source tracing reconfirmed the production path as internal `CompletedResponse` →
+`routes._callback_payload` → `CallbackPayload` → `CallbackService.send_result` → HTTP transport
+bytes. The schema declares `resultAvailability`, `unavailabilityReason`, and `overallConfidence`
+aliases, but `callback_service.py:142` serializes with `payload.model_dump(mode="json")` and does not
+set `by_alias=True`. Direct schema dumps with `by_alias=True` therefore do not prove the transmitted
+shape.
+
+The new focused red contract is
+`tests/services/test_callback_transport_alias_contract.py`. Its nine collected nodes use the real
+sender, a deterministic fake public-IP resolver, a byte-capturing successful transport, and a sleep
+that would fail if a retry occurred. Coverage includes explicit AVAILABLE, all three approved
+UNAVAILABLE reasons with no fabricated ratings, numeric-zero versus explicit-null confidence,
+existing legacy success and failure shapes, and real available/unavailable mapper projections.
+Parsed transport bytes are checked directly rather than compared with another model dump.
+
+Current result: **7 failed, 2 passed**. Every failure reports only the three missing camel-case
+aliases and the three unexpected snake-case forms; both legacy compatibility nodes pass. There was
+no import, schema-construction, DNS, network, callback, retry, platform, or environment failure.
+Existing callback tests are **12/12**, schema/internal-carrier tests **13/13**, and mapper tests
+**6/6** green. The pre-existing offline suite, with the intentional-red module excluded, is
+**411 passed, 1 skipped**; the skip is the documented Windows symlink-privilege case. An initial
+full-suite invocation supplied a nonexistent `--basetemp` parent and ended at 384 passed / 28 setup
+errors, all the same `FileNotFoundError`; creating the external parent and rerunning removed every
+setup error. Focused Ruff check/format, syntax compilation, and mypy over `src` plus the new and
+affected callback tests are green. The first test-only mypy command omitted `src` and consequently
+classified local packages as untyped installed distributions; the repository-shaped rerun reports
+no issues in 109 source files.
+
+This phase changes no runtime. The approved smallest green change remains canonical alias
+serialization at the single `send_result` transport boundary—equivalent to adding `by_alias=True`
+to that model dump—while preserving explicit nulls, numeric zero, legacy fields, compact JSON, and
+all current schema/formula behavior. F01 remains the highest-impact next implementation task and
+Sprint 1 remains incomplete. These deterministic tests do not establish ML calibration, capacity,
+incident causation, latency, or correct target rejection from null ratings.
+
+## F01 local green phase — 2026-09-05
+
+The audit finding remains historically accurate for committed/deployed source, but the current
+uncommitted working tree now contains the approved smallest repair. At the single sender boundary,
+`CallbackService.send_result` calls `payload.model_dump(mode="json", by_alias=True)` before the
+existing compact `json.dumps`. No schema, mapper, route, score, retry, URL-validation, transport,
+configuration, dependency, workflow, or lockfile behavior changed.
+
+The pre-change contract was reconfirmed at **7 failed / 2 passed**, with only the three missing
+camel-case aliases and corresponding snake-case keys. After the one-line semantic change, all nine
+actual-byte nodes pass, including AVAILABLE, every approved UNAVAILABLE reason, explicit null versus
+numeric zero, legacy forms, and real mapper projections. The existing generic callback test initially
+failed because its oracle repeated the old default model dump; its single assertion now requests
+aliases explicitly, while the independent transport contract continues to assert literal wire keys
+and values.
+
+Final implementation evidence is transport contract **9/9**, existing callback **12/12**,
+schema/internal carrier **13/13**, mapper **6/6**, and full offline suite **420 passed / 1 skipped**.
+Mypy is green across 175 source files; full Ruff lint/format and changed-file syntax compilation pass.
+The skip remains the documented Windows symlink-privilege case. This is a local, uncommitted and
+undeployed repair: it does not retroactively prove F01 caused the reported incident, change the
+missing Apex/raw-transport evidence boundary, establish calibrated ML quality or capacity, measure
+latency, or prove that null ratings mean correct target rejection. Sprint 1 remains incomplete.
+
+## F01 final commit review — 2026-09-05
+
+Human review accepted the six-path change set without further code changes. The sender diff adds only
+`by_alias=True`; it does not add `exclude_none`, `exclude_unset`, or `exclude_defaults`, so explicit
+nulls and numeric zero remain serialized. Retry delays, URL/DNS validation, redirect rejection,
+timeouts, logging, transport and caught exceptions are untouched. The existing callback-test diff
+changes only its expected model dump to request aliases. The nine-node transport contract uses the
+real sender with an injected local resolver, byte-capturing transport and fail-on-use sleep; it does
+not derive its alias expectations from the sender's default dump or depend on key order/source text.
+
+Final-review verification: transport **9/9**, callback/schema **12/12**, internal unavailable plus
+mapper **11/11**, parent/child plus process callback wiring **33/33**, and full offline suite
+**420 passed / 1 skipped**. Both mypy scopes, full Ruff lint/format, affected syntax/imports,
+Markdown links, trailing whitespace, diff checks and scope checks pass. The skip is only the known
+Windows symlink-privilege case. References above to an “uncommitted” working tree accurately record
+their earlier phase checkpoint; this reviewed set is the authorized local commit candidate and is
+still undeployed. Apex persistence and the historical incident's per-field causes remain externally
+unverified. Sprint 1, production readiness, rating calibration and capacity remain unestablished.

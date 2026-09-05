@@ -665,3 +665,158 @@ name-status was exactly modified `00-discovery-log.md`, modified this file, and 
 after commit. The full pytest/mypy/Ruff suite was not rerun because documentation verification found
 no concrete runtime reason. No real video/model inference, production call, GitHub API action, SSH,
 Docker, load test, deployment, or push occurred.
+
+## F01 callback transport red contract — 2026-09-05
+
+Starting gate: `docs/ci-main-validation` at
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`; `git status --short`, both working and cached
+name-status diffs were empty; `git status -sb` reported ahead 5; and
+`git rev-list --left-right --count origin/main...HEAD` returned `0 5`. `git show --stat --summary
+HEAD` identified `docs(audit): record Super-7 repository risk review`. No remote ref was fetched or
+changed.
+
+Current source proof: `CallbackPayload` declares the three confirmed camel-case aliases, mapper
+paths populate them, and `CallbackService.send_result` supplies bytes to its transport after
+`json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))`. Because this call omits
+`by_alias=True`, the actual transport body contains `result_availability`,
+`unavailability_reason`, and `overall_confidence`. Existing direct-schema alias tests do not cross
+this boundary.
+
+`tests/services/test_callback_transport_alias_contract.py` adds nine deterministic nodes. Each
+calls the real `send_result` with a local resolver returning `8.8.8.8`, a byte-capturing transport
+returning 204, and a sleep fake that raises if called. No resolver, HTTP, callback, or other network
+operation occurs. The parsed bytes cover explicit AVAILABLE; each approved UNAVAILABLE reason;
+`overallConfidence` numeric `0.0` versus explicit null; legacy success and the separate existing
+`FailedCallbackPayload` failure shape (which truthfully has no `detailed` field); and real mapper
+output for one available and one unavailable completed result.
+
+| Check | Exact result |
+|---|---|
+| New transport module alone | Final rerun: **7 failed, 2 passed in 1.44s**; every failure reports missing `overallConfidence`, `resultAvailability`, and `unavailabilityReason` plus unexpected `overall_confidence`, `result_availability`, and `unavailability_reason`; no other failure class |
+| Existing callback tests | **12 passed in 7.37s**: `tests/test_callback_service.py` and `tests/api/test_callback_target_availability_contract.py` |
+| Existing schema/internal-carrier tests | **13 passed in 0.64s**: `tests/test_model_contracts.py`, `tests/test_public_contract_stability.py`, and `tests/api/test_internal_target_unavailability_contract.py` |
+| Existing mapper tests | **6 passed in 0.61s**: `tests/test_player_rating_wiring.py` |
+| Existing full offline suite | **411 passed, 1 skipped in 11.19s**, excluding only the intentional-red module; skip is `test_rejects_a_symlink_that_escapes_storage_root` because Windows returned `WinError 1314` |
+| Mypy | `src` plus the new module and four affected callback/schema/mapper test files: **Success: no issues found in 109 source files** |
+| Ruff / format / syntax | New module: `All checks passed!`; `1 file already formatted`; `py_compile` exit 0 |
+
+The first full-suite attempt used a nested external `--basetemp` without first creating its parent:
+384 nodes passed and 28 `tmp_path` setups raised the same parent `FileNotFoundError`. The corrected
+invocation created that external parent and produced the green result above. The first test-only
+mypy invocation omitted `src`, so mypy treated repository packages as untyped installed modules;
+the source-inclusive command above is the valid project-shaped result. Neither invocation issue
+motivated a repository change.
+
+Only the new test and these three audit documents are authorized changes; runtime, API schema,
+scoring, configuration, dependencies, workflows, and lockfiles remain unchanged. The smallest
+separately approved green implementation is to add `by_alias=True` to the single model dump in
+`send_result`, preserving compact JSON, explicit nulls, numeric zero, legacy fields and all current
+schema/formula behavior. Sprint 1 remains incomplete, and the red contract makes no calibrated
+ML-quality, capacity, latency, production-incident-causation, or correct-target-rejection claim.
+
+## F01 green phase — red reconfirmation (2026-09-05)
+
+Before runtime mutation, the approved gate matched exactly: branch
+`docs/ci-main-validation`, HEAD `9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`, local
+`origin/main...HEAD` divergence `0 5`, empty index, and only the three prior audit-document edits
+plus untracked `tests/services/test_callback_transport_alias_contract.py`. The module has seven
+test functions and one three-case parameterization, producing the reviewed nine nodes. No runtime
+path was dirty.
+
+The isolated module reconfirmed **7 failed, 2 passed in 0.79s**. Every failure reported only missing
+`resultAvailability`, `unavailabilityReason`, and `overallConfidence` plus the presence of
+`result_availability`, `unavailability_reason`, and `overall_confidence`. Both legacy nodes passed.
+There was no schema-construction, import, DNS, network, retry, fixture, mapper, platform, or
+environment failure. This is the pre-change red checkpoint for the one-line sender-boundary green
+repair; no production or external operation occurred.
+
+## F01 green phase — implementation verification (2026-09-05)
+
+The only runtime semantic change is in `src/services/callback_service.py`: the existing sender model
+dump now sets `by_alias=True`. Compact separators, encoding, callback URL validation, retries,
+timeouts, logging, transport invocation, schema validation, mapper behavior, explicit nulls and
+numeric zero are otherwise unchanged. The new contract passed **9/9 in 0.64s** immediately after
+the change and **9/9 in 0.66s** in the final focused rerun.
+
+The first existing callback regression run after the runtime change produced **1 failed, 11 passed**.
+The sole failure was `test_successful_callback_serializes_the_final_payload`, whose expected value
+used the old default snake-case `model_dump`; transport and the other callback behaviors were green.
+Its one assertion now uses `model_dump(mode="json", by_alias=True)`. This keeps the generic complete-
+payload comparison aligned with the canonical contract; the new transport suite independently
+asserts literal names/values and therefore does not inherit that oracle. Final callback result is
+**12 passed in 7.39s**.
+
+| Check | Green result |
+|---|---|
+| F01 actual-byte contract | **9 passed in 0.66s** final rerun |
+| Existing callback | **12 passed in 7.39s** |
+| Schema/internal carrier | **13 passed in 0.68s** |
+| Mapper | **6 passed in 0.66s** |
+| Full offline suite | **420 passed, 1 skipped in 9.95s**; existing Windows `WinError 1314` symlink-privilege skip only |
+| Mypy | `src tests`: **Success: no issues found in 175 source files** |
+| Ruff lint | Full repository: `All checks passed!` |
+| Ruff format | Full repository: `271 files already formatted` after formatting exactly the two patched tracked Python files |
+| Syntax | `py_compile` passed for sender, existing callback test and new transport contract with external bytecode cache |
+
+The initial post-change Ruff format check detected only mixed line endings in the two patched tracked
+Python files; targeted Ruff formatting produced a semantic diff of three insertions/one deletion in
+the sender and one assertion replacement in the existing test. No broad reformat resulted. All
+tests used the existing environment, local injected fakes and external temporary directories. No
+inference, external DNS/network/callback, model synchronization, production, Docker, SSH, GitHub,
+deployment, commit, staging, or push operation occurred.
+
+F01 is implemented only in this local uncommitted working tree. The deployed-source audit finding
+and its unverified incident contribution remain historical facts; Sprint 1 remains incomplete.
+Nothing here adds/fills a score, changes availability invariants or formulas, claims ML calibration
+or capacity, interprets database timestamps as inference latency, or treats null ratings as proof of
+correct target rejection.
+
+Post-documentation delivery checks passed: every repository-relative Markdown link in the three
+updated audit records resolves; no trailing whitespace exists in the six changed paths;
+`git diff --check` exits 0; and the changed-path check finds exactly the sender, the existing
+callback test, the new transport contract, and the three audit records. The sender is the sole
+runtime diff and the index is empty. HEAD remains
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`; local `origin/main...HEAD` divergence remains
+`0 5`. Tracked diff stat is five files with 181 insertions and two deletions; Git does not include
+the untracked new contract module in that stat.
+
+## F01 final human review and pre-commit verification — 2026-09-05
+
+The required starting state matched: `docs/ci-main-validation` at
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`, local `origin/main...HEAD` divergence `0 5`, empty
+index, and exactly the six expected dirty paths. Complete diff review confirms the sender has one
+functional change—`payload.model_dump(mode="json", by_alias=True)`—and no exclude flags or change
+to schema, mapper, route, scoring, eligibility, DNS/URL/redirect validation, timeout, retry, logging,
+transport or exception behavior. The existing callback test changes only its matching expected dump;
+it still invokes the real sender and retains all assertions.
+
+The new module has seven functions and a three-case UNAVAILABLE parameterization, for exactly nine
+meaningful nodes. AVAILABLE, all approved reasons, null versus `0.0`, legacy success/failure and both
+mapper states pass through the real `send_result`. A deterministic injected resolver returns a
+public address, the injected transport captures bytes and returns 204, and the injected sleep raises
+if called. Clarification of the earlier phrase “No resolver”: the local fake resolver is intentionally
+called; no system DNS lookup, HTTP request, retry delay or external network operation occurs.
+Expectations use literal camel/snake key sets and parsed JSON values, not default `model_dump`, key
+order or source-text matching.
+
+| Final-review check | Result |
+|---|---|
+| F01 transport contract | **9 passed in 0.74s** |
+| Callback service + availability schema | **12 passed in 7.41s** |
+| Internal completed/unavailable + public mapper | **11 passed in 0.65s** |
+| Parent/child serialization + process callback wiring | **33 passed in 1.73s** |
+| Complete offline pytest | **420 passed, 1 skipped in 9.80s**; only the known Windows `WinError 1314` symlink-privilege skip; no warning section |
+| Mypy `src tests` | **Success: no issues found in 175 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `271 files already formatted` |
+| Syntax / import | `py_compile` and explicit affected-module imports passed using an external bytecode cache |
+| Documentation / Git | Relative links, trailing whitespace, `git diff --check`, exact changed-path/runtime scope and empty-index checks pass |
+
+No dependency installation, upgrade, synchronization, environment recreation, real video/model
+inference, production access, GitHub API, SSH, Docker, deployment, push, real callback or external
+network action occurred. Earlier uncommitted-state references are phase-specific historical records;
+this is the reviewed six-path local commit candidate. F01 is fixed in that local implementation, but
+Apex DTO/controller/ORM persistence and F01's contribution to the historical null-rating incident
+remain externally unverified. The database row alone still cannot distinguish target unavailability,
+rating evidence gates, callback alias loss or persistence mapping. Sprint 1 and production readiness
+remain incomplete; rating calibration and system capacity remain unknown.
