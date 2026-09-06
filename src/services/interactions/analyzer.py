@@ -108,6 +108,7 @@ class BallInteractionAnalyzer:
             warnings.append(reason)
         else:
             reason = None
+        total_accepted = len(accepted)
         accepted = accepted[: self._settings.interaction_max_returned_segments]
         observed = sum(item.state != "missing_evidence" for item in evidence)
         candidate_count = sum(item.state == "candidate" for item in evidence)
@@ -122,7 +123,7 @@ class BallInteractionAnalyzer:
                 item.state == "missing_evidence" for item in evidence
             ),
             raw_interaction_segments=len(raw),
-            accepted_interaction_segments=len(accepted),
+            accepted_interaction_segments=total_accepted,
             rejected_short_interaction_segments=rejected_short,
             rejected_low_confidence_interaction_segments=rejected_low_confidence,
             rejected_low_global_quality_interaction_segments=rejected_global,
