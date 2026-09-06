@@ -157,6 +157,9 @@ class PassDetector:
             point = balls.get(frame)
             if point is None or point.center_point is None:
                 continue
+            frame_gap = frame - end
+            if frame_gap <= 0:
+                continue
             distance = self._normalized_distance(point.center_point, box)
             speed = (
                 hypot(
@@ -164,6 +167,7 @@ class PassDetector:
                     point.center_point[1] - prior.center_point[1],
                 )
                 * fps
+                / frame_gap
             )
             if distance > prior_distance and speed >= self._settings.pass_min_release_speed_pixels:
                 return (
