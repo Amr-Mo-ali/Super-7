@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 from math import isfinite
 
 from core.config import Settings
@@ -92,10 +93,11 @@ def evaluate_dominant_target(
     ]
     if alternatives:
         runner_up = _ordered(alternatives, evidence_by_track)[0]
-        winner_ratio = evidence_by_track[winner.track_id].visibility_ratio
-        runner_up_ratio = evidence_by_track[runner_up.track_id].visibility_ratio
-        assert winner_ratio is not None and runner_up_ratio is not None
-        if winner_ratio - runner_up_ratio < settings.selection_margin:
+        count_difference = (
+            evidence_by_track[winner.track_id].unique_visible_frames
+            - evidence_by_track[runner_up.track_id].unique_visible_frames
+        )
+        if Fraction(count_difference, frames_processed) < Fraction(str(settings.selection_margin)):
             return TargetEligibilityResult(
                 TargetSelectionStatus.NOT_ESTABLISHED,
                 "ambiguous_visual_target",
