@@ -57,6 +57,10 @@ class InvalidFrameError(AnalysisError):
     """Raised when detector input is not a valid decoded image frame."""
 
 
+class IncompleteVideoDecodeError(AnalysisError):
+    """Raised when decoding stops before the validated video boundary."""
+
+
 class InferenceError(AnalysisError):
     """Raised when model inference fails."""
 
