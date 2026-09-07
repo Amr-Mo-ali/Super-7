@@ -581,6 +581,8 @@ def _analyze_uploaded(
     del selector
     checker = CancellationChecker(cancellation)
     profiler = current_collector()
+    checker.check("input materialization")
+    video_path = artifacts.materialize_input(video_path, settings.max_upload_bytes)
     checker.check("upload validation")
     if profiler is None:
         metadata = validator.validate(video_path)

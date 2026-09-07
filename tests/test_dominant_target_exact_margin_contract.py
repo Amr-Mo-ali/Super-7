@@ -241,6 +241,18 @@ class _UnexpectedDependency:
         raise AssertionError(f"unexpected dependency access: {name}")
 
 
+class _SnapshotSession:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, int]] = []
+
+    def materialize_input(self, source_path: Path, max_upload_bytes: int) -> Path:
+        self.calls.append((source_path, max_upload_bytes))
+        return source_path
+
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"unexpected snapshot-session access: {name}")
+
+
 def test_route_uses_real_resolver_and_preserves_exact_boundary_availability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -253,8 +265,11 @@ def test_route_uses_real_resolver_and_preserves_exact_boundary_availability(
 
     monkeypatch.setattr(routes, "_completed", complete)
     unexpected = _UnexpectedDependency()
+    settings = Settings()
+    snapshot_session = _SnapshotSession()
+    source_path = Path(__file__)
     result = routes._analyze_uploaded(
-        Settings(),
+        settings,
         cast(VideoValidator, _Validator()),
         _Tracker(_tracking_run()),
         cast(TargetPlayerSelector, unexpected),
@@ -270,11 +285,12 @@ def test_route_uses_real_resolver_and_preserves_exact_boundary_availability(
         "analysis-f11",
         0.0,
         0.0,
-        Path(__file__),
+        source_path,
         CancellationManager("analysis-f11"),
-        cast(ArtifactSession, unexpected),
+        cast(ArtifactSession, snapshot_session),
         {},
     )
 
     assert result is completed
+    assert snapshot_session.calls == [(source_path, settings.max_upload_bytes)]
     assert [selection.track.track_id for selection in completed_selections] == [7]

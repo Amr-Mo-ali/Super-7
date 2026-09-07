@@ -5,6 +5,10 @@ from pathlib import Path
 from shutil import rmtree
 from threading import Lock
 
+from core.exceptions import InvalidVideoError, UploadTooLargeError
+
+_INPUT_COPY_CHUNK_BYTES = 1024 * 1024
+
 
 class ArtifactError(Exception):
     """Base error for invalid local artifact lifecycle operations."""
@@ -131,7 +135,50 @@ class ArtifactSession:
         self._finalized: set[str] = set()
         self._retained = False
         self._cleaned = False
+        self._input_snapshot: Path | None = None
         self._lock = Lock()
+
+    def materialize_input(self, source_path: Path, max_upload_bytes: int) -> Path:
+        """Copy one bounded private input snapshot without consuming artifact quota."""
+        if max_upload_bytes < 0:
+            raise ValueError("max_upload_bytes must not be negative.")
+        with self._lock:
+            self._validate_active()
+            if self._input_snapshot is not None:
+                raise ArtifactStateError("A private input snapshot already exists.")
+            if not source_path.is_file():
+                raise InvalidVideoError("Downloaded video is empty or unavailable.")
+            suffix = source_path.suffix.lower()
+            partial_path = self.directory / f"private_input{suffix}.partial"
+            snapshot_path = self.directory / f"private_input{suffix}"
+            try:
+                with source_path.open("rb") as source:
+                    with partial_path.open("xb") as destination:
+                        copied_bytes = 0
+                        while True:
+                            read_size = min(
+                                _INPUT_COPY_CHUNK_BYTES,
+                                max_upload_bytes - copied_bytes + 1,
+                            )
+                            chunk = source.read(read_size)
+                            if not chunk:
+                                break
+                            copied_bytes += len(chunk)
+                            if copied_bytes > max_upload_bytes:
+                                raise UploadTooLargeError(
+                                    "Video exceeds the configured size limit."
+                                )
+                            destination.write(chunk)
+                        if copied_bytes == 0:
+                            raise InvalidVideoError("Downloaded video is empty or unavailable.")
+                        destination.flush()
+                partial_path.replace(snapshot_path)
+            except BaseException:
+                partial_path.unlink(missing_ok=True)
+                snapshot_path.unlink(missing_ok=True)
+                raise
+            self._input_snapshot = snapshot_path
+            return snapshot_path
 
     def reserve(self, name: str, reserved_bytes: int) -> ArtifactReservation:
         """Reserve bounded request-local capacity for one basename-only artifact."""
@@ -200,16 +247,25 @@ class ArtifactSession:
                 return CleanupResult(())
             self._cleaned = True
             retained = self._retained
+            input_snapshot = self._input_snapshot
+            self._input_snapshot = None
             partial_paths = tuple(
                 reservation.temporary_path
                 for reservation in self._reservations.values()
                 if reservation.name not in self._finalized
             )
+        input_errors = (
+            ()
+            if input_snapshot is None
+            else tuple(
+                error for error in (self._remove_partial(input_snapshot),) if error is not None
+            )
+        )
         partial_errors = tuple(
             error for path in partial_paths if (error := self._remove_partial(path)) is not None
         )
         completed = self._manager._complete_session(self, retained)
-        return CleanupResult(partial_errors + completed.errors)
+        return CleanupResult(input_errors + partial_errors + completed.errors)
 
     def _validate_active(self) -> None:
         if self._cleaned:
