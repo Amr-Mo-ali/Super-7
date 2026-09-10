@@ -486,3 +486,46 @@ Windows symlink-privilege case. References above to an “uncommitted” working
 their earlier phase checkpoint; this reviewed set is the authorized local commit candidate and is
 still undeployed. Apex persistence and the historical incident's per-field causes remain externally
 unverified. Sprint 1, production readiness, rating calibration and capacity remain unestablished.
+
+## F14 status — 2026-09-10
+
+### F14-A — camera-motion resource bounds
+
+F14-A is fixed and verified locally. `CameraMotionEstimator.estimate()` now processes selected
+grayscale frames incrementally instead of retaining a duration-proportional collection of decoded
+pixel frames. Its live pixel-frame working state is bounded to the current decoded BGR frame, the
+current grayscale frame and the previous selected grayscale frame. Permitted interval records and
+cumulative transform result metadata may still grow with the selected range; this is not a claim
+that every camera-motion allocation is mathematically constant.
+
+Inclusive `start_frame` and `end_frame` behavior is preserved, and the decoder does not request a
+frame after the inclusive end bound. Frames before `start_frame` are streamed and discarded;
+unbounded decoding still continues through EOF. Empty-input and single-frame behavior is preserved.
+Optical-flow parameters, interval indices and acceptance, transform estimation/composition and
+numerical motion semantics are unchanged.
+
+Capture release is attempted exactly once on every exit path. A primary analysis error retains
+precedence over a simultaneous release error, while a release error still propagates when analysis
+otherwise succeeds. Five persistent deterministic tests in
+`tests/test_camera_motion_resource_bounds_contract.py` cover incremental processing, inclusive range
+termination and all four analysis/release success and failure combinations. This F14-A change is
+locally committed only after the final checks in this task succeed; it is not deployed or
+production-validated.
+
+### F14-B — rejected implementation and approved redesign direction
+
+The first F14-B output-transaction implementation was rejected during human review. Its reusable
+handle/state-machine abstraction could lose cleanup ownership if physical deletion failed after
+logical discard, and the initially green tests did not reproduce the actual deletion-failure case
+where the path remained present. That implementation was surgically rolled back and was not
+committed. No rejected F14-B runtime implementation remains in the working tree: routes,
+`ArtifactSession` and the debug renderer are restored to their committed pre-F14-B state.
+
+Architecture reassessment selected a smaller future one-shot, request-owned debug-render
+publication boundary. Debug-render failure is intended to remain non-fatal to otherwise valid
+analysis: analysis succeeds with a warning and without debug artifacts. Retention should occur only
+after successful render, quota validation, publication, registration and accounting. F14-B cannot
+guarantee physical deletion when the operating system refuses it; crash/restart orphan
+reconciliation and durable retention remain deferred to Agent F. The replacement F14-B
+implementation has not started and is not claimed as fixed. F14-A is fixed locally and verified,
+F14-B remains pending, and overall F14 is not complete.

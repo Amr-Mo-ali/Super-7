@@ -820,3 +820,54 @@ Apex DTO/controller/ORM persistence and F01's contribution to the historical nul
 remain externally unverified. The database row alone still cannot distinguish target unavailability,
 rating evidence gates, callback alias loss or persistence mapping. Sprint 1 and production readiness
 remain incomplete; rating calibration and system capacity remain unknown.
+
+## F14-A final human review and local commit verification — 2026-09-10
+
+The final gate matched `docs/ci-main-validation` at
+`b4eee2edb35517e42b29a62e67a9fd43be003946`, with local
+`origin/main...HEAD` divergence `0 11`, an empty index and only the approved camera-motion runtime
+diff plus the dedicated and combined untracked F14 contracts. `src/api/routes.py`,
+`src/diagnostics/artifacts.py` and `src/services/debug_renderer.py` matched HEAD; rejected F14-B
+transaction symbols were absent; F08 input materialization remained present and unchanged.
+
+Human review confirmed that only `CameraMotionEstimator.estimate()` changes behavior. It retains
+bounded live pixel-frame state while permitting interval and cumulative-transform result metadata
+to grow with the selected range. Inclusive range boundaries, EOF, empty/single-frame behavior,
+optical-flow settings, interval acceptance and indices, and transform composition remain unchanged.
+Capture release is attempted exactly once, primary analysis exceptions take precedence over release
+exceptions, and release exceptions propagate after otherwise successful analysis. The dedicated
+contract contains exactly five deterministic tests and no duplicate remains in the combined module.
+
+| Final F14-A check | Result |
+|---|---|
+| Dedicated contract collection | **5 nodes collected in 1.18s** |
+| Dedicated F14-A contract | **5 passed in 0.14s** |
+| Existing camera-motion tests | **4 passed in 0.28s** |
+| Preserved green F14 support tests | **4 passed in 0.78s** |
+| F08 contract | **13 passed in 0.64s** |
+| F19 contract | **9 passed in 0.18s** |
+| Camera/artifact/renderer/route/lifecycle/dominant-target/process regressions | **105 passed in 1.98s** |
+| Full offline suite | **483 passed, 1 skipped, 3 deselected in 10.39s** |
+| Mypy `src tests` | **Success: no issues found in 183 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `279 files already formatted` |
+| Syntax / import | Syntax compilation and affected-module import smoke passed |
+| Git diff | `git diff --check` passed; only the existing CRLF advisory was emitted |
+
+The sole accepted skip is `tests/test_video_path_resolver.py:48`: Windows symlink creation is
+unavailable with `WinError 1314` (a required privilege is not held by the client). The three
+intentional-red/deferred nodes excluded from the full suite are exactly:
+
+- `test_staged_output_cannot_exceed_its_reservation_before_finalization`
+- `test_retained_session_limit_applies_after_manager_recreation`
+- `test_debug_output_directory_is_loaded_from_environment`
+
+The reviewed local-commit scope is exactly `src/services/camera_motion.py`,
+`tests/test_camera_motion_resource_bounds_contract.py`,
+`docs/workplans/system-audit-2026-09-04.md`,
+`docs/workplans/sprint-1/00-discovery-log.md` and
+`docs/workplans/sprint-1/06-verification-results.md`.
+`tests/test_debug_resource_bounds_contract.py` remains untracked and is excluded from this commit.
+F14-B remains incomplete; its rejected implementation is rolled back and its replacement was not
+started. No production video/codec/model inference, deployment or external-system validation was
+performed.
