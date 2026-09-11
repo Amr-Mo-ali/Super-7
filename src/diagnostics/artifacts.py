@@ -1,9 +1,18 @@
 """Request-owned local artifact lifecycle management."""
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from shutil import rmtree
 from threading import Lock
+
+from core.exceptions import InvalidVideoError, UploadTooLargeError
+
+_INPUT_COPY_CHUNK_BYTES = 1024 * 1024
+_DEBUG_RENDER_OUTPUT_PATHS = {
+    "debug_video": Path("debug_video.mp4"),
+    "debug_frames": Path("debug_frames"),
+}
 
 
 class ArtifactError(Exception):
@@ -129,9 +138,53 @@ class ArtifactSession:
         self._reservations: dict[str, ArtifactReservation] = {}
         self._created: set[str] = set()
         self._finalized: set[str] = set()
+        self._published_files: set[Path] = set()
         self._retained = False
         self._cleaned = False
+        self._input_snapshot: Path | None = None
         self._lock = Lock()
+
+    def materialize_input(self, source_path: Path, max_upload_bytes: int) -> Path:
+        """Copy one bounded private input snapshot without consuming artifact quota."""
+        if max_upload_bytes < 0:
+            raise ValueError("max_upload_bytes must not be negative.")
+        with self._lock:
+            self._validate_active()
+            if self._input_snapshot is not None:
+                raise ArtifactStateError("A private input snapshot already exists.")
+            if not source_path.is_file():
+                raise InvalidVideoError("Downloaded video is empty or unavailable.")
+            suffix = source_path.suffix.lower()
+            partial_path = self.directory / f"private_input{suffix}.partial"
+            snapshot_path = self.directory / f"private_input{suffix}"
+            try:
+                with source_path.open("rb") as source:
+                    with partial_path.open("xb") as destination:
+                        copied_bytes = 0
+                        while True:
+                            read_size = min(
+                                _INPUT_COPY_CHUNK_BYTES,
+                                max_upload_bytes - copied_bytes + 1,
+                            )
+                            chunk = source.read(read_size)
+                            if not chunk:
+                                break
+                            copied_bytes += len(chunk)
+                            if copied_bytes > max_upload_bytes:
+                                raise UploadTooLargeError(
+                                    "Video exceeds the configured size limit."
+                                )
+                            destination.write(chunk)
+                        if copied_bytes == 0:
+                            raise InvalidVideoError("Downloaded video is empty or unavailable.")
+                        destination.flush()
+                partial_path.replace(snapshot_path)
+            except BaseException:
+                partial_path.unlink(missing_ok=True)
+                snapshot_path.unlink(missing_ok=True)
+                raise
+            self._input_snapshot = snapshot_path
+            return snapshot_path
 
     def reserve(self, name: str, reserved_bytes: int) -> ArtifactReservation:
         """Reserve bounded request-local capacity for one basename-only artifact."""
@@ -182,10 +235,63 @@ class ArtifactSession:
             self._finalized.add(reservation.name)
             return reservation.final_path
 
+    def publish_debug_render(
+        self,
+        producer: Callable[[Path], dict[str, str]],
+        *,
+        expected_outputs: frozenset[str],
+    ) -> dict[str, str]:
+        """Publish one complete debug-render tree after validation and quota preflight."""
+        staging = self.directory / "debug_render.partial"
+        final = self.directory / "debug_render"
+        with self._lock:
+            self._validate_active()
+            if not expected_outputs or not expected_outputs <= _DEBUG_RENDER_OUTPUT_PATHS.keys():
+                raise ArtifactStateError("Debug render outputs are unsupported.")
+            if self._path_occupied(staging) or self._path_occupied(final):
+                raise ArtifactStateError("Debug render output path is already occupied.")
+
+            published = False
+            previous_reserved_bytes = self._reserved_bytes
+            previous_published_files = self._published_files.copy()
+            try:
+                outputs = producer(staging)
+                output_paths = self._validate_debug_render_outputs(
+                    staging, outputs, expected_outputs
+                )
+                staged_files = self._regular_files_in_tree(staging)
+                staged_bytes = sum(path.stat().st_size for path in staged_files)
+                if self._reserved_bytes + staged_bytes > self._max_session_bytes:
+                    raise ArtifactQuotaError("Debug render output exceeds the request quota.")
+                if self._path_occupied(final):
+                    raise ArtifactStateError("Debug render output path is already occupied.")
+
+                final_outputs = {
+                    name: str(final / path.relative_to(staging))
+                    for name, path in output_paths.items()
+                }
+                final_files = tuple(final / path.relative_to(staging) for path in staged_files)
+                staging.rename(final)
+                published = True
+                try:
+                    self._reserved_bytes += staged_bytes
+                    self._published_files.update(final_files)
+                except BaseException:
+                    self._reserved_bytes = previous_reserved_bytes
+                    self._published_files = previous_published_files
+                    self._discard_render_tree(final)
+                    raise
+                return final_outputs
+            except BaseException:
+                if not published:
+                    self._discard_render_tree(staging)
+                raise
+
     def artifacts(self) -> tuple[Path, ...]:
         """Return final artifacts only; staged output is never public as valid output."""
         with self._lock:
-            return tuple(self._reservations[name].final_path for name in sorted(self._finalized))
+            finalized = {self._reservations[name].final_path for name in sorted(self._finalized)}
+            return tuple(sorted(finalized | self._published_files, key=str))
 
     def retain(self) -> None:
         """Request retention of finalized outputs when cleanup closes this session."""
@@ -200,16 +306,25 @@ class ArtifactSession:
                 return CleanupResult(())
             self._cleaned = True
             retained = self._retained
+            input_snapshot = self._input_snapshot
+            self._input_snapshot = None
             partial_paths = tuple(
                 reservation.temporary_path
                 for reservation in self._reservations.values()
                 if reservation.name not in self._finalized
             )
+        input_errors = (
+            ()
+            if input_snapshot is None
+            else tuple(
+                error for error in (self._remove_partial(input_snapshot),) if error is not None
+            )
+        )
         partial_errors = tuple(
             error for path in partial_paths if (error := self._remove_partial(path)) is not None
         )
         completed = self._manager._complete_session(self, retained)
-        return CleanupResult(partial_errors + completed.errors)
+        return CleanupResult(input_errors + partial_errors + completed.errors)
 
     def _validate_active(self) -> None:
         if self._cleaned:
@@ -222,6 +337,61 @@ class ArtifactSession:
             or self._reservations.get(reservation.name) is not reservation
         ):
             raise ArtifactStateError("Artifact reservation does not belong to this session.")
+
+    @staticmethod
+    def _validate_debug_render_outputs(
+        staging: Path,
+        outputs: object,
+        expected_outputs: frozenset[str],
+    ) -> dict[str, Path]:
+        if not isinstance(outputs, Mapping) or frozenset(outputs) != expected_outputs:
+            raise ArtifactStateError("Debug render output mapping is invalid.")
+        validated: dict[str, Path] = {}
+        for name in expected_outputs:
+            value = outputs[name]
+            if not isinstance(value, str):
+                raise ArtifactPathError("Debug render output path is invalid.")
+            path = Path(value)
+            expected_path = staging / _DEBUG_RENDER_OUTPUT_PATHS[name]
+            if path != expected_path:
+                raise ArtifactPathError("Debug render output escapes its staging directory.")
+            if name == "debug_video":
+                if path.is_symlink() or not path.is_file():
+                    raise ArtifactStateError("Debug video output must be a regular file.")
+            elif path.is_symlink() or not path.is_dir():
+                raise ArtifactStateError("Debug frames output must be a directory.")
+            validated[name] = path
+        return validated
+
+    @staticmethod
+    def _regular_files_in_tree(root: Path) -> tuple[Path, ...]:
+        if root.is_symlink() or not root.is_dir():
+            raise ArtifactStateError("Debug render staging output must be a directory.")
+        pending = [root]
+        files: list[Path] = []
+        while pending:
+            directory = pending.pop()
+            for path in directory.iterdir():
+                if path.is_symlink():
+                    raise ArtifactStateError("Debug render output must not contain symlinks.")
+                if path.is_dir():
+                    pending.append(path)
+                elif path.is_file():
+                    files.append(path)
+                else:
+                    raise ArtifactStateError("Debug render output must contain regular files only.")
+        return tuple(sorted(files, key=str))
+
+    @staticmethod
+    def _path_occupied(path: Path) -> bool:
+        return path.exists() or path.is_symlink()
+
+    @staticmethod
+    def _discard_render_tree(path: Path) -> None:
+        try:
+            rmtree(path)
+        except BaseException:
+            pass
 
     @staticmethod
     def _validate_name(name: str) -> None:

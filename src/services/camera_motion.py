@@ -72,17 +72,55 @@ class CameraMotionEstimator:
         self, video_path: Path, start_frame: int = 0, end_frame: int | None = None
     ) -> CameraMotionResult:
         capture = cv2.VideoCapture(str(video_path))
-        frames: list[np.ndarray] = []
+        processing_seconds = 0.0
+        initialization_started = perf_counter()
+        intervals: list[CameraMotionInterval] = []
+        cumulative: dict[int, np.ndarray] = {start_frame: np.eye(3, dtype=np.float64)}
+        current: np.ndarray | None = cumulative[start_frame]
+        previous: np.ndarray | None = None
+        selected_frame = start_frame
+        processing_seconds += perf_counter() - initialization_started
         index = 0
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            if index >= start_frame and (end_frame is None or index <= end_frame):
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-            index += 1
-        capture.release()
-        return self.estimate_frames(frames, start_frame)
+        analysis_error: BaseException | None = None
+        try:
+            while end_frame is None or index <= end_frame:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                if index >= start_frame:
+                    grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    if previous is not None:
+                        processing_started = perf_counter()
+                        interval, affine = self._estimate_interval(
+                            previous,
+                            grayscale,
+                            selected_frame - 1,
+                            selected_frame,
+                        )
+                        intervals.append(interval)
+                        if interval.accepted and affine is not None and current is not None:
+                            lifted = np.vstack((affine, np.array([0.0, 0.0, 1.0])))
+                            current = lifted @ current
+                            cumulative[selected_frame] = current
+                        else:
+                            # A rejected interval is an explicit boundary; never bridge it.
+                            current = None
+                        processing_seconds += perf_counter() - processing_started
+                    previous = grayscale
+                    selected_frame += 1
+                index += 1
+        except BaseException as error:
+            analysis_error = error
+            raise
+        finally:
+            cleanup_error: Exception | None = None
+            try:
+                capture.release()
+            except Exception as error:
+                cleanup_error = error
+            if analysis_error is None and cleanup_error is not None:
+                raise cleanup_error
+        return CameraMotionResult(tuple(intervals), cumulative, round(processing_seconds * 1000))
 
     def estimate_frames(self, frames: list[np.ndarray], first_frame: int = 0) -> CameraMotionResult:
         started = perf_counter()

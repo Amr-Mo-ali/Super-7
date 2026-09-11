@@ -53,6 +53,18 @@ class _UnexpectedDependency:
         raise AssertionError(f"unexpected dependency access: {name}")
 
 
+class _SnapshotSession:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, int]] = []
+
+    def materialize_input(self, source_path: Path, max_upload_bytes: int) -> Path:
+        self.calls.append((source_path, max_upload_bytes))
+        return source_path
+
+    def __getattr__(self, name: str) -> Never:
+        raise AssertionError(f"unexpected snapshot-session access: {name}")
+
+
 def _run() -> TrackingRun:
     track = PlayerTrack(7, 30, 100, 30, 0, 0.9, 0, False)
     boxes = {frame: BoundingBox(0, 0, 20, 100) for frame in range(30)}
@@ -75,8 +87,11 @@ def _analyze(
 ) -> object:
     if completed is not None:
         monkeypatch.setattr(routes, "_completed", lambda *_args, **_kwargs: completed)
-    return routes._analyze_uploaded(
-        Settings(),
+    settings = Settings()
+    snapshot_session = _SnapshotSession()
+    source_path = Path(__file__)
+    result = routes._analyze_uploaded(
+        settings,
         cast(VideoValidator, _Validator()),
         tracker,
         cast(TargetPlayerSelector, _UnexpectedDependency()),
@@ -92,11 +107,13 @@ def _analyze(
         "analysis-1",
         0.0,
         0.0,
-        Path(__file__),
+        source_path,
         CancellationManager("analysis-1"),
-        cast(ArtifactSession, _UnexpectedDependency()),
+        cast(ArtifactSession, snapshot_session),
         {},
     )
+    assert snapshot_session.calls == [(source_path, settings.max_upload_bytes)]
+    return result
 
 
 def test_established_target_uses_the_single_tracking_run_and_selected_segment(

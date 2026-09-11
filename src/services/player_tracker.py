@@ -8,7 +8,7 @@ from typing import Protocol
 import cv2
 
 from core.config import Settings
-from core.exceptions import RealDetectorNotConfiguredError
+from core.exceptions import IncompleteVideoDecodeError, RealDetectorNotConfiguredError
 from diagnostics.performance import current_collector
 from services.ball_detector import BallDetection, BallDetector
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
@@ -103,6 +103,8 @@ class DetectionOnlyPlayerTracker:
             self._ball_tracker_factory(self._settings) if self._ball_detector is not None else None
         )
         try:
+            if not capture.isOpened():
+                raise IncompleteVideoDecodeError("Video decoder could not be reopened.")
             while True:
                 if profiler is None:
                     ok, frame = capture.read()
@@ -176,6 +178,11 @@ class DetectionOnlyPlayerTracker:
                         ball_points = {}
         finally:
             capture.release()
+        allowed_shortfall = max(2, (metadata.frame_count + 999) // 1000)
+        if processed == 0 or metadata.frame_count - processed > allowed_shortfall:
+            raise IncompleteVideoDecodeError(
+                "Video decoding stopped before the validated frame boundary."
+            )
         summaries = tuple(
             self._summary(track_id, values, processed) for track_id, values in observations.items()
         )

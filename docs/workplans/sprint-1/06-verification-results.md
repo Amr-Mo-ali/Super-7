@@ -612,3 +612,350 @@ actual terminal outcome.
 The original integration regression now passes **10/10** in fresh processes. Focused configuration/worker/integration coverage is **26/26**; integration directory **25/25**; dominant/callback **44/44**; parent/child **33/33**; and full pytest is **396 passed, 1 Windows symlink-privilege skip**. `uv run mypy src tests` and `uv run mypy src` pass, as do Ruff and formatting checks. The earlier expected total of 389 is historical; current remote HEAD collects additional tests.
 
 Deferred and unchanged: `RequestLifecycle.shutdown()` and `ProcessAnalysisPool.shutdown()` remain unbounded, restart recovery remains in-memory only, and queue persistence is not added. Container/supervisor forced-stop allowance must exceed five seconds before deployment; no Docker, Compose, CI, deployment, commit, or push change occurred.
+
+## Final repository-audit human review and incident correction — 2026-09-05
+
+The final documentation-only review started on `docs/ci-main-validation` at
+`22c1f8d310d124e23ef3c43ee247568be1e2a2de`. `git status --short` reported only untracked
+`docs/workplans/system-audit-2026-09-04.md`; `git status -sb` reported the branch tracking
+`origin/main` and ahead by four; both unstaged and cached `git diff --name-status` were empty. The
+index therefore had no changes. `git show --stat --summary HEAD` identified
+`docs(ci): record first manual production deployment` and only
+`docs/workplans/ci-deployment-separation.md`. `git rev-list --left-right --count
+origin/main...HEAD` returned `0 4`. The required production-to-HEAD name-status diff returned only
+`M docs/workplans/ci-deployment-separation.md`. These checks satisfied the stop gate: no runtime,
+test, workflow, configuration, dependency, or lockfile mutation existed.
+
+The complete review covered `docs/workplans/system-audit-2026-09-04.md`, this verification record,
+and `00-discovery-log.md`; the canonical handoff was read in mandated order, followed by relevant
+ADRs, contracts, runbooks, cited runtime/tests/workflows, and the manual-deployment record. Current
+findings, classifications, priorities, duplicates, command results, roadmap status, and file/line
+references were checked. Drifted citations were corrected for composition/queue/child entry,
+callback aliases and their existing test, rating engines, request/auth surfaces, deadline/readiness,
+the upload limit, interaction cap, exact dominance margin, contradictory callback test, artifact
+retention, and packaging/deploy sources. No finding was rejected, merged, downgraded, or silently
+weakened because the offline suite passed. F01 remains the highest-impact next implementation task;
+F02 and the rest of Sprint 1 remain incomplete. No ML calibration, production capacity, or latency
+claim was added.
+
+Owner evidence identifies the manually deployed production revision as
+`54c6d00aacc1edba0c458c67de359b6fbe1f9882`; the repository deployment record agrees. Local Git
+independently proves source equivalence: `git merge-base --is-ancestor <production-sha> HEAD`
+exited 0, `git merge-base <production-sha> HEAD` returned that exact SHA, and the four commits above
+it (`d2331ef`, `bc1a726`, `9b4c767`, `22c1f8d`) each modify only
+`docs/workplans/ci-deployment-separation.md`. The range name-status diff contains that one
+documentation path and no runtime difference. F01 is therefore confirmed in the deployed source,
+but its contribution to the reported attempt remains unverified.
+
+The incident correction preserves the remaining evidence boundary: no correlated raw callback
+transport field-name/presence evidence was captured; Apex DTO/controller/ORM mapping and its
+deployed SHA remain unavailable; and the database row alone cannot prove whether target
+unavailability, independent per-rating gates, callback alias loss, or persistence mapping produced
+each null field. The 46.856-second database timestamp interval has unknown boundaries and is not AI
+inference latency. Null ratings alone do not prove a correct target rejection.
+
+Final pre-commit documentation checks passed. The repository-relative Markdown-link validator
+resolved every link in all three audit documents; the trailing-whitespace scan found no match;
+`git diff --check` and the complete staged `git diff --cached --check` returned exit 0. The
+working-tree scope check found exactly the three authorized audit paths. The production SHA was the
+exact merge base and its diff to pre-audit HEAD contained only
+`docs/workplans/ci-deployment-separation.md`. Staging used the three explicit paths; cached
+name-status was exactly modified `00-discovery-log.md`, modified this file, and added
+`system-audit-2026-09-04.md`, with no unstaged path. The same scope/equivalence checks are repeated
+after commit. The full pytest/mypy/Ruff suite was not rerun because documentation verification found
+no concrete runtime reason. No real video/model inference, production call, GitHub API action, SSH,
+Docker, load test, deployment, or push occurred.
+
+## F01 callback transport red contract — 2026-09-05
+
+Starting gate: `docs/ci-main-validation` at
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`; `git status --short`, both working and cached
+name-status diffs were empty; `git status -sb` reported ahead 5; and
+`git rev-list --left-right --count origin/main...HEAD` returned `0 5`. `git show --stat --summary
+HEAD` identified `docs(audit): record Super-7 repository risk review`. No remote ref was fetched or
+changed.
+
+Current source proof: `CallbackPayload` declares the three confirmed camel-case aliases, mapper
+paths populate them, and `CallbackService.send_result` supplies bytes to its transport after
+`json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))`. Because this call omits
+`by_alias=True`, the actual transport body contains `result_availability`,
+`unavailability_reason`, and `overall_confidence`. Existing direct-schema alias tests do not cross
+this boundary.
+
+`tests/services/test_callback_transport_alias_contract.py` adds nine deterministic nodes. Each
+calls the real `send_result` with a local resolver returning `8.8.8.8`, a byte-capturing transport
+returning 204, and a sleep fake that raises if called. No resolver, HTTP, callback, or other network
+operation occurs. The parsed bytes cover explicit AVAILABLE; each approved UNAVAILABLE reason;
+`overallConfidence` numeric `0.0` versus explicit null; legacy success and the separate existing
+`FailedCallbackPayload` failure shape (which truthfully has no `detailed` field); and real mapper
+output for one available and one unavailable completed result.
+
+| Check | Exact result |
+|---|---|
+| New transport module alone | Final rerun: **7 failed, 2 passed in 1.44s**; every failure reports missing `overallConfidence`, `resultAvailability`, and `unavailabilityReason` plus unexpected `overall_confidence`, `result_availability`, and `unavailability_reason`; no other failure class |
+| Existing callback tests | **12 passed in 7.37s**: `tests/test_callback_service.py` and `tests/api/test_callback_target_availability_contract.py` |
+| Existing schema/internal-carrier tests | **13 passed in 0.64s**: `tests/test_model_contracts.py`, `tests/test_public_contract_stability.py`, and `tests/api/test_internal_target_unavailability_contract.py` |
+| Existing mapper tests | **6 passed in 0.61s**: `tests/test_player_rating_wiring.py` |
+| Existing full offline suite | **411 passed, 1 skipped in 11.19s**, excluding only the intentional-red module; skip is `test_rejects_a_symlink_that_escapes_storage_root` because Windows returned `WinError 1314` |
+| Mypy | `src` plus the new module and four affected callback/schema/mapper test files: **Success: no issues found in 109 source files** |
+| Ruff / format / syntax | New module: `All checks passed!`; `1 file already formatted`; `py_compile` exit 0 |
+
+The first full-suite attempt used a nested external `--basetemp` without first creating its parent:
+384 nodes passed and 28 `tmp_path` setups raised the same parent `FileNotFoundError`. The corrected
+invocation created that external parent and produced the green result above. The first test-only
+mypy invocation omitted `src`, so mypy treated repository packages as untyped installed modules;
+the source-inclusive command above is the valid project-shaped result. Neither invocation issue
+motivated a repository change.
+
+Only the new test and these three audit documents are authorized changes; runtime, API schema,
+scoring, configuration, dependencies, workflows, and lockfiles remain unchanged. The smallest
+separately approved green implementation is to add `by_alias=True` to the single model dump in
+`send_result`, preserving compact JSON, explicit nulls, numeric zero, legacy fields and all current
+schema/formula behavior. Sprint 1 remains incomplete, and the red contract makes no calibrated
+ML-quality, capacity, latency, production-incident-causation, or correct-target-rejection claim.
+
+## F01 green phase — red reconfirmation (2026-09-05)
+
+Before runtime mutation, the approved gate matched exactly: branch
+`docs/ci-main-validation`, HEAD `9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`, local
+`origin/main...HEAD` divergence `0 5`, empty index, and only the three prior audit-document edits
+plus untracked `tests/services/test_callback_transport_alias_contract.py`. The module has seven
+test functions and one three-case parameterization, producing the reviewed nine nodes. No runtime
+path was dirty.
+
+The isolated module reconfirmed **7 failed, 2 passed in 0.79s**. Every failure reported only missing
+`resultAvailability`, `unavailabilityReason`, and `overallConfidence` plus the presence of
+`result_availability`, `unavailability_reason`, and `overall_confidence`. Both legacy nodes passed.
+There was no schema-construction, import, DNS, network, retry, fixture, mapper, platform, or
+environment failure. This is the pre-change red checkpoint for the one-line sender-boundary green
+repair; no production or external operation occurred.
+
+## F01 green phase — implementation verification (2026-09-05)
+
+The only runtime semantic change is in `src/services/callback_service.py`: the existing sender model
+dump now sets `by_alias=True`. Compact separators, encoding, callback URL validation, retries,
+timeouts, logging, transport invocation, schema validation, mapper behavior, explicit nulls and
+numeric zero are otherwise unchanged. The new contract passed **9/9 in 0.64s** immediately after
+the change and **9/9 in 0.66s** in the final focused rerun.
+
+The first existing callback regression run after the runtime change produced **1 failed, 11 passed**.
+The sole failure was `test_successful_callback_serializes_the_final_payload`, whose expected value
+used the old default snake-case `model_dump`; transport and the other callback behaviors were green.
+Its one assertion now uses `model_dump(mode="json", by_alias=True)`. This keeps the generic complete-
+payload comparison aligned with the canonical contract; the new transport suite independently
+asserts literal names/values and therefore does not inherit that oracle. Final callback result is
+**12 passed in 7.39s**.
+
+| Check | Green result |
+|---|---|
+| F01 actual-byte contract | **9 passed in 0.66s** final rerun |
+| Existing callback | **12 passed in 7.39s** |
+| Schema/internal carrier | **13 passed in 0.68s** |
+| Mapper | **6 passed in 0.66s** |
+| Full offline suite | **420 passed, 1 skipped in 9.95s**; existing Windows `WinError 1314` symlink-privilege skip only |
+| Mypy | `src tests`: **Success: no issues found in 175 source files** |
+| Ruff lint | Full repository: `All checks passed!` |
+| Ruff format | Full repository: `271 files already formatted` after formatting exactly the two patched tracked Python files |
+| Syntax | `py_compile` passed for sender, existing callback test and new transport contract with external bytecode cache |
+
+The initial post-change Ruff format check detected only mixed line endings in the two patched tracked
+Python files; targeted Ruff formatting produced a semantic diff of three insertions/one deletion in
+the sender and one assertion replacement in the existing test. No broad reformat resulted. All
+tests used the existing environment, local injected fakes and external temporary directories. No
+inference, external DNS/network/callback, model synchronization, production, Docker, SSH, GitHub,
+deployment, commit, staging, or push operation occurred.
+
+F01 is implemented only in this local uncommitted working tree. The deployed-source audit finding
+and its unverified incident contribution remain historical facts; Sprint 1 remains incomplete.
+Nothing here adds/fills a score, changes availability invariants or formulas, claims ML calibration
+or capacity, interprets database timestamps as inference latency, or treats null ratings as proof of
+correct target rejection.
+
+Post-documentation delivery checks passed: every repository-relative Markdown link in the three
+updated audit records resolves; no trailing whitespace exists in the six changed paths;
+`git diff --check` exits 0; and the changed-path check finds exactly the sender, the existing
+callback test, the new transport contract, and the three audit records. The sender is the sole
+runtime diff and the index is empty. HEAD remains
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`; local `origin/main...HEAD` divergence remains
+`0 5`. Tracked diff stat is five files with 181 insertions and two deletions; Git does not include
+the untracked new contract module in that stat.
+
+## F01 final human review and pre-commit verification — 2026-09-05
+
+The required starting state matched: `docs/ci-main-validation` at
+`9cd1a5affd8b6903fb7177dc7e484b087cba4b5f`, local `origin/main...HEAD` divergence `0 5`, empty
+index, and exactly the six expected dirty paths. Complete diff review confirms the sender has one
+functional change—`payload.model_dump(mode="json", by_alias=True)`—and no exclude flags or change
+to schema, mapper, route, scoring, eligibility, DNS/URL/redirect validation, timeout, retry, logging,
+transport or exception behavior. The existing callback test changes only its matching expected dump;
+it still invokes the real sender and retains all assertions.
+
+The new module has seven functions and a three-case UNAVAILABLE parameterization, for exactly nine
+meaningful nodes. AVAILABLE, all approved reasons, null versus `0.0`, legacy success/failure and both
+mapper states pass through the real `send_result`. A deterministic injected resolver returns a
+public address, the injected transport captures bytes and returns 204, and the injected sleep raises
+if called. Clarification of the earlier phrase “No resolver”: the local fake resolver is intentionally
+called; no system DNS lookup, HTTP request, retry delay or external network operation occurs.
+Expectations use literal camel/snake key sets and parsed JSON values, not default `model_dump`, key
+order or source-text matching.
+
+| Final-review check | Result |
+|---|---|
+| F01 transport contract | **9 passed in 0.74s** |
+| Callback service + availability schema | **12 passed in 7.41s** |
+| Internal completed/unavailable + public mapper | **11 passed in 0.65s** |
+| Parent/child serialization + process callback wiring | **33 passed in 1.73s** |
+| Complete offline pytest | **420 passed, 1 skipped in 9.80s**; only the known Windows `WinError 1314` symlink-privilege skip; no warning section |
+| Mypy `src tests` | **Success: no issues found in 175 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `271 files already formatted` |
+| Syntax / import | `py_compile` and explicit affected-module imports passed using an external bytecode cache |
+| Documentation / Git | Relative links, trailing whitespace, `git diff --check`, exact changed-path/runtime scope and empty-index checks pass |
+
+No dependency installation, upgrade, synchronization, environment recreation, real video/model
+inference, production access, GitHub API, SSH, Docker, deployment, push, real callback or external
+network action occurred. Earlier uncommitted-state references are phase-specific historical records;
+this is the reviewed six-path local commit candidate. F01 is fixed in that local implementation, but
+Apex DTO/controller/ORM persistence and F01's contribution to the historical null-rating incident
+remain externally unverified. The database row alone still cannot distinguish target unavailability,
+rating evidence gates, callback alias loss or persistence mapping. Sprint 1 and production readiness
+remain incomplete; rating calibration and system capacity remain unknown.
+
+## F14-A final human review and local commit verification — 2026-09-10
+
+The final gate matched `docs/ci-main-validation` at
+`b4eee2edb35517e42b29a62e67a9fd43be003946`, with local
+`origin/main...HEAD` divergence `0 11`, an empty index and only the approved camera-motion runtime
+diff plus the dedicated and combined untracked F14 contracts. `src/api/routes.py`,
+`src/diagnostics/artifacts.py` and `src/services/debug_renderer.py` matched HEAD; rejected F14-B
+transaction symbols were absent; F08 input materialization remained present and unchanged.
+
+Human review confirmed that only `CameraMotionEstimator.estimate()` changes behavior. It retains
+bounded live pixel-frame state while permitting interval and cumulative-transform result metadata
+to grow with the selected range. Inclusive range boundaries, EOF, empty/single-frame behavior,
+optical-flow settings, interval acceptance and indices, and transform composition remain unchanged.
+Capture release is attempted exactly once, primary analysis exceptions take precedence over release
+exceptions, and release exceptions propagate after otherwise successful analysis. The dedicated
+contract contains exactly five deterministic tests and no duplicate remains in the combined module.
+
+| Final F14-A check | Result |
+|---|---|
+| Dedicated contract collection | **5 nodes collected in 1.18s** |
+| Dedicated F14-A contract | **5 passed in 0.14s** |
+| Existing camera-motion tests | **4 passed in 0.28s** |
+| Preserved green F14 support tests | **4 passed in 0.78s** |
+| F08 contract | **13 passed in 0.64s** |
+| F19 contract | **9 passed in 0.18s** |
+| Camera/artifact/renderer/route/lifecycle/dominant-target/process regressions | **105 passed in 1.98s** |
+| Full offline suite | **483 passed, 1 skipped, 3 deselected in 10.39s** |
+| Mypy `src tests` | **Success: no issues found in 183 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `279 files already formatted` |
+| Syntax / import | Syntax compilation and affected-module import smoke passed |
+| Git diff | `git diff --check` passed; only the existing CRLF advisory was emitted |
+
+The sole accepted skip is `tests/test_video_path_resolver.py:48`: Windows symlink creation is
+unavailable with `WinError 1314` (a required privilege is not held by the client). The three
+intentional-red/deferred nodes excluded from the full suite are exactly:
+
+- `test_staged_output_cannot_exceed_its_reservation_before_finalization`
+- `test_retained_session_limit_applies_after_manager_recreation`
+- `test_debug_output_directory_is_loaded_from_environment`
+
+The reviewed local-commit scope is exactly `src/services/camera_motion.py`,
+`tests/test_camera_motion_resource_bounds_contract.py`,
+`docs/workplans/system-audit-2026-09-04.md`,
+`docs/workplans/sprint-1/00-discovery-log.md` and
+`docs/workplans/sprint-1/06-verification-results.md`.
+`tests/test_debug_resource_bounds_contract.py` remains untracked and is excluded from this commit.
+F14-B remains incomplete; its rejected implementation is rolled back and its replacement was not
+started. No production video/codec/model inference, deployment or external-system validation was
+performed.
+
+## 2026-09-11 — F14-B one-shot debug-render publication final verification
+
+The replacement F14-B implementation uses one synchronous request-owned
+`ArtifactSession.publish_debug_render()` boundary. The earlier reusable transaction/state-machine
+design was rejected and rolled back before commit. Final review confirmed fixed staging and final
+paths, a single producer invocation, supported file and recursive frames-tree outputs, rejection of
+foreign/escaping/wrong/symlink/special/missing/invalid/occupied output, recursive aggregate quota
+accounting, exact-limit acceptance, one-byte-over rejection, one staging-to-final rename,
+final-path-only registration and no partial publication. Existing source reservations remain
+charged and the private F08 input snapshot remains excluded from debug-artifact quota.
+
+Retention occurs only after the complete success sequence. Debug-render failure remains
+warning-only when request cleanup succeeds and preserves the analysis result, scores, overall
+rating and dominant target. Immediate best-effort cleanup plus request cleanup retry preserve
+ownership, and a primary analysis exception retains precedence. The updated F08 lifecycle test
+proves the caller-owned shared input remains while the request snapshot, unpublished debug copy and
+request root are removed. Process and in-process execution behavior is unchanged.
+
+Three executable statements were removed from the F14-B contract and remain separate deferred
+work, not fixed claims:
+
+- `test_staged_output_cannot_exceed_its_reservation_before_finalization`: generic same-process
+  pre-finalization reservation enforcement requires a separate architecture/product decision.
+- `test_retained_session_limit_applies_after_manager_recreation`: restart-persistent retention and
+  durable/stateless/cross-process ownership remain Agent F work.
+- `test_debug_output_directory_is_loaded_from_environment`: debug output configuration belongs to
+  a separate configuration task.
+
+| Final F14-B check | Result |
+|---|---|
+| F14 contract collection | **18 nodes collected in 0.57s** |
+| Complete F14 contract | **18 passed in 0.91s** |
+| Dedicated F14-A contract | **5 passed in 0.17s** |
+| F08 contract | **13 passed in 0.75s** |
+| F19 contract | **9 passed in 0.19s** |
+| Artifact/renderer/route/lifecycle/process focused regressions | **69 passed in 1.87s** |
+| Full offline suite, with no deselection | **497 passed, 1 skipped in 10.09s** |
+| Mypy `src tests` | **Success: no issues found in 183 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `279 files already formatted` |
+| Syntax / import | All four affected Python files compiled; affected-module import smoke passed |
+| Markdown / whitespace | All repository-relative links in the three changed documents resolved; all seven changed files passed the trailing-whitespace scan |
+| Git diff | `git diff --check` passed |
+
+The only skip was `tests/test_video_path_resolver.py:48`: Windows symlink creation was unavailable
+with `WinError 1314` (a required privilege is not held by the client). Verification used offline,
+task-scoped writable caches and base-temp directories and did not install or update dependencies.
+The local commit scope is the two production files, the updated F08 lifecycle contract, the retained
+F14-B contract and these three append-only audit records. The commit message is
+`fix(debug): publish bounded render artifacts`; its exact hash is recorded in the post-commit
+delivery evidence because a Git commit cannot contain its own final object ID. This work is local
+only and has not been deployed or production-validated. No intentionally failing test is included
+in the commit candidate.
+
+Staging verification found exactly these seven paths: `src/api/routes.py`,
+`src/diagnostics/artifacts.py`, `tests/test_shared_video_byte_limit_contract.py`,
+`tests/test_debug_resource_bounds_contract.py`, `docs/workplans/system-audit-2026-09-04.md`,
+`docs/workplans/sprint-1/00-discovery-log.md` and this verification-results file. The complete
+cached diff was reviewed and `git diff --cached --check` passed.
+
+## Sprint 1 audit-repair integration closure — 2026-09-11
+
+The integration review covered the 13 linear commits in
+`origin/main..0eb851b122f8b7ca628a5c40aa64a6f9085ec327`. Implemented and locally
+committed findings are F01 (`4b54ae6f7400cebef9b78d140a7831f811ff8851`), F10
+(`15b47bca9a801bca27f74e606f7573ec82c1446b`), F09
+(`fdf9517ef072fb5714640055e77b9e50a936dedc`), F11
+(`fa9a75e6addde289e6128e4870b26d06127147b6`), F19
+(`9a8f3117c8ffbe8a758328adcf0fa461d23b0e36`), F08
+(`b4eee2edb35517e42b29a62e67a9fd43be003946`), F14-A
+(`d617ed0a0dc6f11ff9096e6500386c6a018e99e4`) and F14-B
+(`0eb851b122f8b7ca628a5c40aa64a6f9085ec327`).
+
+Integrated offline verification completed with **497 passed and 1 skipped**. The sole accepted skip
+is `tests/test_video_path_resolver.py:48`, where Windows symlink creation is unavailable with
+`WinError 1314`. Mypy passed for both `src tests` and `src`; Ruff check and Ruff format check passed;
+all newly committed tests collect normally; and no intentionally failing test is committed. The
+existing validator test exercised a local synthetic MJPG fixture through OpenCV. No production or
+user video, model inference, callback, Apex or external system was used.
+
+The repairs are verified offline and locally committed but have not been pushed, deployed or
+production-validated. Remaining work stays divided among Agent A local correctness, Agent F
+durable/stateless/cache ownership, Apex-owned integration, deployment/production validation, and
+explicit product/configuration decisions. Generic staged-writer hard enforcement,
+restart-persistent retention/orphan ownership and `DEBUG_OUTPUT_DIR` environment wiring remain
+deferred. Overall audit remediation is not complete. The reviewed series is intended as one
+commit-by-commit PR after owner authorization.

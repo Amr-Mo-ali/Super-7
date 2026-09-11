@@ -197,11 +197,14 @@ class ShotDetector:
             point = balls.get(frame)
             if point is None or point.center_point is None:
                 continue
+            frame_gap = frame - end
+            if frame_gap <= 0:
+                continue
             dx, dy = (
                 point.center_point[0] - before.center_point[0],
                 point.center_point[1] - before.center_point[1],
             )
-            speed = hypot(dx, dy) * fps
+            speed = hypot(dx, dy) * fps / frame_gap
             if (
                 self._distance(point.center_point, box) > initial_distance
                 and speed >= self._config.min_release_speed_pixels
@@ -217,7 +220,8 @@ class ShotDetector:
                     if previous and previous.center_point
                     else 0.0
                 )
-                acceleration = max(0.0, speed - previous_speed) * fps
+                acceleration_frame_gap = 1 if previous and previous.center_point else frame_gap
+                acceleration = max(0.0, speed - previous_speed) * fps / acceleration_frame_gap
                 return (
                     frame,
                     speed,
@@ -246,10 +250,13 @@ class ShotDetector:
         distances = [
             hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(typed, typed[1:], strict=False)
         ]
+        frame_gaps = [right - left for left, right in zip(frames, frames[1:], strict=False)]
+        if any(gap <= 0 for gap in frame_gaps):
+            return None
         length = sum(distances)
         if length < self._config.min_trajectory_length_pixels:
             return None
-        speeds = [distance * fps for distance in distances]
+        speeds = [distance * fps / gap for distance, gap in zip(distances, frame_gaps, strict=True)]
         consistency = hypot(typed[-1][0] - typed[0][0], typed[-1][1] - typed[0][1]) / length
         quality = self._clamp((len(frames) / (frames[-1] - frames[0] + 1)) * consistency)
         return typed, frames[-1], length, sum(speeds) / len(speeds), max(speeds), quality

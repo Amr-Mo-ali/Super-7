@@ -19,7 +19,7 @@ def test_successful_callback_serializes_the_final_payload() -> None:
 
     service = _service(transport)
     assert asyncio.run(service.send_result(_url(), _payload())) is True
-    assert json.loads(delivered[0][1]) == _payload().model_dump(mode="json")
+    assert json.loads(delivered[0][1]) == _payload().model_dump(mode="json", by_alias=True)
 
 
 def test_callback_timeout_retries_with_exponential_backoff(

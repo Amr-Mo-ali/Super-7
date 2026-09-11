@@ -139,7 +139,9 @@ class CallbackService:
                 type(error).__name__,
             )
             return False
-        body = json.dumps(payload.model_dump(mode="json"), separators=(",", ":")).encode()
+        body = json.dumps(
+            payload.model_dump(mode="json", by_alias=True), separators=(",", ":")
+        ).encode()
         for attempt in range(len(_RETRY_DELAYS) + 1):
             attempt_started = self._clock()
             response_status_class: int | str = "unavailable"

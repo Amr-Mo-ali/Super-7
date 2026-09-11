@@ -21,6 +21,9 @@ class FakeCapture:
         self._frames = iter(frames)
         self.released = False
 
+    def isOpened(self) -> bool:  # noqa: N802 - mirrors OpenCV's public API
+        return True
+
     def read(self) -> tuple[bool, np.ndarray | None]:
         try:
             return True, next(self._frames)
