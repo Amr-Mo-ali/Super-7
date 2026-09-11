@@ -931,3 +931,31 @@ Staging verification found exactly these seven paths: `src/api/routes.py`,
 `tests/test_debug_resource_bounds_contract.py`, `docs/workplans/system-audit-2026-09-04.md`,
 `docs/workplans/sprint-1/00-discovery-log.md` and this verification-results file. The complete
 cached diff was reviewed and `git diff --cached --check` passed.
+
+## Sprint 1 audit-repair integration closure — 2026-09-11
+
+The integration review covered the 13 linear commits in
+`origin/main..0eb851b122f8b7ca628a5c40aa64a6f9085ec327`. Implemented and locally
+committed findings are F01 (`4b54ae6f7400cebef9b78d140a7831f811ff8851`), F10
+(`15b47bca9a801bca27f74e606f7573ec82c1446b`), F09
+(`fdf9517ef072fb5714640055e77b9e50a936dedc`), F11
+(`fa9a75e6addde289e6128e4870b26d06127147b6`), F19
+(`9a8f3117c8ffbe8a758328adcf0fa461d23b0e36`), F08
+(`b4eee2edb35517e42b29a62e67a9fd43be003946`), F14-A
+(`d617ed0a0dc6f11ff9096e6500386c6a018e99e4`) and F14-B
+(`0eb851b122f8b7ca628a5c40aa64a6f9085ec327`).
+
+Integrated offline verification completed with **497 passed and 1 skipped**. The sole accepted skip
+is `tests/test_video_path_resolver.py:48`, where Windows symlink creation is unavailable with
+`WinError 1314`. Mypy passed for both `src tests` and `src`; Ruff check and Ruff format check passed;
+all newly committed tests collect normally; and no intentionally failing test is committed. The
+existing validator test exercised a local synthetic MJPG fixture through OpenCV. No production or
+user video, model inference, callback, Apex or external system was used.
+
+The repairs are verified offline and locally committed but have not been pushed, deployed or
+production-validated. Remaining work stays divided among Agent A local correctness, Agent F
+durable/stateless/cache ownership, Apex-owned integration, deployment/production validation, and
+explicit product/configuration decisions. Generic staged-writer hard enforcement,
+restart-persistent retention/orphan ownership and `DEBUG_OUTPUT_DIR` environment wiring remain
+deferred. Overall audit remediation is not complete. The reviewed series is intended as one
+commit-by-commit PR after owner authorization.

@@ -568,3 +568,36 @@ manager or process recreation; and `DEBUG_OUTPUT_DIR` is not environment-configu
 same-process reservation enforcement needs a separate architecture/product decision, debug-output
 configuration belongs to a separate configuration task, and restart/durable/stateless/cross-process
 ownership remains Agent F work.
+
+## Sprint 1 audit-repair integration status — 2026-09-11
+
+The reviewed local range `origin/main..0eb851b122f8b7ca628a5c40aa64a6f9085ec327`
+contains 13 linear commits: five audit/production-validation documentation commits followed by
+eight separately reviewed repairs. The implemented-finding map is:
+
+| Finding | Local commit |
+|---|---|
+| F01 | `4b54ae6f7400cebef9b78d140a7831f811ff8851` |
+| F10 | `15b47bca9a801bca27f74e606f7573ec82c1446b` |
+| F09 | `fdf9517ef072fb5714640055e77b9e50a936dedc` |
+| F11 | `fa9a75e6addde289e6128e4870b26d06127147b6` |
+| F19 | `9a8f3117c8ffbe8a758328adcf0fa461d23b0e36` |
+| F08 | `b4eee2edb35517e42b29a62e67a9fd43be003946` |
+| F14-A | `d617ed0a0dc6f11ff9096e6500386c6a018e99e4` |
+| F14-B | `0eb851b122f8b7ca628a5c40aa64a6f9085ec327` |
+
+All eight repairs are implemented and locally committed and the integrated offline suite reports
+497 passed with one accepted Windows symlink-privilege skip. Both mypy scopes and Ruff check/format
+check pass, and no intentionally failing test is committed. This local series has not been pushed,
+deployed or production-validated. The existing validator test exercised a local synthetic MJPG
+fixture through OpenCV; no production or user video, model inference, callback or external system
+was used.
+
+Remaining work is separated by ownership. Agent A owns local correctness work including F05, F12,
+F13, the deterministic portion of F15 and F18. Agent F owns durable/stateless/cache work including
+F06, F07, restart-persistent retention, orphan ownership and cross-process coordination. Apex owns
+admission/video authorization, callback trust and receiver mapping work associated with F03/F04 and
+public compatibility. F16/F17 and reviewed-SHA rollout belong to deployment and production
+validation. F02, generic staged-writer hard enforcement and `DEBUG_OUTPUT_DIR` environment wiring
+require explicit product/configuration decisions before implementation. Overall audit remediation
+is not complete. The reviewed 13-commit series is intended to enter one commit-by-commit PR.
