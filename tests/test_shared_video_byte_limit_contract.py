@@ -342,11 +342,13 @@ def test_request_distinct_snapshot_sessions_cannot_collide(tmp_path: Path) -> No
     assert all(not path.exists() for path in snapshots)
 
 
-def test_snapshot_is_quota_independent_and_removed_when_debug_artifact_is_retained(
+def test_snapshot_is_quota_independent_and_cleanup_removes_unpublished_debug_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_path = _write_bytes(tmp_path / "video.mp4", 9)
+    assert source_path.is_file()
+    assert source_path.read_bytes() == b"x" * 9
     manager = ArtifactManager(tmp_path / "artifacts", max_session_bytes=9, retained_sessions=1)
     session = manager.create_session("analysis-1")
     validator = _RecordingValidator()
@@ -369,9 +371,14 @@ def test_snapshot_is_quota_independent_and_removed_when_debug_artifact_is_retain
     snapshot_path = validator.paths[0]
     debug_artifacts = session.artifacts()
     assert copied_sources == [snapshot_path]
+    assert tracker.paths == [snapshot_path]
     assert len(debug_artifacts) == 1
     assert debug_artifacts[0].name == "source_video.mp4"
     assert snapshot_path not in debug_artifacts
     assert session.cleanup().errors == ()
     assert not snapshot_path.exists()
-    assert debug_artifacts[0].read_bytes() == b"x" * 9
+    assert not debug_artifacts[0].exists()
+    assert not session.directory.exists()
+    assert all(not path.exists() for path in debug_artifacts)
+    assert source_path.is_file()
+    assert source_path.read_bytes() == b"x" * 9

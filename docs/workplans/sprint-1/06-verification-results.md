@@ -871,3 +871,63 @@ The reviewed local-commit scope is exactly `src/services/camera_motion.py`,
 F14-B remains incomplete; its rejected implementation is rolled back and its replacement was not
 started. No production video/codec/model inference, deployment or external-system validation was
 performed.
+
+## 2026-09-11 — F14-B one-shot debug-render publication final verification
+
+The replacement F14-B implementation uses one synchronous request-owned
+`ArtifactSession.publish_debug_render()` boundary. The earlier reusable transaction/state-machine
+design was rejected and rolled back before commit. Final review confirmed fixed staging and final
+paths, a single producer invocation, supported file and recursive frames-tree outputs, rejection of
+foreign/escaping/wrong/symlink/special/missing/invalid/occupied output, recursive aggregate quota
+accounting, exact-limit acceptance, one-byte-over rejection, one staging-to-final rename,
+final-path-only registration and no partial publication. Existing source reservations remain
+charged and the private F08 input snapshot remains excluded from debug-artifact quota.
+
+Retention occurs only after the complete success sequence. Debug-render failure remains
+warning-only when request cleanup succeeds and preserves the analysis result, scores, overall
+rating and dominant target. Immediate best-effort cleanup plus request cleanup retry preserve
+ownership, and a primary analysis exception retains precedence. The updated F08 lifecycle test
+proves the caller-owned shared input remains while the request snapshot, unpublished debug copy and
+request root are removed. Process and in-process execution behavior is unchanged.
+
+Three executable statements were removed from the F14-B contract and remain separate deferred
+work, not fixed claims:
+
+- `test_staged_output_cannot_exceed_its_reservation_before_finalization`: generic same-process
+  pre-finalization reservation enforcement requires a separate architecture/product decision.
+- `test_retained_session_limit_applies_after_manager_recreation`: restart-persistent retention and
+  durable/stateless/cross-process ownership remain Agent F work.
+- `test_debug_output_directory_is_loaded_from_environment`: debug output configuration belongs to
+  a separate configuration task.
+
+| Final F14-B check | Result |
+|---|---|
+| F14 contract collection | **18 nodes collected in 0.57s** |
+| Complete F14 contract | **18 passed in 0.91s** |
+| Dedicated F14-A contract | **5 passed in 0.17s** |
+| F08 contract | **13 passed in 0.75s** |
+| F19 contract | **9 passed in 0.19s** |
+| Artifact/renderer/route/lifecycle/process focused regressions | **69 passed in 1.87s** |
+| Full offline suite, with no deselection | **497 passed, 1 skipped in 10.09s** |
+| Mypy `src tests` | **Success: no issues found in 183 source files** |
+| Mypy `src` | **Success: no issues found in 104 source files** |
+| Ruff check / format | `All checks passed!`; `279 files already formatted` |
+| Syntax / import | All four affected Python files compiled; affected-module import smoke passed |
+| Markdown / whitespace | All repository-relative links in the three changed documents resolved; all seven changed files passed the trailing-whitespace scan |
+| Git diff | `git diff --check` passed |
+
+The only skip was `tests/test_video_path_resolver.py:48`: Windows symlink creation was unavailable
+with `WinError 1314` (a required privilege is not held by the client). Verification used offline,
+task-scoped writable caches and base-temp directories and did not install or update dependencies.
+The local commit scope is the two production files, the updated F08 lifecycle contract, the retained
+F14-B contract and these three append-only audit records. The commit message is
+`fix(debug): publish bounded render artifacts`; its exact hash is recorded in the post-commit
+delivery evidence because a Git commit cannot contain its own final object ID. This work is local
+only and has not been deployed or production-validated. No intentionally failing test is included
+in the commit candidate.
+
+Staging verification found exactly these seven paths: `src/api/routes.py`,
+`src/diagnostics/artifacts.py`, `tests/test_shared_video_byte_limit_contract.py`,
+`tests/test_debug_resource_bounds_contract.py`, `docs/workplans/system-audit-2026-09-04.md`,
+`docs/workplans/sprint-1/00-discovery-log.md` and this verification-results file. The complete
+cached diff was reviewed and `git diff --cached --check` passed.

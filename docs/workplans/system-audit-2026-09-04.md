@@ -529,3 +529,42 @@ guarantee physical deletion when the operating system refuses it; crash/restart 
 reconciliation and durable retention remain deferred to Agent F. The replacement F14-B
 implementation has not started and is not claimed as fixed. F14-A is fixed locally and verified,
 F14-B remains pending, and overall F14 is not complete.
+
+### F14-B — one-shot debug-render publication completed locally
+
+The first reusable F14-B transaction/state-machine design was rejected during human review and
+rolled back before commit. The replacement uses one synchronous, request-owned boundary,
+`ArtifactSession.publish_debug_render()`. Its fixed request-owned paths are
+`debug_render.partial` for staging and `debug_render` for final output, and it invokes the producer
+exactly once with only the staging directory. A valid staged output is either one regular video-file
+reference or a frames-directory reference that may be empty and may contain nested real directories
+and regular files. Foreign paths, lexical path escapes, wrong fixed paths or output types, symlinks,
+special files, invalid mappings, missing enabled outputs and occupied final destinations are
+rejected.
+
+Quota validation walks a frames tree recursively and charges its aggregate regular-file bytes.
+Existing source reservations remain charged, while the private F08 request input snapshot remains
+excluded from debug-artifact quota. Output exactly at the available quota is accepted and one byte
+over is rejected. Successful publication performs one same-parent staging-to-final rename,
+registers only the final path and exposes no `.partial` artifact.
+
+Retention runs only after render, validation, publication, registration and accounting all succeed;
+it does not run early or after a debug-render failure. Debug publication failure remains warning-only
+when ordinary cleanup succeeds, preserving the completed analysis, scores, overall rating and
+dominant target. Failure paths attempt immediate best-effort cleanup, request cleanup retries any
+remaining owned paths, and a primary analysis exception retains precedence. Process and in-process
+execution behavior is unchanged.
+
+The stale F08 lifecycle expectation was updated to reflect the shared-source ownership boundary:
+the caller-owned shared source remains, while the request snapshot, unpublished debug copy and
+request root are removed. This work is local only; it has not been deployed or production-validated.
+
+Overall F14 status: F14-A was completed in local commit
+`d617ed0a0dc6f11ff9096e6500386c6a018e99e4`; F14-B is completed locally by the
+`fix(debug): publish bounded render artifacts` commit created by this task. Three distinct concerns
+remain explicitly deferred and are not claimed fixed: staged writers can physically exceed their
+reservation before finalization rejects them; retention count/prune state is not persistent across
+manager or process recreation; and `DEBUG_OUTPUT_DIR` is not environment-configurable. Generic
+same-process reservation enforcement needs a separate architecture/product decision, debug-output
+configuration belongs to a separate configuration task, and restart/durable/stateless/cross-process
+ownership remains Agent F work.

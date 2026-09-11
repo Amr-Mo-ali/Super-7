@@ -607,7 +607,6 @@ def _analyze_uploaded(
         debug_source = artifacts.create(source)
         copyfile(video_path, debug_source)
         debug_source = artifacts.finalize(source)
-        artifacts.retain()
     if run.diagnostics.total_person_detections == 0:
         return _noncompleted(
             analysis_id,
@@ -692,6 +691,7 @@ def _analyze_uploaded(
         ),
         reproducibility,
         debug_source,
+        artifacts,
         checker,
         request_metadata,
     )
@@ -1243,6 +1243,7 @@ def _completed(
     timing: PipelineTiming | None = None,
     analysis_metadata: dict[str, str | None] | None = None,
     debug_source: Path | None = None,
+    artifacts: ArtifactSession | None = None,
     cancellation: CancellationChecker | None = None,
     request_metadata: dict[str, Any] | None = None,
 ) -> CompletedResponse:
@@ -1941,20 +1942,38 @@ def _completed(
         if cancellation is not None:
             cancellation.check("debug rendering")
         try:
-            response.debug_artifacts = render_debug_video(
-                debug_source,
-                debug_source.parent,
-                selection,
-                typed_run.player_boxes,
-                typed_run.ball_points,
-                interaction,
-                technical_events,
-                pass_detection,
-                shot_detection,
-                save_video=settings.debug.save_video,
-                save_frames=settings.debug.save_frames,
+            if artifacts is None:
+                raise RuntimeError("Debug rendering requires an artifact session.")
+
+            def produce_debug_render(output: Path) -> dict[str, str]:
+                return render_debug_video(
+                    debug_source,
+                    output,
+                    selection,
+                    typed_run.player_boxes,
+                    typed_run.ball_points,
+                    interaction,
+                    technical_events,
+                    pass_detection,
+                    shot_detection,
+                    save_video=settings.debug.save_video,
+                    save_frames=settings.debug.save_frames,
+                )
+
+            expected_outputs = frozenset(
+                name
+                for name, enabled in (
+                    ("debug_video", settings.debug.save_video),
+                    ("debug_frames", settings.debug.save_frames),
+                )
+                if enabled
+            )
+            response.debug_artifacts = artifacts.publish_debug_render(
+                produce_debug_render,
+                expected_outputs=expected_outputs,
             )
             response.debug_artifacts = _public_debug_artifact_references(response.debug_artifacts)
+            artifacts.retain()
         except Exception:
             logger.exception("debug_render_failed analysis_id=%s", analysis_id)
             response.warnings.append(
