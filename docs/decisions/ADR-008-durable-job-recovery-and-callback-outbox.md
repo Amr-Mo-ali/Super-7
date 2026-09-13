@@ -4,12 +4,15 @@
 
 Proposed — blocked on Apex and infrastructure decisions
 
-This ADR does not change current behavior, approve production activation, or supersede the
-historical status of [ADR-004](ADR-004-analysis-job-lifecycle-and-idempotency.md),
+This ADR does not change current behavior, approve production activation, or alter the historical
+status of [ADR-004](ADR-004-analysis-job-lifecycle-and-idempotency.md),
 [ADR-005](ADR-005-durable-job-storage-and-worker-architecture.md),
 [ADR-006](ADR-006-controlled-concurrency-mvp.md), or
-[ADR-007](ADR-007-process-execution-boundary.md). It consolidates the proposed Sprint 2 boundary
-at the repository state recorded in the [Sprint 2 discovery](../workplans/sprint-2/README.md).
+[ADR-007](ADR-007-process-execution-boundary.md). Until ADR-008 is accepted, ADR-004 retains its
+historical status. If ADR-008 is accepted, it supersedes ADR-004 only regarding the direct
+`QUEUED -> FAILED` transition for the durable implementation. ADR-008 consolidates the proposed
+Sprint 2 boundary at the repository state recorded in the
+[Sprint 2 discovery](../workplans/sprint-2/README.md).
 
 ## Context
 
@@ -35,9 +38,33 @@ execution attempts, results, callback delivery, and retained-artifact metadata. 
 be used to find work, with database notifications considered only as a future wake-up optimization.
 
 The initial concurrency policy remains one analysis worker and one active analysis. Sprint 2 does
-not authorize an additional worker or a process-count change. The existing spawned child boundary
-may later remain the CPU-execution boundary, while durable claim and recovery ownership stays in
-the worker parent.
+not authorize an additional worker or a process-count change.
+
+### Current and accepted execution boundaries
+
+The current default executable production composition in [`create_app`](../../src/main.py) creates
+a [`ProcessAnalysisPool`](../../src/services/process_analysis_pool.py), passes its
+`create_process_analysis_job_processor` adapter to `AnalysisWorker`, starts the pool during lifespan
+startup, and exposes the module-level app from that composition. `ProcessAnalysisPool` creates a
+`ProcessPoolExecutor` with `max_workers=1` and `multiprocessing.get_context("spawn")`, submits the
+top-level [`run_child_analysis`](../../src/services/process_entrypoint.py) callable, and validates
+the serialized result in the parent. This is executable composition evidence, not production-server
+validation. Some source docstrings still describe the process adapter or child entry point as
+"future" or "unused"; those comments are stale relative to the `main.py` call graph.
+
+The retained `create_analysis_job_processor` in [`routes.py`](../../src/api/routes.py) is the
+legacy/in-process alternative and is not selected by `main.py`. That alternative reaches
+[`AnalysisExecutor`](../../src/concurrency/executor.py), where CPU analysis uses
+`asyncio.to_thread`. The two other production-source `asyncio.to_thread` call sites offload
+[`CallbackService`](../../src/services/callback_service.py) transport and the process pool's blocking
+shutdown; neither runs the active CPU analysis pipeline. The active default analysis path waits on
+the submitted process-pool future.
+
+ADR-007 is the accepted execution-boundary decision and the current default composition implements
+its one-worker `ProcessPoolExecutor`/`spawn`, child-owned analysis, and parent-owned callback model.
+Its descriptions of thread execution as current and the pool as future are historical context. The
+custom spawn supervisor rejected by ADR-007 has no implementation in the current source tree; it is
+not the `ProcessAnalysisPool` and is not proposed by this ADR.
 
 The future durable admission contract is transactional only after the required Apex and
 infrastructure decisions are approved. Building its persistence boundary does not authorize public
@@ -95,10 +122,12 @@ QUEUED -----> RUNNING -----> COMPLETED | FAILED | CANCELLED
 ```
 
 `RUNNING -> QUEUED` is permitted only for an interrupted or retryable attempt while the retry
-policy allows another attempt. No `QUEUED -> FAILED` transition is proposed: invalid admission
-ordinarily fails before job creation, and any future pre-execution terminal-failure policy requires
-an explicit decision. Terminal transitions require a fenced transaction. A stale attempt cannot
-overwrite a newer attempt or terminal result.
+policy allows another attempt. Invalid admission fails before a durable job is created. After a
+durable job exists, a terminal pre-analysis failure must be owned by a claimed and fenced attempt;
+the job therefore transitions `QUEUED -> RUNNING -> FAILED`. No service may terminalize a durable
+job directly from `QUEUED` to `FAILED`. Terminal transitions require a fenced transaction, and a
+stale attempt cannot overwrite a newer attempt or terminal result. This narrower rule supersedes
+ADR-004's direct `QUEUED -> FAILED` allowance only if ADR-008 is accepted.
 
 Callback-delivery state:
 

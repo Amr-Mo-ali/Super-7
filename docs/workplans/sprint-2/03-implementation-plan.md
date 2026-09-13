@@ -66,7 +66,9 @@ made red locally first but deliberately failing tests must not be committed to a
   capacity enforcement are transactional; invalid admission ordinarily creates no job. The raw
   `idempotencyKey` is neither logged nor stored directly; persistence uses an approved deterministic
   digest or otherwise protected representation suitable for uniqueness lookup. No algorithm is
-  selected before security review. These capacity semantics remain proposed until human approval.
+  selected before security review. Slice 2 creates jobs only in `QUEUED` and provides no direct
+  `QUEUED -> FAILED` terminalization path. These capacity semantics remain proposed until human
+  approval.
 - **Non-goals:** Worker recovery, result storage, callback dispatcher, cancellation, artifacts,
   public route wiring or activation, public status/result endpoints, or more workers.
 - **Prior approval:** Slice 0 key creator/reuse, caller scope, fingerprint, intentional re-analysis,
@@ -86,9 +88,12 @@ made red locally first but deliberately failing tests must not be committed to a
   recovery service, safe clocks, and disposable-database concurrency tests.
 - **Red first:** Two claimers race for one job; lease renewal; expiry/requeue; stale heartbeat and
   stale finalization rejection; retryable and non-retryable outcomes; maximum-attempt enforcement;
-  attempt exhaustion; restart finds queued and expired work.
+  attempt exhaustion; restart finds queued and expired work; direct `QUEUED -> FAILED` is rejected;
+  a terminal pre-analysis failure is finalized only after a fenced claim establishes `RUNNING`.
 - **Invariants:** One current claim per job; no transaction spans analysis; every mutation matches
-  the current fence; retry uses the same job and resolved version.
+  the current fence; retry uses the same job and resolved version; after durable acceptance,
+  terminal pre-analysis failure follows `QUEUED -> RUNNING -> FAILED`, never direct
+  `QUEUED -> FAILED`.
 - **Super-7 decision boundary:** Before implementation, Super-7 must approve retryable versus
   non-retryable attempt classification, maximum attempts, the durable exhaustion outcome, and the
   named Super-7 runtime/operations owner for lease and heartbeat configuration approval after
