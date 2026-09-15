@@ -1,4 +1,4 @@
-"""RED contract for future P1-A coarse analysis-stage timing."""
+"""Implemented P1-A analysis-stage timing contract tests."""
 
 from __future__ import annotations
 
