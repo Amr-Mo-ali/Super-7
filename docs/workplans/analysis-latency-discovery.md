@@ -357,3 +357,134 @@ Recommend **P1-A only** for a separate implementation review.
 
 This document does not authorize P1-A implementation. P1-B, P2, P3, P4 and P5 remain
 deferred and require their own evidence and human authorization.
+
+## P1-A implementation verification — 2026-09-16
+
+### Classification
+
+P1-A coarse analysis-stage timing is implemented and locally verified. This is
+observability instrumentation, not a latency optimization, and no claim is made that
+analysis is faster. P1-B through P5 remain deferred and unauthorized. Current
+production latency attribution still requires deployment to the correct server and
+representative controlled evidence.
+
+### Active execution ownership
+
+The default application path is:
+
+```text
+AnalysisWorker
+→ ProcessAnalysisPool
+→ ProcessPoolExecutor(max_workers=1, spawn)
+→ run_child_analysis
+→ parent validation/mapping
+→ callback delivery
+```
+
+Child stages use a child-process-local monotonic clock. Parent stages use a
+parent-process-local monotonic clock. Timestamps from different processes are never
+subtracted, and durations from nested boundaries must not be added together.
+
+### Implemented stages
+
+The child-owned stages are:
+
+```text
+input_materialization
+validation
+tracking_total
+reproducibility_hashing
+target_segment_resolution
+post_processing_scoring
+debug_work
+child_serialization
+child_cleanup
+```
+
+The parent-owned stages are:
+
+```text
+process_ipc_parent_validation
+parent_response_mapping
+```
+
+### Timing relationships
+
+`process_ipc_parent_validation` is inclusive of child work, serialization, transport
+and parent validation. It is not additive with child-stage durations.
+`post_processing_scoring` wraps `_completed()`. `debug_work` is a disjoint accumulator
+for debug-source preparation, camera motion and render/publication. Camera motion and
+render/publication occur within post-processing, so `debug_work` can overlap
+`post_processing_scoring`. A skipped debug path emits `outcome=skipped` with zero
+duration. Unavailable, failed, cancelled, success and skipped outcomes are emitted
+only where truthful.
+
+### Safe log contract
+
+Each timing record contains exactly:
+
+```text
+analysis_id
+timing_schema_version
+stage
+role
+outcome
+duration_ms
+```
+
+Timing records exclude player and video identifiers, filenames and filesystem paths,
+callback URLs, payloads, exception messages, cleanup details, boxes, coordinates,
+images, frames and per-frame arrays. Timing logs do not enter public responses or
+callback payloads.
+
+### Behavior preservation
+
+P1-A preserves analysis results, target evidence, scoring values, null-versus-zero
+semantics, callback output, exact direct exception identity, sanitized child failure
+behavior, cancellation classification, cleanup execution and precedence, artifact
+publication and retention behavior, and debug-disabled behavior.
+
+### Logging correction
+
+Timing emission calls only the supplied logger and does not mutate global
+propagation. The test capture utility chooses one capture route and restores handler
+identity, handler order and logger state on context exit. A timing logging failure
+cannot replace the application result or primary exception.
+
+### Persistent verification evidence
+
+```text
+P1-A collection:                 10 tests
+P1-A contract:                   10 passed
+capture_application_logs users: 61 passed
+focused regressions:             118 passed
+broader regressions:             153 passed
+F08:                             13 passed
+F14-A:                            5 passed
+F14-B:                           18 passed
+F19:                              9 passed
+complete offline suite:          507 passed, 1 skipped
+```
+
+The accepted skip was:
+
+```text
+tests/test_video_path_resolver.py:48
+Windows symlink creation unavailable: WinError 1314
+```
+
+Static verification recorded `mypy src tests` with 185 files and no issues, and
+`mypy src` with 105 files and no issues. Ruff check passed; Ruff format check reported
+287 files already formatted. Syntax compilation, affected import smoke, UTF-8 checks
+and whitespace checks passed.
+
+### Local-only status
+
+This implementation has not been pushed, merged, deployed or benchmarked on the new
+production server. No inference or real-video benchmark was performed. The next
+performance step remains controlled measurement using P1-A evidence. P1-B requires
+separate authorization after real measurements identify the dominant cost.
+
+The intended local commit subject is
+`feat(observability): add coarse analysis stage timing`. The final object ID belongs
+in post-commit evidence and is intentionally not recorded inside this commit.
