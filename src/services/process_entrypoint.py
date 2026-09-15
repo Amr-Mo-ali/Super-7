@@ -13,6 +13,7 @@ from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
 from core.logging import configure_logging, get_logger
+from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_composition import AnalysisComponents, create_analysis_components
 from services.process_contracts import (
@@ -109,9 +110,40 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
             artifacts,
             {},
         )
+        serialization_started = perf_counter()
+        try:
+            serialized_result = result.model_dump_json()
+        except AnalysisCancelled:
+            _log_analysis_stage_timing(
+                runtime.logger,
+                analysis_id=request.analysis_id,
+                stage="child_serialization",
+                role="child",
+                outcome="cancelled",
+                duration_ms=_milliseconds(serialization_started),
+            )
+            raise
+        except Exception:
+            _log_analysis_stage_timing(
+                runtime.logger,
+                analysis_id=request.analysis_id,
+                stage="child_serialization",
+                role="child",
+                outcome="failed",
+                duration_ms=_milliseconds(serialization_started),
+            )
+            raise
+        _log_analysis_stage_timing(
+            runtime.logger,
+            analysis_id=request.analysis_id,
+            stage="child_serialization",
+            role="child",
+            outcome="success",
+            duration_ms=_milliseconds(serialization_started),
+        )
         outcome = ChildAnalysisSuccess(
             request.analysis_id,
-            result.model_dump_json(),
+            serialized_result,
             runtime.settings.analysis_version,
             components.tracker.model_version,
             _milliseconds(started),
@@ -127,8 +159,17 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
         )
     finally:
         if artifacts is not None:
+            cleanup_started = perf_counter()
             try:
                 cleanup_result = artifacts.cleanup()
+                _log_analysis_stage_timing(
+                    runtime.logger,
+                    analysis_id=request.analysis_id,
+                    stage="child_cleanup",
+                    role="child",
+                    outcome="failed" if cleanup_result.errors else "success",
+                    duration_ms=_milliseconds(cleanup_started),
+                )
                 if cleanup_result.errors:
                     runtime.logger.warning(
                         "analysis_child_cleanup_failed analysis_id=%s cleanup_error_type=%s",
@@ -143,6 +184,14 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
                             _milliseconds(started),
                         )
             except Exception as error:
+                _log_analysis_stage_timing(
+                    runtime.logger,
+                    analysis_id=request.analysis_id,
+                    stage="child_cleanup",
+                    role="child",
+                    outcome="cancelled" if isinstance(error, AnalysisCancelled) else "failed",
+                    duration_ms=_milliseconds(cleanup_started),
+                )
                 runtime.logger.warning(
                     "analysis_child_cleanup_failed analysis_id=%s cleanup_error_type=%s",
                     request.analysis_id,

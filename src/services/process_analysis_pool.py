@@ -15,9 +15,11 @@ from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from multiprocessing.context import BaseContext
-from typing import Protocol, cast
+from time import perf_counter
+from typing import Literal, Protocol, cast
 
 from core.config import Settings
+from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisRequest,
@@ -99,22 +101,35 @@ class ProcessAnalysisPool:
     async def execute(self, request: ChildAnalysisRequest) -> ParentChildResult:
         """Submit one child request and validate its serializable result in the parent."""
         executor = self._require_running_executor()
+        stage_started = perf_counter()
         try:
             future = executor.submit(run_child_analysis, request)
             result = await asyncio.wrap_future(future)
         except asyncio.CancelledError:
+            self._log_stage_timing(request.analysis_id, "cancelled", stage_started)
             raise
         except BrokenProcessPool as error:
+            self._log_stage_timing(request.analysis_id, "failed", stage_started)
             self._log_execution_failure(request.analysis_id, error)
             return ParentFailure("ProcessPoolError", "Analysis could not be completed.")
         except Exception as error:
+            self._log_stage_timing(request.analysis_id, "failed", stage_started)
             self._log_execution_failure(request.analysis_id, error)
             return ParentFailure("ProcessPoolError", "Analysis could not be completed.")
-        return validate_child_result(
-            request.analysis_id,
-            CHILD_ANALYSIS_SCHEMA_VERSION,
-            result,
-        )
+        try:
+            validated = validate_child_result(
+                request.analysis_id,
+                CHILD_ANALYSIS_SCHEMA_VERSION,
+                result,
+            )
+        except asyncio.CancelledError:
+            self._log_stage_timing(request.analysis_id, "cancelled", stage_started)
+            raise
+        except Exception:
+            self._log_stage_timing(request.analysis_id, "failed", stage_started)
+            raise
+        self._log_stage_timing(request.analysis_id, "success", stage_started)
+        return validated
 
     async def shutdown(self) -> None:
         """Stop accepting submissions and offload the executor's blocking shutdown."""
@@ -137,4 +152,19 @@ class ProcessAnalysisPool:
             "analysis_process_pool_execution_failed analysis_id=%s error_type=%s",
             analysis_id,
             type(error).__name__,
+        )
+
+    def _log_stage_timing(
+        self,
+        analysis_id: str,
+        outcome: Literal["success", "failed", "cancelled"],
+        started: float,
+    ) -> None:
+        _log_analysis_stage_timing(
+            self._logger,
+            analysis_id=analysis_id,
+            stage="process_ipc_parent_validation",
+            role="parent",
+            outcome=outcome,
+            duration_ms=max(0, round((perf_counter() - started) * 1000)),
         )

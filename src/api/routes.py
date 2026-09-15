@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from shutil import copyfile
 from time import perf_counter
@@ -20,6 +20,11 @@ from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
 from core.exceptions import AnalysisError, InternalDiagnosticsError
 from core.reproducibility import metadata as reproducibility_metadata
+from diagnostics.analysis_stage_timing import (
+    _AnalysisStage,
+    _log_analysis_stage_timing,
+    _StageOutcome,
+)
 from diagnostics.artifacts import ArtifactSession
 from diagnostics.job_events import log_job_event
 from diagnostics.performance import current_collector
@@ -57,7 +62,7 @@ from services.callback_service import (
     DetailedRatings,
     FailedCallbackPayload,
 )
-from services.camera_motion import CameraMotionEstimator
+from services.camera_motion import CameraMotionEstimator, CameraMotionResult
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
 from services.detailed_rating.engine import DetailedRatingEngine
@@ -302,15 +307,45 @@ def create_process_analysis_job_processor(
                     callback_service, logger, job, result.error_code, result.public_message
                 )
                 return AnalysisJobState.FAILED
-            request = AnalyzeRequest.model_validate(
-                {
-                    "videoId": job.video_id,
-                    "playerId": job.player_id,
-                    "videoUrl": job.video_reference,
-                    "callbackUrl": str(job.callback_url),
-                }
+            mapping_started = perf_counter()
+            try:
+                request = AnalyzeRequest.model_validate(
+                    {
+                        "videoId": job.video_id,
+                        "playerId": job.player_id,
+                        "videoUrl": job.video_reference,
+                        "callbackUrl": str(job.callback_url),
+                    }
+                )
+                callback_payload = _callback_payload(request, result)
+            except asyncio.CancelledError:
+                _log_analysis_stage_timing(
+                    logger,
+                    analysis_id=job.analysis_id,
+                    stage="parent_response_mapping",
+                    role="parent",
+                    outcome="cancelled",
+                    duration_ms=_milliseconds(perf_counter() - mapping_started),
+                )
+                raise
+            except Exception:
+                _log_analysis_stage_timing(
+                    logger,
+                    analysis_id=job.analysis_id,
+                    stage="parent_response_mapping",
+                    role="parent",
+                    outcome="failed",
+                    duration_ms=_milliseconds(perf_counter() - mapping_started),
+                )
+                raise
+            _log_analysis_stage_timing(
+                logger,
+                analysis_id=job.analysis_id,
+                stage="parent_response_mapping",
+                role="parent",
+                outcome="success",
+                duration_ms=_milliseconds(perf_counter() - mapping_started),
             )
-            callback_payload = _callback_payload(request, result)
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -506,6 +541,88 @@ def _milliseconds(seconds: float) -> int:
     return max(0, round(seconds * 1000))
 
 
+def _run_child_stage[ResultT](
+    logger: logging.Logger,
+    analysis_id: str,
+    stage: _AnalysisStage,
+    operation: Callable[[], ResultT],
+) -> ResultT:
+    """Run one child-owned boundary and preserve its exact result or exception."""
+    stage_started = perf_counter()
+    try:
+        result = operation()
+    except AnalysisCancelled:
+        _log_analysis_stage_timing(
+            logger,
+            analysis_id=analysis_id,
+            stage=stage,
+            role="child",
+            outcome="cancelled",
+            duration_ms=_milliseconds(perf_counter() - stage_started),
+        )
+        raise
+    except Exception:
+        _log_analysis_stage_timing(
+            logger,
+            analysis_id=analysis_id,
+            stage=stage,
+            role="child",
+            outcome="failed",
+            duration_ms=_milliseconds(perf_counter() - stage_started),
+        )
+        raise
+    _log_analysis_stage_timing(
+        logger,
+        analysis_id=analysis_id,
+        stage=stage,
+        role="child",
+        outcome="success",
+        duration_ms=_milliseconds(perf_counter() - stage_started),
+    )
+    return result
+
+
+@dataclass(slots=True)
+class _DebugWorkTiming:
+    """Accumulate only disjoint debug operations and emit one aggregate record."""
+
+    logger: logging.Logger
+    analysis_id: str
+    duration_seconds: float = 0.0
+    outcome: _StageOutcome = "skipped"
+    emitted: bool = False
+
+    def measure[ResultT](self, operation: Callable[[], ResultT]) -> ResultT:
+        operation_started = perf_counter()
+        try:
+            result = operation()
+        except AnalysisCancelled:
+            self.outcome = "cancelled"
+            raise
+        except Exception:
+            self.outcome = "failed"
+            raise
+        else:
+            if self.outcome == "skipped":
+                self.outcome = "success"
+            return result
+        finally:
+            self.duration_seconds += max(0.0, perf_counter() - operation_started)
+
+    def finish(self) -> None:
+        if self.emitted:
+            return
+        self.emitted = True
+        _log_analysis_stage_timing(
+            self.logger,
+            analysis_id=self.analysis_id,
+            stage="debug_work",
+            role="child",
+            outcome=self.outcome,
+            duration_ms=_milliseconds(self.duration_seconds),
+        )
+
+
 def _analyze_downloaded(
     settings: Settings,
     validator: VideoValidator,
@@ -582,32 +699,59 @@ def _analyze_uploaded(
     checker = CancellationChecker(cancellation)
     profiler = current_collector()
     checker.check("input materialization")
-    video_path = artifacts.materialize_input(video_path, settings.max_upload_bytes)
+    video_path = _run_child_stage(
+        logger,
+        analysis_id,
+        "input_materialization",
+        lambda: artifacts.materialize_input(video_path, settings.max_upload_bytes),
+    )
     checker.check("upload validation")
-    if profiler is None:
-        metadata = validator.validate(video_path)
-    else:
+
+    def validate_video() -> VideoMetadata:
+        if profiler is None:
+            return validator.validate(video_path)
         with profiler.stage("video_validation"):
-            metadata = validator.validate(video_path)
+            return validator.validate(video_path)
+
+    metadata = _run_child_stage(logger, analysis_id, "validation", validate_video)
     checker.check("detection")
-    if profiler is None:
-        run = tracker.analyze(video_path, metadata)
-    else:
+
+    def track_video() -> TrackingRun:
+        if profiler is None:
+            return tracker.analyze(video_path, metadata)
         with profiler.stage("tracking_total"):
-            run = tracker.analyze(video_path, metadata)
+            return tracker.analyze(video_path, metadata)
+
+    run = _run_child_stage(logger, analysis_id, "tracking_total", track_video)
+    if profiler is not None:
         profiler.set_video(
             metadata.duration_seconds, run.diagnostics.frames_processed, metadata.file_size_bytes
         )
     checker.check("tracking")
     detection_tracking_time_ms = round((perf_counter() - detection_started) * 1000)
-    reproducibility = reproducibility_metadata(video_path, tracker.model_version)
+    reproducibility = _run_child_stage(
+        logger,
+        analysis_id,
+        "reproducibility_hashing",
+        lambda: reproducibility_metadata(video_path, tracker.model_version),
+    )
+    debug_timing = _DebugWorkTiming(logger, analysis_id)
     debug_source: Path | None = None
     if settings.debug.enabled and (settings.debug.save_video or settings.debug.save_frames):
-        source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
-        debug_source = artifacts.create(source)
-        copyfile(video_path, debug_source)
-        debug_source = artifacts.finalize(source)
+
+        def prepare_debug_source() -> Path:
+            source = artifacts.reserve(f"source_video{video_path.suffix}", metadata.file_size_bytes)
+            staged_source = artifacts.create(source)
+            copyfile(video_path, staged_source)
+            return artifacts.finalize(source)
+
+        try:
+            debug_source = debug_timing.measure(prepare_debug_source)
+        except Exception:
+            debug_timing.finish()
+            raise
     if run.diagnostics.total_person_detections == 0:
+        debug_timing.finish()
         return _noncompleted(
             analysis_id,
             "no_players_detected",
@@ -617,6 +761,7 @@ def _analyze_uploaded(
             request_metadata,
         )
     if not run.tracks:
+        debug_timing.finish()
         return _noncompleted(
             analysis_id,
             "player_detection_completed_tracking_not_available",
@@ -626,19 +771,58 @@ def _analyze_uploaded(
             request_metadata,
         )
     selection_started = perf_counter()
-    checker.check("player selection")
-    if profiler is None:
-        target, selected_segment = resolve_dominant_target(run, fps=metadata.fps, settings=settings)
-    else:
-        with profiler.stage("player_selection"):
+    try:
+        checker.check("player selection")
+        if profiler is None:
             target, selected_segment = resolve_dominant_target(
                 run, fps=metadata.fps, settings=settings
             )
-    selection_time_ms = round((perf_counter() - selection_started) * 1000)
+        else:
+            with profiler.stage("player_selection"):
+                target, selected_segment = resolve_dominant_target(
+                    run, fps=metadata.fps, settings=settings
+                )
+    except AnalysisCancelled:
+        selection_elapsed = perf_counter() - selection_started
+        _log_analysis_stage_timing(
+            logger,
+            analysis_id=analysis_id,
+            stage="target_segment_resolution",
+            role="child",
+            outcome="cancelled",
+            duration_ms=_milliseconds(selection_elapsed),
+        )
+        debug_timing.finish()
+        raise
+    except Exception:
+        selection_elapsed = perf_counter() - selection_started
+        _log_analysis_stage_timing(
+            logger,
+            analysis_id=analysis_id,
+            stage="target_segment_resolution",
+            role="child",
+            outcome="failed",
+            duration_ms=_milliseconds(selection_elapsed),
+        )
+        debug_timing.finish()
+        raise
+    selection_elapsed = perf_counter() - selection_started
+    selection_time_ms = round(selection_elapsed * 1000)
+    _log_analysis_stage_timing(
+        logger,
+        analysis_id=analysis_id,
+        stage="target_segment_resolution",
+        role="child",
+        outcome=(
+            "success" if target.status is TargetSelectionStatus.ESTABLISHED else "unavailable"
+        ),
+        duration_ms=_milliseconds(selection_elapsed),
+    )
     if target.status is not TargetSelectionStatus.ESTABLISHED:
         _log_dominant_target_resolution(
             logger, analysis_id, target.status.value, target.reason, len(run.tracks), None
         )
+        debug_timing.finish()
         return _unavailable_completed(
             analysis_id,
             settings,
@@ -653,8 +837,10 @@ def _analyze_uploaded(
             request_metadata,
         )
     if selected_segment is None or target.selected_track_id is None:
+        debug_timing.finish()
         raise ValueError("established dominant target requires a qualifying segment")
     if selected_segment.track_id != target.selected_track_id:
+        debug_timing.finish()
         raise ValueError("selected segment does not match the established dominant target")
     selection = _selection_from_dominant_segment(selected_segment)
     _log_dominant_target_resolution(
@@ -665,36 +851,45 @@ def _analyze_uploaded(
         len(run.tracks),
         selected_segment,
     )
-    return _completed(
-        settings,
-        tracker.model_version,
-        metadata,
-        selection,
-        extractor,
-        run,
-        1,
-        ball_proximity_analyzer,
-        movement_analyzer,
-        interaction_analyzer,
-        technical_event_analyzer,
-        pass_detector,
-        shot_detector,
-        logger,
-        physical_scorer,
-        analysis_id,
-        started,
-        run.diagnostics,
-        PipelineTiming(
-            player_detection_time_ms=detection_tracking_time_ms,
-            tracking_time_ms=detection_tracking_time_ms,
-            segment_selection_time_ms=selection_time_ms,
-        ),
-        reproducibility,
-        debug_source,
-        artifacts,
-        checker,
-        request_metadata,
-    )
+    try:
+        return _run_child_stage(
+            logger,
+            analysis_id,
+            "post_processing_scoring",
+            lambda: _completed(
+                settings,
+                tracker.model_version,
+                metadata,
+                selection,
+                extractor,
+                run,
+                1,
+                ball_proximity_analyzer,
+                movement_analyzer,
+                interaction_analyzer,
+                technical_event_analyzer,
+                pass_detector,
+                shot_detector,
+                logger,
+                physical_scorer,
+                analysis_id,
+                started,
+                run.diagnostics,
+                PipelineTiming(
+                    player_detection_time_ms=detection_tracking_time_ms,
+                    tracking_time_ms=detection_tracking_time_ms,
+                    segment_selection_time_ms=selection_time_ms,
+                ),
+                reproducibility,
+                debug_source,
+                artifacts,
+                checker,
+                request_metadata,
+                debug_timing,
+            ),
+        )
+    finally:
+        debug_timing.finish()
 
 
 def _selection_from_dominant_segment(segment: TrackSegment) -> Selection:
@@ -1246,6 +1441,7 @@ def _completed(
     artifacts: ArtifactSession | None = None,
     cancellation: CancellationChecker | None = None,
     request_metadata: dict[str, Any] | None = None,
+    debug_timing: _DebugWorkTiming | None = None,
 ) -> CompletedResponse:
     """Map a pure selection result to the successful public contract."""
     track = selection.track
@@ -1285,8 +1481,18 @@ def _completed(
         if cancellation is not None:
             cancellation.check("camera-motion estimation")
         try:
-            camera_motion = CameraMotionEstimator().estimate(
-                debug_source, selection.segment_start_frame or 0, selection.segment_end_frame
+
+            def estimate_camera_motion() -> CameraMotionResult:
+                return CameraMotionEstimator().estimate(
+                    debug_source,
+                    selection.segment_start_frame or 0,
+                    selection.segment_end_frame,
+                )
+
+            camera_motion = (
+                debug_timing.measure(estimate_camera_motion)
+                if debug_timing is not None
+                else estimate_camera_motion()
             )
         except Exception:
             logger.exception("camera_motion_estimation_failed analysis_id=%s", analysis_id)
@@ -1942,38 +2148,47 @@ def _completed(
         if cancellation is not None:
             cancellation.check("debug rendering")
         try:
-            if artifacts is None:
-                raise RuntimeError("Debug rendering requires an artifact session.")
 
-            def produce_debug_render(output: Path) -> dict[str, str]:
-                return render_debug_video(
-                    debug_source,
-                    output,
-                    selection,
-                    typed_run.player_boxes,
-                    typed_run.ball_points,
-                    interaction,
-                    technical_events,
-                    pass_detection,
-                    shot_detection,
-                    save_video=settings.debug.save_video,
-                    save_frames=settings.debug.save_frames,
-                )
+            def publish_debug_artifacts() -> None:
+                if artifacts is None:
+                    raise RuntimeError("Debug rendering requires an artifact session.")
 
-            expected_outputs = frozenset(
-                name
-                for name, enabled in (
-                    ("debug_video", settings.debug.save_video),
-                    ("debug_frames", settings.debug.save_frames),
+                def produce_debug_render(output: Path) -> dict[str, str]:
+                    return render_debug_video(
+                        debug_source,
+                        output,
+                        selection,
+                        typed_run.player_boxes,
+                        typed_run.ball_points,
+                        interaction,
+                        technical_events,
+                        pass_detection,
+                        shot_detection,
+                        save_video=settings.debug.save_video,
+                        save_frames=settings.debug.save_frames,
+                    )
+
+                expected_outputs = frozenset(
+                    name
+                    for name, enabled in (
+                        ("debug_video", settings.debug.save_video),
+                        ("debug_frames", settings.debug.save_frames),
+                    )
+                    if enabled
                 )
-                if enabled
-            )
-            response.debug_artifacts = artifacts.publish_debug_render(
-                produce_debug_render,
-                expected_outputs=expected_outputs,
-            )
-            response.debug_artifacts = _public_debug_artifact_references(response.debug_artifacts)
-            artifacts.retain()
+                response.debug_artifacts = artifacts.publish_debug_render(
+                    produce_debug_render,
+                    expected_outputs=expected_outputs,
+                )
+                response.debug_artifacts = _public_debug_artifact_references(
+                    response.debug_artifacts
+                )
+                artifacts.retain()
+
+            if debug_timing is None:
+                publish_debug_artifacts()
+            else:
+                debug_timing.measure(publish_debug_artifacts)
         except Exception:
             logger.exception("debug_render_failed analysis_id=%s", analysis_id)
             response.warnings.append(
