@@ -1,4 +1,5 @@
-> Status: Proposed implementation sequence. No slice is authorized by this document.
+> Status: Accepted implementation sequence. Local Slice 1 is authorized; later slices remain
+> subject to their own technical prerequisites, integration gates, and review boundaries.
 
 # Sprint 2 ordered implementation plan
 
@@ -8,20 +9,25 @@ made red locally first but deliberately failing tests must not be committed to a
 
 ## Slice 0: Contract and invariant approval
 
-- **Goal:** Approve the required entries in the [Apex](01-apex-decisions-required.md) and
-  [infrastructure](02-infrastructure-decisions-required.md) registers and freeze the analysis and
-  delivery invariants in [ADR-008](../../decisions/ADR-008-durable-job-recovery-and-callback-outbox.md).
+- **Goal:** Record the accepted Super-7 architecture and semantic directions in
+  [ADR-008](../../decisions/ADR-008-durable-job-recovery-and-callback-outbox.md), track outstanding
+  [Apex](01-apex-decisions-required.md) interoperability evidence and
+  [infrastructure](02-infrastructure-decisions-required.md) operational evidence, and freeze the
+  analysis and delivery invariants.
 - **Authorized in principle:** ADRs, contracts, decision registers, and future contract-test
   fixtures only.
 - **Red first:** Contract cases for same-key/same-request, same-key/conflicting-request, canonical
   IDs, stable callback event identity, duplicate acknowledgement, and separate analysis/delivery
   states must demonstrate incompatibility with the current four-field API before implementation.
-- **Invariants:** Recommendations are not treated as Apex approval; no runtime field is introduced
-  without an approved owner and compatibility rule.
+- **Invariants:** Accepted Super-7 contract directions may be implemented and tested locally;
+  missing external values are not represented as received, interoperability is not claimed without
+  conformance evidence, and no runtime field is introduced without an approved owner and
+  compatibility rule.
 - **Non-goals:** Database libraries, schema, migrations, route changes, or production activation.
-- **Prior approval:** Human acceptance of the discovery package; named Apex and infrastructure
-  owners for every blocking row.
-- **Rollback:** Revert only the new proposal documents; preserve historical decisions.
+- **Prior approval:** Human acceptance of the architecture and semantic directions. Exact external
+  values and named operational owners are required before the first shared integration boundary
+  that consumes them and before Slice 11, not before local Slice 1.
+- **Rollback:** Revert only the new decision documents; preserve historical decisions.
 - **Branch/commit:** `docs/sprint-2-contract-approval`; one documentation-only commit.
 
 ## Slice 1: PostgreSQL foundation and migration tooling
@@ -38,8 +44,11 @@ made red locally first but deliberately failing tests must not be committed to a
   result, callback, or artifact domain tables; current route and worker remain active and unchanged.
 - **Non-goals:** Domain migrations, domain constraints or indexes, `accept_or_get`, worker claims,
   callbacks, cancellation, deployment, or Compose.
-- **Prior approval:** Infrastructure database/schema, secrets, migration owner, backup posture, and
-  connection budget.
+- **Prior approval:** Super-7 local PostgreSQL foundation is authorized. Slice 1 may use disposable
+  PostgreSQL, task-scoped local credentials, and bounded local defaults. Real database/schema
+  allocation, runtime and migration credentials, secret delivery, TLS, shared reachability,
+  production connection budget, backup/restore evidence, and production migration ownership remain
+  staging/production gates rather than local Slice 1 prerequisites.
 - **Rollback:** Revert the unused connectivity and tooling boundary; no domain data or domain table
   downgrade exists in this slice.
 - **Branch/commit:** `feat/sprint-2-postgres-foundation`; separate dependency/configuration and
@@ -67,13 +76,15 @@ made red locally first but deliberately failing tests must not be committed to a
   `idempotencyKey` is neither logged nor stored directly; persistence uses an approved deterministic
   digest or otherwise protected representation suitable for uniqueness lookup. No algorithm is
   selected before security review. Slice 2 creates jobs only in `QUEUED` and provides no direct
-  `QUEUED -> FAILED` terminalization path. These capacity semantics remain proposed until human
-  approval.
+  `QUEUED -> FAILED` terminalization path. These capacity semantics are accepted as the initial
+  Super-7 durable-contract direction. Exact numeric capacity values remain configuration and
+  measurement decisions, and this acceptance does not authorize production activation.
 - **Non-goals:** Worker recovery, result storage, callback dispatcher, cancellation, artifacts,
   public route wiring or activation, public status/result endpoints, or more workers.
-- **Prior approval:** Slice 0 key creator/reuse, caller scope, fingerprint, intentional re-analysis,
-  ID compatibility, proposed capacity semantics, and security review of the protected lookup
-  approach; Slice 1 green.
+- **Prior approval:** Accepted Super-7 key creator/reuse, caller scope, fingerprint, intentional
+  re-analysis, ID compatibility, and capacity semantics; security review of the protected lookup
+  approach; Slice 1 green. Apex conformance is required before route cutover, not before the local
+  persistence boundary.
 - **Rollback:** The current route remains untouched. Revert only the unused persistence adapter and
   downgrade the domain migration only on an empty disposable database; preserve any committed
   records needed by later reviewed slices.
@@ -101,8 +112,10 @@ made red locally first but deliberately failing tests must not be committed to a
   subject to the approved Apex contract.
 - **Non-goals:** Additional workers, broker, hard child kill, result finalization, callback delivery,
   or production capacity testing.
-- **Prior approval:** Source-video availability; the Super-7 retry, exhaustion, and configuration
-  ownership decisions above; infrastructure availability and pool budget; slices 1–2 green.
+- **Prior approval:** The Super-7 retry, exhaustion, and configuration-ownership decisions above;
+  disposable-database and source-availability fixtures for local work; slices 1–2 green. Real
+  source-video retention, infrastructure availability, and pool-budget evidence are required before
+  shared recovery integration and activation.
 - **Rollback:** Stop new claims; preserve durable `QUEUED`/`RUNNING` records for reconciliation.
 - **Branch/commit:** `feat/sprint-2-worker-recovery`; claim/fence and recovery commits reviewed
   separately.
@@ -120,7 +133,8 @@ made red locally first but deliberately failing tests must not be committed to a
 - **Invariants:** `COMPLETED` requires a durable result; terminal state and any contract-required
   outbox event commit atomically; delivery state never changes analysis state.
 - **Non-goals:** Sending callbacks, redrive, cancellation API, artifacts, or result-query endpoint.
-- **Prior approval:** Callback event identity and terminal payload compatibility; slice 3 green.
+- **Prior approval:** Accepted Super-7 callback event identity and deterministic terminal-payload
+  contract; slice 3 green. Apex compatibility evidence is required before shared integration.
 - **Rollback:** Stop finalizers before reverting readers; preserve all committed terminal rows and
   outbox events.
 - **Branch/commit:** `feat/sprint-2-result-outbox`; one transaction-focused commit.
@@ -137,8 +151,9 @@ made red locally first but deliberately failing tests must not be committed to a
   event ID for retry; no inline callback in the analysis finalization path.
 - **Non-goals:** Exactly-once delivery, new public endpoint, unapproved authentication algorithm,
   broker, or production callback.
-- **Prior approval:** Apex duplicate acknowledgement, authentication/replay, retry/redrive window,
-  and authoritative-state decisions; slice 4 green.
+- **Prior approval:** Reviewed local duplicate-acknowledgement, authentication/replay,
+  retry/redrive, and authoritative-state contracts with deterministic vectors; slice 4 green.
+  Matching Apex conformance is required before callback interoperability and activation.
 - **Rollback:** Stop dispatcher claims while retaining all pending/retrying events.
 - **Branch/commit:** `feat/sprint-2-callback-dispatcher`; claim/state commit followed by transport
   integration commit.
@@ -154,8 +169,9 @@ made red locally first but deliberately failing tests must not be committed to a
   cancellation is authenticated and fenced.
 - **Non-goals:** Inventing cancellation authority, forced native-process termination, or changing
   callback semantics without Apex approval.
-- **Prior approval:** Cancellation authority, running-race behavior, and cancellation callback row
-  in the Apex register; slice 3 and, where callbacks apply, slice 5 green.
+- **Prior approval:** Reviewed local cancellation authority, running-race behavior, and callback
+  contract; slice 3 and, where callbacks apply, slice 5 green. Matching Apex conformance is required
+  before cancellation interoperability and activation.
 - **Rollback:** Disable new cancellation requests while preserving already committed terminal state.
 - **Branch/commit:** `feat/sprint-2-durable-cancellation`; one behavior-and-tests commit.
 
@@ -172,8 +188,9 @@ made red locally first but deliberately failing tests must not be committed to a
   reviewed root; physical deletion precedes durable `DELETED`; bytes remain outside PostgreSQL.
 - **Non-goals:** Object-store selection, unbounded diagnostic retention, general cache infrastructure,
   or changing scoring artifacts.
-- **Prior approval:** Artifact-root availability, fallback behavior, retention period/count, and
-  infrastructure access ownership; slices 1 and 3 green.
+- **Prior approval:** Reviewed local artifact-root, fallback, retention, and deterministic failure
+  contracts; slices 1 and 3 green. Real storage and access ownership are required before retained
+  artifact staging integration or production use.
 - **Rollback:** Disable retention and cleanup claims; preserve registered paths for later
   reconciliation rather than deleting metadata.
 - **Branch/commit:** `feat/sprint-2-artifact-recovery`; metadata/publish and reconciliation/prune
@@ -190,7 +207,9 @@ made red locally first but deliberately failing tests must not be committed to a
 - **Invariants:** API memory is never the only accepted-job copy; liveness and readiness are distinct;
   health checks do not run inference.
 - **Non-goals:** Additional API/worker replicas, deployment, autoscaling, dashboards, or SLA claims.
-- **Prior approval:** Infrastructure availability and connection budget; slices 2–5 green.
+- **Prior approval:** Deterministic local infrastructure/readiness contracts and bounded local pool
+  defaults; slices 2–5 green. Target availability, reachability, and connection-budget evidence are
+  required before staging integration and activation.
 - **Rollback:** Keep durable writers/readers compatible; disable new role wiring without deleting
   state.
 - **Branch/commit:** `feat/sprint-2-stateless-readiness`; role composition and health changes in
@@ -212,8 +231,9 @@ made red locally first but deliberately failing tests must not be committed to a
   endpoint is implied.
 - **Non-goals:** Silent mandatory-field rollout, destructive data migration, deployment, public
   production route activation, or retirement of the active in-memory path.
-- **Prior approval:** Apex compatibility and proposed retirement decisions, retry window, retention,
-  and all applicable earlier slices green.
+- **Prior approval:** Accepted local compatibility and retirement directions, reviewed retry and
+  retention policies, and all applicable earlier slices green. Apex conformance is required before
+  any later route cutover, not for disabled compatibility preparation.
 - **Rollback:** Remove unused compatibility selection while durable records and migrations remain
   readable; the active route is unchanged.
 - **Branch/commit:** `feat/sprint-2-legacy-compatibility`; compatibility and cleanup commits reviewed
@@ -260,9 +280,10 @@ made red locally first but deliberately failing tests must not be committed to a
 
 ## First implementation recommendation
 
-After the independently reviewed Slice 1 tooling/connectivity foundation is green, the first domain
-implementation task should be only the Slice 2 **PostgreSQL-backed, concurrency-tested
-`accept_or_get`** boundary.
+The first implementation slice is Slice 1 PostgreSQL foundation and migration tooling. It creates
+no domain tables and does not wire a public route. After that independently reviewed foundation is
+green, the first domain-persistence task is Slice 2: the **PostgreSQL-backed, concurrency-tested
+`accept_or_get`** boundary and its first `AnalysisJob`/idempotency migration.
 
 Future scope is limited to:
 
