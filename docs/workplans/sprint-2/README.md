@@ -1,5 +1,5 @@
-> Status: Approved discovery evidence; proposed architecture is blocked and not an implementation
-> or production-activation approval.
+> Status: Accepted architecture and discovery direction; local Slice 1 implementation authorized;
+> interoperability, infrastructure integration, and production activation pending.
 
 # Sprint 2 durability discovery package
 
@@ -23,38 +23,48 @@ or manager recreation boundaries.
 
 | Item | Status |
 |---|---|
-| Current in-memory queue, one worker, one spawned child, and inline callback retries | Current, implemented behavior |
-| Restart-safe accepted work, results, delivery, and artifact ownership | Not implemented |
-| PostgreSQL-only durable boundary | Proposed; blocked on Apex and infrastructure decisions |
+| Current process-local queue, one worker, one spawned child, and inline callback retries | Current implemented behavior |
+| Restart-safe durability for accepted work, results, delivery, and artifact ownership | Not implemented |
+| PostgreSQL authoritative durability boundary | Accepted architecture; not implemented |
+| Local Slice 1 PostgreSQL foundation | Authorized; not yet implemented |
+| Staging and production infrastructure | Pending |
 | More workers, Redis, broker, task framework, or Kubernetes | Deferred |
-| Production database, migration, deployment, and server validation | Blocked and explicitly outside this package |
+| Production activation | Blocked until Slice 11 |
 
 The existing [durable-storage ADR](../../decisions/ADR-005-durable-job-storage-and-worker-architecture.md)
 records an earlier accepted direction for later implementation. The new
 [Sprint 2 ADR](../../decisions/ADR-008-durable-job-recovery-and-callback-outbox.md) preserves that
-history while recording the current proposal and its unresolved activation prerequisites. The
+history while recording the accepted architecture and its unresolved integration and activation
+prerequisites. The
 historical duplicate ADR-005 filenames are not renamed or rewritten; ADR-008 is the next unused
 number in the canonical `docs/decisions` sequence.
 
+The project-owner instruction reports Apex approval of the Sprint 2 decisions and review
+corrections, but includes no itemized external response, exact interoperability values, or
+conformance evidence. That evidence is required before the applicable shared integration boundary
+and production cutover, not before unrelated local work or local Slice 1. The attestation does not
+prove Apex implementation or provide staging/production infrastructure evidence.
+
 ## Reading order
 
-1. [ADR-008](../../decisions/ADR-008-durable-job-recovery-and-callback-outbox.md) — proposed durable boundary.
-2. [Apex decisions](01-apex-decisions-required.md) — unresolved integration and product contract.
-3. [Infrastructure decisions](02-infrastructure-decisions-required.md) — unresolved operational ownership.
+1. [ADR-008](../../decisions/ADR-008-durable-job-recovery-and-callback-outbox.md) — accepted durable architecture.
+2. [Apex decisions](01-apex-decisions-required.md) — accepted local contract direction and pending interoperability evidence.
+3. [Infrastructure decisions](02-infrastructure-decisions-required.md) — local foundation authorization and pending staging/production ownership.
 4. [Implementation plan](03-implementation-plan.md) — one-slice-at-a-time sequence and stop boundaries.
+5. [APX-15 result mapping](04-apx-15-result-mapping-preparation.md) — accepted Super-7 canonical scoring/mapping direction; implementation, scientific validation, identity assurance, Apex interoperability, and cutover remain pending.
 
 ## Approved direction, not approved activation
 
-The smallest proposed boundary uses one Super-7-owned PostgreSQL source of truth, one analysis
+The accepted boundary uses one Super-7-owned PostgreSQL source of truth, one analysis
 worker, fenced attempts, durable result finalization, a transactional callback outbox, and bounded
 artifact metadata. Artifact and video bytes stay outside PostgreSQL. Redis, brokers, task
-frameworks, Kubernetes, and additional workers are not part of the proposed initial scope.
+frameworks, Kubernetes, and additional workers are not part of the accepted initial scope.
 
-For durable admission, the proposed MVP interpretation is that `max_queue_size` counts only
+For durable admission, the accepted initial contract is that `max_queue_size` counts only
 `QUEUED` jobs, `RUNNING` capacity is controlled separately by `max_concurrent_analyses=1`, and
 terminal jobs consume no queue capacity. Identical retries resolve before capacity rejection, and
-new admission plus capacity enforcement is transactional. This interpretation requires human
-approval before implementation.
+new admission plus capacity enforcement is transactional. Exact numeric limits remain configuration
+and measurement decisions; this acceptance is not a measured capacity or activation claim.
 
 Slice 1 owns only PostgreSQL dependency/configuration, migration tooling, connectivity,
 schema-version checks, and isolated tooling verification. Slice 2 owns the first domain migration
@@ -63,17 +73,21 @@ for `AnalysisJob` and idempotency, including its indexes, uniqueness constraints
 approved deterministic digest or otherwise protected lookup representation is required, with the
 specific approach deferred to security review.
 
-No executable work may begin merely because this package exists. Slice 0 decisions and the stated
-prerequisites for the selected slice must be approved first. Only one implementation slice may be
-implemented and reviewed at a time. Slice 2 builds only the persistence boundary. Public route
-activation is forbidden in Slice 9 and before the Slice 10 disposable-database crash matrix is
-green. It is reserved for a separately reviewed Slice 11 boundary after all applicable slices,
-Apex and infrastructure decisions, migration/rollback rehearsal, and explicit human authorization
-are green and approved.
+A local slice may begin when the decisions required specifically by that slice are accepted. Local
+Slice 1 is authorized against disposable PostgreSQL with task-scoped credentials and bounded local
+defaults. Later local slices may proceed against approved Super-7 contracts and deterministic
+fakes or test vectors after satisfying their own prerequisites. External conformance evidence is
+required before shared interoperability, while target infrastructure and full operational evidence
+are required before Slice 11. Only one implementation slice may be implemented and reviewed at a
+time. Slice 2 builds only the domain-persistence boundary. Public route activation is forbidden in
+Slice 9 and before the Slice 10 disposable-database crash matrix is green. It is reserved for a
+separately reviewed Slice 11 boundary after all applicable slices, Apex and infrastructure
+decisions, migration/rollback rehearsal, and explicit human authorization are green and approved.
 
 ## Explicit non-goals
 
-- Runtime, test, schema, migration, dependency, configuration, workflow, or deployment changes.
+- Runtime, test, schema, migration, dependency, configuration, workflow, or deployment changes in
+  this documentation correction.
 - Production or database creation or server access.
 - Apex code or database changes.
 - Callback delivery, model inference, or load testing.

@@ -2,16 +2,24 @@
 
 ## Status
 
-Proposed — blocked on Apex and infrastructure decisions
+Accepted architecture — local implementation authorized; interoperability and production activation pending
+
+The project owner reports Apex approval of the reviewed Sprint 2 direction and Super-7 review
+corrections. Super-7 accepts the internal durability architecture defined here. No itemized Apex
+response, exact external contract values, or operational evidence accompany that report in this
+repository; the [Apex decision register](../workplans/sprint-2/01-apex-decisions-required.md)
+therefore remains open for interoperability evidence. Those missing external values do not block
+local Slice 1. They remain gates for the first slice or shared integration boundary that consumes
+them and for Slice 11 production cutover. Acceptance does not authorize production activation.
 
 This ADR does not change current behavior, approve production activation, or alter the historical
 status of [ADR-004](ADR-004-analysis-job-lifecycle-and-idempotency.md),
 [ADR-005](ADR-005-durable-job-storage-and-worker-architecture.md),
 [ADR-006](ADR-006-controlled-concurrency-mvp.md), or
-[ADR-007](ADR-007-process-execution-boundary.md). Until ADR-008 is accepted, ADR-004 retains its
-historical status. If ADR-008 is accepted, it supersedes ADR-004 only regarding the direct
-`QUEUED -> FAILED` transition for the durable implementation. ADR-008 consolidates the proposed
-Sprint 2 boundary at the repository state recorded in the
+[ADR-007](ADR-007-process-execution-boundary.md). ADR-008 supersedes ADR-004 only regarding the
+direct `QUEUED -> FAILED` transition for the durable implementation; ADR-004 remains historical
+authority outside that narrow conflict. ADR-008 consolidates the accepted Sprint 2 architecture
+at the repository state recorded in the
 [Sprint 2 discovery](../workplans/sprint-2/README.md).
 
 ## Context
@@ -30,7 +38,7 @@ The current behavior and evidence are described in the
 [proposed V1 job contract](../contracts/analysis-job-contract-v1.md). These sources describe current
 and earlier proposed behavior; none proves durable operation.
 
-## Proposed decision
+## Decision
 
 Use PostgreSQL as the sole authoritative durable store for accepted jobs, idempotency bindings,
 execution attempts, results, callback delivery, and retained-artifact metadata. A job in durable
@@ -66,9 +74,11 @@ Its descriptions of thread execution as current and the pool as future are histo
 custom spawn supervisor rejected by ADR-007 has no implementation in the current source tree; it is
 not the `ProcessAnalysisPool` and is not proposed by this ADR.
 
-The future durable admission contract is transactional only after the required Apex and
-infrastructure decisions are approved. Building its persistence boundary does not authorize public
-route wiring or activation:
+Local persistence foundations may be implemented against disposable PostgreSQL without waiting for
+Apex internal tests or real staging/production infrastructure. Exact external contract values are
+required before the first integration boundary that consumes them. Real infrastructure and its
+evidence are required before staging integration or Slice 11 activation. Building the persistence
+boundary does not authorize public route wiring or activation:
 
 1. Validate the request and resolve immutable versions.
 2. In one transaction, derive and bind the approved protected lookup representation from the
@@ -77,15 +87,14 @@ route wiring or activation:
 3. Return HTTP 202 only after a new-job transaction commits. An identical retry returns the existing
    job; a conflicting fingerprint creates nothing.
 
-The raw `idempotencyKey` is neither logged nor stored directly. The proposed persistence boundary
+The raw `idempotencyKey` is neither logged nor stored directly. The accepted persistence boundary
 stores a deterministic digest or otherwise protected representation suitable for caller-scoped
 uniqueness lookup. The exact protection or digest algorithm, keying, and rotation approach require
 security review and are not selected by this ADR.
 
-### Proposed MVP queue-capacity semantics
+### Accepted initial MVP queue-capacity semantics
 
-The accepted controlled-concurrency documents separate waiting work from active-analysis capacity,
-but the durable transactional interpretation below remains proposed until human approval:
+The accepted initial Super-7 durable contract separates waiting work from active-analysis capacity:
 
 - `max_queue_size` counts jobs whose durable analysis state is `QUEUED`.
 - `RUNNING` capacity is controlled separately by `max_concurrent_analyses=1`.
@@ -95,9 +104,12 @@ but the durable transactional interpretation below remains proposed until human 
   admissions from exceeding the approved limit.
 - Invalid admission ordinarily fails before a durable job is created.
 
+Exact numeric limits remain configuration and measurement decisions. These semantics do not claim
+measured production capacity or authorize production activation.
+
 ## Durable responsibilities
 
-| Record | Proposed responsibility |
+| Record | Responsibility |
 |---|---|
 | Job | Canonical `jobId`, caller-scoped protected idempotency lookup binding, immutable request fingerprint, resolved versions, analysis state, cancellation fields, and lifecycle timestamps. |
 | Analysis attempt | Attempt number, worker identity, lease token/fence, lease expiry, heartbeat, timestamps, and safe outcome classification. |
@@ -127,7 +139,7 @@ durable job exists, a terminal pre-analysis failure must be owned by a claimed a
 the job therefore transitions `QUEUED -> RUNNING -> FAILED`. No service may terminalize a durable
 job directly from `QUEUED` to `FAILED`. Terminal transitions require a fenced transaction, and a
 stale attempt cannot overwrite a newer attempt or terminal result. This narrower rule supersedes
-ADR-004's direct `QUEUED -> FAILED` allowance only if ADR-008 is accepted.
+ADR-004's direct `QUEUED -> FAILED` allowance for the durable implementation.
 
 Callback-delivery state:
 
@@ -164,14 +176,16 @@ exhaustion remains subject to the approved Apex contract.
 Delivery is at least once, not exactly once. A dispatcher may resend after losing an acknowledgement.
 Every automatic retry and approved redrive reuses the durable `callbackEventId`. Safe duplicate
 delivery therefore requires Apex to persist that identity and acknowledge an already applied event
-as a successful no-op. Exact acknowledgement, retry, redrive, authentication, and replay behavior
-remain blocked in the [Apex decision register](../workplans/sprint-2/01-apex-decisions-required.md).
+as a successful no-op. Super-7 may define and test its local delivery contract with deterministic
+vectors in the applicable callback slice. Matching Apex acknowledgement, retry, redrive,
+authentication, and replay behavior remains an interoperability and cutover gate in the
+[Apex decision register](../workplans/sprint-2/01-apex-decisions-required.md), not a Slice 1 gate.
 
-This proposal makes no exactly-once computation or exactly-once network-delivery claim.
+This architecture makes no exactly-once computation or exactly-once network-delivery claim.
 
 ## Artifact ownership and manager recreation
 
-The current manager keeps session and retention ordering in memory. Proposed artifact ownership is
+The current manager keeps session and retention ordering in memory. Accepted artifact ownership is
 attempt-scoped and recoverable from durable metadata. Cleanup must claim an eligible artifact record,
 prove that its relative path remains beneath the configured root, and record physical deletion only
 after it succeeds. Failed deletion remains retryable and observable. Startup reconciliation must
@@ -195,7 +209,7 @@ boundary. A task framework would add lifecycle and serialization behavior before
 - A broker, Celery, Kafka, and RabbitMQ are deferred until measured PostgreSQL claim or backlog
   behavior cannot meet an approved objective.
 - Kubernetes, autoscaling, multiple hosts, and additional analysis workers are deferred.
-- SQLite may be considered only for isolated adapter tests; it is not the proposed production
+- SQLite may be considered only for isolated adapter tests; it is not the accepted production
   coordination boundary.
 - The existing in-memory queue cannot provide durable acceptance and is rejected as the future
   source of truth.
@@ -242,8 +256,11 @@ Costs and risks:
 ## Implementation boundary
 
 Only one slice in the [Sprint 2 implementation plan](../workplans/sprint-2/03-implementation-plan.md)
-may be implemented and reviewed at a time. The first recommended implementation is limited to a
-PostgreSQL-backed, concurrency-tested `accept_or_get` persistence boundary. Slice 1 supplies only
-tooling and connectivity; Slice 2 owns the first `AnalysisJob` and idempotency domain migration and
-must store only an approved protected key representation. No public route wiring or activation is
-included. This ADR does not authorize that implementation.
+may be implemented and reviewed at a time. The first implementation slice is Slice 1 PostgreSQL
+foundation: dependency and migration tooling, typed configuration, connectivity, bounded pool
+lifecycle, schema-version checks, and disposable-database verification, with no domain tables. The
+first domain-persistence slice is Slice 2: the `AnalysisJob` and idempotency migration plus the
+PostgreSQL-backed, concurrency-tested `accept_or_get` boundary. Slice 2 must store only an approved
+protected key representation and performs no public route wiring or activation. Local Slice 1 is
+authorized; every later slice remains subject to its own prerequisites, and Slice 11 remains the
+sole production activation boundary.
