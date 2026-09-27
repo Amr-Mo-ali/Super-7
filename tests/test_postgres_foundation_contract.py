@@ -694,21 +694,26 @@ def test_slice_one_migration_state_contains_no_domain_relations() -> None:
     )
 
 
-def test_logging_failure_cannot_replace_configuration_failure(
+def test_configuration_failure_remains_logging_free_and_preserves_primary_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    purpose = "preservation of a primary configuration failure"
+    purpose = "logging-free preservation of a primary configuration failure"
     settings_type = _require_symbol(_CONFIG_MODULE, "DatabaseSettings", purpose)
     error_type = _require_symbol(_CONFIG_MODULE, "DatabaseConfigurationError", purpose)
     values = _local_environment()
     del values["POSTGRES_PASSWORD"]
+    logging_calls = 0
 
     def fail_logging(*_: object, **__: object) -> None:
+        nonlocal logging_calls
+        logging_calls += 1
         raise _LoggingFailure("diagnostic logger failed")
 
     monkeypatch.setattr(logging.Logger, "_log", fail_logging)
-    with pytest.raises(error_type):
+    with pytest.raises(error_type, match="POSTGRES_PASSWORD is required"):
         settings_type.from_mapping(values)
+
+    assert logging_calls == 0
 
 
 def test_logging_failure_cannot_replace_startup_failure() -> None:
