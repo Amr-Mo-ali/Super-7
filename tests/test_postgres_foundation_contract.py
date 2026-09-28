@@ -16,7 +16,7 @@ from importlib import import_module
 from importlib.util import find_spec
 from io import StringIO
 from types import ModuleType
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import Any, cast, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -268,6 +268,8 @@ def test_complete_local_database_configuration_is_typed() -> None:
     assert isinstance(settings, settings_type)
     assert isinstance(settings.pool.min_size, int)
     assert isinstance(settings.pool.max_size, int)
+    assert isinstance(settings.connect_timeout_seconds, int)
+    assert settings.connect_timeout_seconds == 5
     assert settings.required_schema_version == _REQUIRED_SCHEMA_VERSION
 
 
@@ -293,9 +295,9 @@ def test_missing_required_database_configuration_fails_safely() -> None:
     ("field", "marker"),
     (
         ("POSTGRES_PORT", "malformed-integer-secret-marker-7e91"),
-        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "malformed-float-secret-marker-4c28"),
+        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "malformed-timeout-secret-marker-4c28"),
     ),
-    ids=("malformed-integer", "malformed-float"),
+    ids=("malformed-integer", "malformed-connect-timeout"),
 )
 def test_malformed_numeric_configuration_has_no_secret_bearing_exception_context(
     field: str,
@@ -350,7 +352,11 @@ def test_zero_pool_minimum_with_positive_maximum_is_valid() -> None:
     ("field", "value"),
     (
         ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "0"),
+        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "1"),
         ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "-1"),
+        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "0.25"),
+        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "1.5"),
+        ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "2.75"),
         ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "nan"),
         ("POSTGRES_CONNECT_TIMEOUT_SECONDS", "inf"),
         ("POSTGRES_POOL_ACQUIRE_TIMEOUT_SECONDS", "0"),
@@ -370,7 +376,11 @@ def test_zero_pool_minimum_with_positive_maximum_is_valid() -> None:
     ),
     ids=(
         "zero-connect-timeout",
+        "below-driver-minimum-connect-timeout",
         "negative-connect-timeout",
+        "quarter-second-connect-timeout",
+        "fractional-one-and-half-connect-timeout",
+        "fractional-two-and-three-quarters-connect-timeout",
         "nan-connect-timeout",
         "positive-infinity-connect-timeout",
         "zero-acquisition-timeout",
@@ -399,6 +409,32 @@ def test_invalid_bounded_wait_and_lifecycle_controls_are_rejected(
 
     with pytest.raises(error_type):
         settings_type.from_mapping(_local_environment(**{field: value}))
+
+
+@pytest.mark.parametrize("value", (2, 3), ids=("two-seconds", "three-seconds"))
+def test_connect_timeout_accepts_exact_driver_integer_seconds(value: int) -> None:
+    purpose = f"exact integer driver connect timeout of {value} seconds"
+    settings = _load_settings(
+        _local_environment(POSTGRES_CONNECT_TIMEOUT_SECONDS=str(value)),
+        purpose,
+    )
+
+    assert settings.connect_timeout_seconds == value
+    assert type(settings.connect_timeout_seconds) is int
+
+
+@pytest.mark.parametrize("value", (False, True), ids=("false", "true"))
+def test_connect_timeout_rejects_boolean_objects_safely(value: bool) -> None:
+    purpose = "safe rejection of a Boolean driver connect timeout"
+    settings_type = _require_symbol(_CONFIG_MODULE, "DatabaseSettings", purpose)
+    error_type = _require_symbol(_CONFIG_MODULE, "DatabaseConfigurationError", purpose)
+    values: dict[str, object] = dict(_local_environment())
+    values["POSTGRES_CONNECT_TIMEOUT_SECONDS"] = value
+
+    with pytest.raises(error_type) as captured:
+        settings_type.from_mapping(cast(Mapping[str, str], values))
+
+    assert str(value) not in _render_exception_graph(captured.value)
 
 
 def test_pool_controls_are_typed_configurable_and_bounded() -> None:

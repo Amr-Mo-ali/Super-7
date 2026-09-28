@@ -111,7 +111,7 @@ class DatabaseSettings:
     _database: str = field(repr=False)
     _user: str = field(repr=False)
     _password: str = field(repr=False)
-    connect_timeout_seconds: float
+    connect_timeout_seconds: int
     pool: DatabasePoolSettings
     required_schema_version: str
 
@@ -129,10 +129,11 @@ class DatabaseSettings:
         _require_int(self._port, "POSTGRES_PORT")
         if not 1 <= self._port <= 65535:
             raise DatabaseConfigurationError("POSTGRES_PORT must be between 1 and 65535.")
-        _require_finite_positive(
-            self.connect_timeout_seconds,
-            "POSTGRES_CONNECT_TIMEOUT_SECONDS",
-        )
+        _require_int(self.connect_timeout_seconds, "POSTGRES_CONNECT_TIMEOUT_SECONDS")
+        if self.connect_timeout_seconds < 2:
+            raise DatabaseConfigurationError(
+                "POSTGRES_CONNECT_TIMEOUT_SECONDS must be an integer of at least 2 seconds."
+            )
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, str]) -> DatabaseSettings:
@@ -164,7 +165,7 @@ class DatabaseSettings:
                 "POSTGRES_PASSWORD",
                 preserve_whitespace=True,
             ),
-            connect_timeout_seconds=_required_float(
+            connect_timeout_seconds=_required_int(
                 values,
                 "POSTGRES_CONNECT_TIMEOUT_SECONDS",
             ),
