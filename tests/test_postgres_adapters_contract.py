@@ -12,6 +12,8 @@ import hashlib
 import inspect
 import logging
 import re
+import selectors
+import subprocess
 import tomllib
 import warnings
 from collections.abc import Callable, Coroutine, Mapping
@@ -24,8 +26,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import Protocol, cast
 
+import conftest as disposable_postgres
 import pytest
 
+from adapters.psycopg_database import (
+    PostgresConnectivityProbe,
+    PostgresSchemaVersionProbe,
+    PsycopgDatabasePool,
+    PsycopgPoolFactory,
+)
 from core.config import Settings
 from core.database_config import DatabaseSettings
 from services.postgres_foundation import (
@@ -80,6 +89,8 @@ _RED_DISCOVERY = "Slice 1 RED: foundation-only migration catalog is not implemen
 _RED_DISPOSABLE = "Slice 1 RED: disposable PostgreSQL verification is not implemented yet"
 _RED_PACKAGING = "Slice 1 RED: concrete adapter package discovery is not implemented yet"
 
+_GREEN_C2_OPTION = "--slice1-disposable-postgres"
+
 with warnings.catch_warnings():
     # RED-C cannot edit pytest configuration; the packaging contract below
     # requires registration before these future integration nodes turn GREEN.
@@ -89,6 +100,13 @@ with warnings.catch_warnings():
 
 def _run[T](operation: Coroutine[object, object, T]) -> T:
     return asyncio.run(operation)
+
+
+def _run_real_database[T](operation: Coroutine[object, object, T]) -> T:
+    return asyncio.run(
+        operation,
+        loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()),
+    )
 
 
 def _require_module(module_name: str, message: str) -> ModuleType:
@@ -1017,7 +1035,8 @@ def test_concrete_adapters_are_packaged_and_integration_marker_is_registered() -
 
 
 class _DisposableSession(Protocol):
-    settings: DatabaseSettings
+    migration_settings: DatabaseSettings
+    runtime_settings: DatabaseSettings
 
     def application_relations(self) -> frozenset[str]: ...
 
@@ -1028,16 +1047,454 @@ class _DisposableFactory(Protocol):
     def __call__(self) -> AbstractContextManager[_DisposableSession]: ...
 
 
+_RECOVERY_CONTAINER_ID = "a" * 64
+_RECOVERY_OTHER_CONTAINER_ID = "b" * 64
+_RECOVERY_TASK_ID = "c" * 24
+_RECOVERY_CONTAINER_NAME = f"super7-slice1-green-c2-{_RECOVERY_TASK_ID}"
+
+
+class _RecoveryDocker:
+    def __init__(
+        self,
+        *,
+        name_output: str = _RECOVERY_CONTAINER_ID,
+        actual_id: str = _RECOVERY_CONTAINER_ID,
+        actual_name: str = f"/{_RECOVERY_CONTAINER_NAME}",
+        actual_label: str = _RECOVERY_TASK_ID,
+        exists: bool | None = None,
+        fail_run: bool = False,
+    ) -> None:
+        self.name_output = name_output
+        self.actual_id = actual_id
+        self.actual_name = actual_name
+        self.actual_label = actual_label
+        self.exists = bool(name_output) if exists is None else exists
+        self.fail_run = fail_run
+        self.calls: list[tuple[str, ...]] = []
+        self.removed_ids: list[str] = []
+
+    def __call__(
+        self,
+        *arguments: str,
+        preserve_raw_output: bool = False,
+    ) -> str:
+        del preserve_raw_output
+        self.calls.append(arguments)
+        command = arguments[0]
+        if command == "ps":
+            filter_value = arguments[arguments.index("--filter") + 1]
+            if filter_value.startswith("name="):
+                return self.name_output if self.exists else ""
+            if filter_value.startswith("id="):
+                return self.actual_id if self.exists else ""
+        elif command == "inspect":
+            template = arguments[arguments.index("--format") + 1]
+            if template == "{{.Id}}":
+                return self.actual_id
+            if template == "{{.Name}}":
+                return self.actual_name
+            if ".Config.Labels" in template:
+                return self.actual_label
+        elif command == "rm":
+            container_id = arguments[-1]
+            self.removed_ids.append(container_id)
+            self.exists = False
+            return container_id
+        elif command == "run":
+            self.exists = True
+            if self.fail_run:
+                raise disposable_postgres._DisposablePostgresError(
+                    "Disposable PostgreSQL Docker operation failed."
+                )
+            return self.actual_id
+        raise AssertionError("unexpected deterministic Docker operation")
+
+
+class _RecoverySubprocess:
+    def __init__(self, raw_name_output: str) -> None:
+        self.raw_name_output = raw_name_output
+        self.exists = True
+        self.calls: list[tuple[str, ...]] = []
+        self.removed_ids: list[str] = []
+
+    def __call__(
+        self,
+        arguments: tuple[str, ...],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(arguments)
+        command = arguments[1]
+        output: str
+        if command == "ps":
+            filter_value = arguments[arguments.index("--filter") + 1]
+            if filter_value.startswith("name="):
+                output = self.raw_name_output if self.exists else ""
+            elif filter_value.startswith("id="):
+                output = f"{_RECOVERY_CONTAINER_ID}\n" if self.exists else ""
+            else:
+                raise AssertionError("unexpected deterministic Docker filter")
+        elif command == "inspect":
+            template = arguments[arguments.index("--format") + 1]
+            if template == "{{.Id}}":
+                output = f"{_RECOVERY_CONTAINER_ID}\n"
+            elif template == "{{.Name}}":
+                output = f"/{_RECOVERY_CONTAINER_NAME}\n"
+            elif ".Config.Labels" in template:
+                output = f"{_RECOVERY_TASK_ID}\n"
+            else:
+                raise AssertionError("unexpected deterministic Docker inspection")
+        elif command == "rm":
+            container_id = arguments[-1]
+            self.removed_ids.append(container_id)
+            self.exists = False
+            output = f"{container_id}\n"
+        else:
+            raise AssertionError("unexpected deterministic Docker operation")
+        return subprocess.CompletedProcess(arguments, 0, stdout=output, stderr="")
+
+
+def _recovery_resource(secret_file: Path) -> disposable_postgres._OwnedResource:
+    secret_file.write_text("task-only-password-marker", encoding="utf-8")
+    return disposable_postgres._OwnedResource(
+        task_id=_RECOVERY_TASK_ID,
+        name=_RECOVERY_CONTAINER_NAME,
+        password_file=secret_file,
+    )
+
+
+def _patch_recovery_docker(
+    monkeypatch: pytest.MonkeyPatch,
+    docker: _RecoveryDocker,
+) -> None:
+    monkeypatch.setattr(disposable_postgres, "_docker_checked", docker)
+
+
+def test_disposable_postgres_recovers_exact_owned_container_after_ambiguous_run_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    docker = _RecoveryDocker(exists=False, fail_run=True)
+    resource = _recovery_resource(tmp_path / "task.secret")
+    factory = disposable_postgres._DisposablePostgresFactory("unused-test-image")
+    _patch_recovery_docker(monkeypatch, docker)
+    monkeypatch.setattr(disposable_postgres, "_new_owned_resource", lambda: resource)
+
+    with pytest.raises(
+        disposable_postgres._DisposablePostgresError,
+        match=r"^Disposable PostgreSQL Docker operation failed\.$",
+    ):
+        with factory():
+            pytest.fail("ambiguous startup must not enter the context")
+
+    expected_name_filter = f"name=^/{_RECOVERY_CONTAINER_NAME}$"
+    assert any(expected_name_filter in call for call in docker.calls)
+    assert ("inspect", "--format", "{{.Id}}", _RECOVERY_CONTAINER_ID) in docker.calls
+    assert docker.removed_ids == [_RECOVERY_CONTAINER_ID]
+    assert resource.container_id == _RECOVERY_CONTAINER_ID
+    assert factory.active_count == 0
+    assert not resource.password_file.exists()
+
+
+def test_disposable_postgres_zero_result_recovery_performs_no_inspection_or_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    docker = _RecoveryDocker(name_output="")
+    resource = _recovery_resource(tmp_path / "task.secret")
+    _patch_recovery_docker(monkeypatch, docker)
+
+    disposable_postgres._remove_exact_owned_container(resource)
+
+    assert len(docker.calls) == 1
+    assert docker.calls[0][0] == "ps"
+    assert f"name=^/{_RECOVERY_CONTAINER_NAME}$" in docker.calls[0]
+    assert docker.removed_ids == []
+    assert resource.container_id is None
+
+
+@pytest.mark.parametrize(
+    "raw_output",
+    (
+        f" {_RECOVERY_CONTAINER_ID}\n",
+        f"{_RECOVERY_CONTAINER_ID} \n",
+        f"\n{_RECOVERY_CONTAINER_ID}\n",
+        f"{_RECOVERY_CONTAINER_ID}\n\n",
+        f"\t{_RECOVERY_CONTAINER_ID}\n",
+        f"{_RECOVERY_CONTAINER_ID}\t\n",
+    ),
+    ids=(
+        "leading-space",
+        "trailing-space",
+        "leading-empty-line",
+        "additional-trailing-empty-line",
+        "leading-tab",
+        "trailing-tab",
+    ),
+)
+def test_disposable_postgres_recovery_rejects_whitespace_or_empty_line_pollution_without_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    raw_output: str,
+) -> None:
+    docker = _RecoverySubprocess(raw_output)
+    resource = _recovery_resource(tmp_path / "task.secret")
+    factory = disposable_postgres._DisposablePostgresFactory("unused-test-image")
+    factory._register(resource)
+    monkeypatch.setattr(subprocess, "run", docker)
+
+    with pytest.raises(
+        disposable_postgres._DisposablePostgresError,
+        match=r"^Disposable PostgreSQL container identity is ambiguous\.$",
+    ) as captured:
+        disposable_postgres._remove_exact_owned_container(resource)
+
+    rendered = " ".join(
+        part
+        for error in _exception_graph(captured.value)
+        for part in (str(error), repr(error), repr(error.args))
+    )
+    assert raw_output not in rendered
+    assert raw_output not in caplog.text
+    assert not any(call[1] == "inspect" for call in docker.calls)
+    assert not any(call[1] == "rm" for call in docker.calls)
+    assert docker.removed_ids == []
+    assert resource.container_id is None
+    assert factory.active_count == 1
+    assert resource.password_file.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "actual_value"),
+    (
+        ("id", _RECOVERY_OTHER_CONTAINER_ID),
+        ("name", f"/{_RECOVERY_CONTAINER_NAME}-unrelated"),
+        ("label", "unrelated-owner-token"),
+        ("label", ""),
+    ),
+    ids=("id-mismatch", "name-mismatch", "label-mismatch", "missing-label"),
+)
+def test_disposable_postgres_recovery_rejects_ownership_mismatch_without_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    field: str,
+    actual_value: str,
+) -> None:
+    if field == "id":
+        docker = _RecoveryDocker(actual_id=actual_value)
+    elif field == "name":
+        docker = _RecoveryDocker(actual_name=actual_value)
+    else:
+        docker = _RecoveryDocker(actual_label=actual_value)
+    resource = _recovery_resource(tmp_path / "task.secret")
+    _patch_recovery_docker(monkeypatch, docker)
+
+    with pytest.raises(
+        disposable_postgres._DisposablePostgresError,
+        match=r"^Disposable PostgreSQL ownership verification failed\.$",
+    ) as captured:
+        disposable_postgres._remove_exact_owned_container(resource)
+
+    rendered = " ".join(
+        part
+        for error in _exception_graph(captured.value)
+        for part in (str(error), repr(error), repr(error.args))
+    )
+    if actual_value:
+        assert actual_value not in rendered
+    assert docker.removed_ids == []
+    assert resource.container_id is None
+
+
+@pytest.mark.parametrize(
+    "name_output",
+    (
+        f"{_RECOVERY_CONTAINER_ID}\n{_RECOVERY_OTHER_CONTAINER_ID}",
+        "malformed-container-identity-marker",
+        f"{_RECOVERY_CONTAINER_ID}\nraw-docker-output-marker",
+    ),
+    ids=("multiple-results", "malformed-id", "mixed-malformed-output"),
+)
+def test_disposable_postgres_recovery_rejects_ambiguous_or_malformed_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name_output: str,
+) -> None:
+    docker = _RecoveryDocker(name_output=name_output)
+    resource = _recovery_resource(tmp_path / "task.secret")
+    _patch_recovery_docker(monkeypatch, docker)
+
+    with pytest.raises(
+        disposable_postgres._DisposablePostgresError,
+        match=r"^Disposable PostgreSQL container identity is ambiguous\.$",
+    ) as captured:
+        disposable_postgres._remove_exact_owned_container(resource)
+
+    rendered = " ".join(
+        part
+        for error in _exception_graph(captured.value)
+        for part in (str(error), repr(error), repr(error.args))
+    )
+    assert "malformed-container-identity-marker" not in rendered
+    assert "raw-docker-output-marker" not in rendered
+    assert docker.removed_ids == []
+    assert resource.container_id is None
+
+
+def test_disposable_postgres_startup_failure_retains_precedence_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    docker = _RecoveryDocker(actual_label="unrelated-owner-token")
+    resource = _recovery_resource(tmp_path / "task.secret")
+    factory = disposable_postgres._DisposablePostgresFactory("unused-test-image")
+    _patch_recovery_docker(monkeypatch, docker)
+    monkeypatch.setattr(disposable_postgres, "_new_owned_resource", lambda: resource)
+
+    def failing_start(*_: object) -> None:
+        raise _DriverFailure(f"{_DRIVER_MARKER} {_PASSWORD_MARKER}")
+
+    monkeypatch.setattr(disposable_postgres, "_start_disposable_postgres", failing_start)
+
+    with pytest.raises(
+        disposable_postgres._DisposablePostgresError,
+        match=r"^Disposable PostgreSQL setup failed\.$",
+    ) as captured:
+        with factory():
+            pytest.fail("failed startup must not enter the context")
+
+    _assert_exception_secret_safe(captured.value)
+    assert docker.removed_ids == []
+    assert factory.active_count == 1
+    assert not resource.password_file.exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        asyncio.CancelledError("startup-cancellation-marker"),
+        _FatalDriverFailure("startup-fatal-marker"),
+    ),
+    ids=("cancellation", "base-exception"),
+)
+def test_disposable_postgres_primary_baseexception_survives_ordinary_cleanup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: BaseException,
+) -> None:
+    docker = _RecoveryDocker(actual_label="unrelated-owner-token")
+    resource = _recovery_resource(tmp_path / "task.secret")
+    factory = disposable_postgres._DisposablePostgresFactory("unused-test-image")
+    _patch_recovery_docker(monkeypatch, docker)
+    monkeypatch.setattr(disposable_postgres, "_new_owned_resource", lambda: resource)
+
+    def failing_start(*_: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(disposable_postgres, "_start_disposable_postgres", failing_start)
+
+    with pytest.raises(type(failure)) as captured:
+        with factory():
+            pytest.fail("failed startup must not enter the context")
+
+    assert captured.value is failure
+    assert docker.removed_ids == []
+    assert factory.active_count == 1
+    assert not resource.password_file.exists()
+
+
+def test_disposable_postgres_cleanup_baseexception_retains_sanitized_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cleanup_failure = _FatalDriverFailure("cleanup-fatal-marker")
+    docker = _RecoveryDocker()
+    resource = _recovery_resource(tmp_path / "task.secret")
+    factory = disposable_postgres._DisposablePostgresFactory("unused-test-image")
+    _patch_recovery_docker(monkeypatch, docker)
+    monkeypatch.setattr(disposable_postgres, "_new_owned_resource", lambda: resource)
+
+    def failing_start(*_: object) -> None:
+        raise disposable_postgres._DisposablePostgresError(
+            "Disposable PostgreSQL Docker operation failed."
+        )
+
+    def fatal_inspection(*_: str, **__: object) -> str:
+        raise cleanup_failure
+
+    monkeypatch.setattr(disposable_postgres, "_start_disposable_postgres", failing_start)
+    monkeypatch.setattr(disposable_postgres, "_docker_checked", fatal_inspection)
+
+    with pytest.raises(_FatalDriverFailure) as captured:
+        with factory():
+            pytest.fail("failed startup must not enter the context")
+
+    assert captured.value is cleanup_failure
+    assert any(
+        isinstance(error, disposable_postgres._DisposablePostgresError)
+        and str(error) == "Disposable PostgreSQL Docker operation failed."
+        for error in _exception_graph(captured.value)
+    )
+    assert factory.active_count == 1
+    assert not resource.password_file.exists()
+
+
 def _disposable_factory(request: pytest.FixtureRequest) -> _DisposableFactory:
     _require_module(_MIGRATION_ADAPTER_MODULE, _RED_DISPOSABLE)
     try:
         fixture = request.getfixturevalue("slice1_disposable_postgres_factory")
     except pytest.FixtureLookupError:
+        if request.config.getoption(_GREEN_C2_OPTION, default=False):
+            pytest.fail(
+                "GREEN-C2 opt-in requires the task-owned disposable PostgreSQL fixture.",
+                pytrace=False,
+            )
         pytest.skip(
             "Slice 1 integration requires the explicitly authorized task-scoped "
             "slice1_disposable_postgres_factory fixture; no fallback database is permitted."
         )
     return cast(_DisposableFactory, fixture)
+
+
+async def _assert_real_schema_unavailable(settings: DatabaseSettings) -> None:
+    factory = PsycopgPoolFactory()
+    pool = factory(settings)
+    assert isinstance(pool, PsycopgDatabasePool)
+    connectivity_probe = PostgresConnectivityProbe()
+    schema_probe = PostgresSchemaVersionProbe()
+
+    await pool.open(timeout_seconds=settings.pool.open_timeout_seconds)
+    try:
+        await connectivity_probe(
+            pool,
+            timeout_seconds=settings.pool.acquire_timeout_seconds,
+        )
+        with pytest.raises(DatabaseSchemaVersionUnavailable):
+            await schema_probe(
+                pool,
+                timeout_seconds=settings.pool.acquire_timeout_seconds,
+            )
+    finally:
+        await pool.close(timeout_seconds=settings.pool.close_timeout_seconds)
+
+
+async def _assert_real_foundation_ready(settings: DatabaseSettings) -> None:
+    foundation = PostgresFoundation(
+        settings,
+        pool_factory=PsycopgPoolFactory(),
+        connectivity_probe=PostgresConnectivityProbe(),
+        schema_version_probe=PostgresSchemaVersionProbe(),
+    )
+    await foundation.start()
+    try:
+        readiness = await foundation.readiness()
+        assert readiness.ready is True
+        assert readiness.reason == "READY"
+        assert readiness.public.database_connectivity is True
+        assert readiness.public.database_schema_version is True
+        assert readiness.affects_liveness is False
+    finally:
+        await foundation.close()
 
 
 @_INTEGRATION
@@ -1057,21 +1514,34 @@ def test_disposable_postgres_apply_rollback_reapply_contract(
     factory = _disposable_factory(request)
 
     with factory() as database:
+        canonical_resource = resources.files("adapters").joinpath(
+            "migrations/postgres/sprint2_slice1_foundation.py"
+        )
+        assert len(sources) == 1
+        assert canonical_resource.is_file()
+        assert (
+            hashlib.sha256(sources[0].read_bytes()).digest()
+            == hashlib.sha256(canonical_resource.read_bytes()).digest()
+        )
         backend = constructor(
-            database.settings,
-            sources,
+            database.migration_settings,
+            (_MIGRATION_DIRECTORY,),
         )
         assert backend.current_version() is None
         assert database.application_relations() == frozenset()
+        _run_real_database(_assert_real_schema_unavailable(database.runtime_settings))
         backend.apply_pending()
         first_version = backend.current_version()
         assert first_version == _EXPECTED_FOUNDATION_REVISION
+        _run_real_database(_assert_real_foundation_ready(database.runtime_settings))
         assert database.application_relations() == frozenset()
         backend.rollback_last()
         assert backend.current_version() is None
+        _run_real_database(_assert_real_schema_unavailable(database.runtime_settings))
         assert database.application_relations() == frozenset()
         backend.apply_pending()
         assert backend.current_version() == first_version
+        _run_real_database(_assert_real_foundation_ready(database.runtime_settings))
         assert database.application_relations() == frozenset()
         _assert_secret_safe(caplog.text, repr(backend), str(backend))
 
