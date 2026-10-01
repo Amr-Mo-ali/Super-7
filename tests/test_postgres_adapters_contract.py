@@ -50,6 +50,7 @@ from services.process_contracts import ChildAnalysisRequest
 _RUNTIME_ADAPTER_MODULE = "adapters.psycopg_database"
 _MIGRATION_ADAPTER_MODULE = "adapters.yoyo_migration_backend"
 _EXPECTED_FOUNDATION_REVISION = "sprint2_slice1_foundation"
+_EXPECTED_ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATION_DIRECTORY = _REPOSITORY_ROOT / "src" / "adapters" / "migrations" / "postgres"
 _STALE_MIGRATION = _REPOSITORY_ROOT / "migrations" / "postgres" / "sprint2_slice1_foundation.py"
@@ -937,23 +938,49 @@ def _migration_sources(message: str) -> tuple[Path, ...]:
     return sources
 
 
-def test_foundation_migration_catalog_is_stable_and_domain_free() -> None:
+def _exact_foundation_migrations(migrations: list[object]) -> list[object]:
+    matches = [
+        migration
+        for migration in migrations
+        if str(getattr(migration, "id", "")) == _EXPECTED_FOUNDATION_REVISION
+    ]
+    if len(matches) != 1:
+        raise AssertionError("foundation migration catalog must contain exactly one revision")
+    return [matches[0]]
+
+
+def test_foundation_migration_is_stable_and_domain_free() -> None:
     sources = _migration_sources(_RED_DISCOVERY)
+    foundation_source = _MIGRATION_DIRECTORY / f"{_EXPECTED_FOUNDATION_REVISION}.py"
 
     assert sources
     assert len(sources) == len(set(sources))
     assert all(path.is_file() for path in sources)
-    assert any(_EXPECTED_FOUNDATION_REVISION in path.name for path in sources)
-    for path in sources:
-        source = path.read_text(encoding="utf-8").lower()
-        created_relations = re.findall(
-            r"\bcreate\s+table(?:\s+if\s+not\s+exists)?\s+([^\s(]+)",
-            source,
-        )
-        assert not any(
-            marker in relation
-            for relation in created_relations
-            for marker in _DOMAIN_RELATION_MARKERS
+    assert foundation_source in sources
+    source = foundation_source.read_text(encoding="utf-8").lower()
+    created_relations = re.findall(
+        r"\bcreate\s+table(?:\s+if\s+not\s+exists)?\s+([^\s(]+)",
+        source,
+    )
+    assert not any(
+        marker in relation for relation in created_relations for marker in _DOMAIN_RELATION_MARKERS
+    )
+    foundation = _FakeMigration(_EXPECTED_FOUNDATION_REVISION)
+    assert _exact_foundation_migrations([foundation]) == [foundation]
+    with pytest.raises(
+        AssertionError,
+        match=r"^foundation migration catalog must contain exactly one revision$",
+    ):
+        _exact_foundation_migrations([])
+    with pytest.raises(
+        AssertionError,
+        match=r"^foundation migration catalog must contain exactly one revision$",
+    ):
+        _exact_foundation_migrations(
+            [
+                _FakeMigration(_EXPECTED_FOUNDATION_REVISION),
+                _FakeMigration(_EXPECTED_FOUNDATION_REVISION),
+            ]
         )
 
 
@@ -965,7 +992,10 @@ def test_canonical_migration_resource_is_source_discoverable_and_unique() -> Non
         "migrations/postgres/sprint2_slice1_foundation.py"
     )
 
-    assert migration_ids == [_EXPECTED_FOUNDATION_REVISION]
+    assert migration_ids == [
+        _EXPECTED_FOUNDATION_REVISION,
+        _EXPECTED_ANALYSIS_JOB_REVISION,
+    ]
     assert resource.is_file()
     assert not _STALE_MIGRATION.exists()
     assert (
@@ -1510,22 +1540,27 @@ def test_disposable_postgres_apply_rollback_reapply_contract(
             _RED_DISPOSABLE,
         ),
     )
-    sources = _migration_sources(_RED_DISPOSABLE)
+    foundation_source = _MIGRATION_DIRECTORY / f"{_EXPECTED_FOUNDATION_REVISION}.py"
     factory = _disposable_factory(request)
+
+    def foundation_reader(*sources: str) -> list[object]:
+        yoyo = _require_module("yoyo", _RED_DISPOSABLE)
+        return _exact_foundation_migrations(list(yoyo.read_migrations(*sources)))
 
     with factory() as database:
         canonical_resource = resources.files("adapters").joinpath(
             "migrations/postgres/sprint2_slice1_foundation.py"
         )
-        assert len(sources) == 1
+        assert foundation_source.is_file()
         assert canonical_resource.is_file()
         assert (
-            hashlib.sha256(sources[0].read_bytes()).digest()
+            hashlib.sha256(foundation_source.read_bytes()).digest()
             == hashlib.sha256(canonical_resource.read_bytes()).digest()
         )
         backend = constructor(
             database.migration_settings,
             (_MIGRATION_DIRECTORY,),
+            migration_reader=foundation_reader,
         )
         assert backend.current_version() is None
         assert database.application_relations() == frozenset()
