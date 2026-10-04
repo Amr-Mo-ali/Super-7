@@ -34,13 +34,21 @@ _SCHEMA_VERSION_MESSAGE = "PostgreSQL migration metadata or version is unavailab
 
 
 class _QueryResult(Protocol):
+    async def fetchone(self) -> tuple[object, ...] | None: ...
+
     async def fetchall(self) -> list[tuple[object, ...]]: ...
 
     async def close(self) -> None: ...
 
 
 class _Connection(Protocol):
-    async def execute(self, query: str) -> _QueryResult: ...
+    def transaction(self) -> AbstractAsyncContextManager[object]: ...
+
+    async def execute(
+        self,
+        query: str,
+        params: tuple[object, ...] | None = None,
+    ) -> _QueryResult: ...
 
 
 class _DriverPool(Protocol):
