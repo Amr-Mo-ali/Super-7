@@ -1543,9 +1543,13 @@ def test_disposable_postgres_apply_rollback_reapply_contract(
     foundation_source = _MIGRATION_DIRECTORY / f"{_EXPECTED_FOUNDATION_REVISION}.py"
     factory = _disposable_factory(request)
 
-    def foundation_reader(*sources: str) -> list[object]:
+    def foundation_reader(*sources: str) -> object:
         yoyo = _require_module("yoyo", _RED_DISPOSABLE)
-        return _exact_foundation_migrations(list(yoyo.read_migrations(*sources)))
+        migrations = yoyo.read_migrations(*sources)
+        _exact_foundation_migrations(list(migrations))
+        return migrations.filter(
+            lambda migration: str(migration.id) == _EXPECTED_FOUNDATION_REVISION
+        )
 
     with factory() as database:
         canonical_resource = resources.files("adapters").joinpath(
