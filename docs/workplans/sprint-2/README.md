@@ -51,7 +51,8 @@ prove Apex implementation or provide staging/production infrastructure evidence.
 2. [Apex decisions](01-apex-decisions-required.md) — accepted local contract direction and pending interoperability evidence.
 3. [Infrastructure decisions](02-infrastructure-decisions-required.md) — local foundation authorization and pending staging/production ownership.
 4. [Implementation plan](03-implementation-plan.md) — one-slice-at-a-time sequence and stop boundaries.
-5. [APX-15 result mapping](04-apx-15-result-mapping-preparation.md) — accepted Super-7 canonical scoring/mapping direction; implementation, scientific validation, identity assurance, Apex interoperability, and cutover remain pending.
+5. [Worker claim, lease, fencing, and recovery contract](04-worker-claim-lease-fencing-contract.md) — approved inactive RED-F/G/H/I contract; runtime activation remains forbidden.
+6. [APX-15 result mapping](04-apx-15-result-mapping-preparation.md) — accepted Super-7 canonical scoring/mapping direction; implementation, scientific validation, identity assurance, Apex interoperability, and cutover remain pending.
 
 ## Approved direction, not approved activation
 
