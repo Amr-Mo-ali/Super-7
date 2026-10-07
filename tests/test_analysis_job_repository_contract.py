@@ -2483,3 +2483,98 @@ def test_programming_cancellation_and_fatal_errors_propagate_by_identity(
     assert captured is error
     _assert_rollback_lifecycle(pool)
     assert all(record.category != "insert" for record in pool.connection_value.executions)
+
+
+class _DecoderUuidSubclass(UUID):
+    pass
+
+
+_DOMAIN_INVALID_ROWS = (
+    (_row(job_id=UUID(int=0)), "nil-uuid", str(UUID(int=0))),
+    (_row(job_id=_DecoderUuidSubclass(str(_JOB_ID))), "uuid-subclass", str(_JOB_ID)),
+    (_row(video_id="video/decoder-marker"), "unsafe-video-id", "video/decoder-marker"),
+    (_row(player_id="player/decoder-marker"), "unsafe-player-id", "player/decoder-marker"),
+    (_row(video_reference="dir/decoder-marker.mp4"), "unsafe-filename", "dir/decoder-marker.mp4"),
+    (
+        _row(callback_url="HTTPS://EXAMPLE.COM/decoder-marker"),
+        "noncanonical-callback",
+        "HTTPS://EXAMPLE.COM/decoder-marker",
+    ),
+    (
+        _row(callback_url="https://example.com/callback#decoder-marker"),
+        "fragment-callback",
+        "https://example.com/callback#decoder-marker",
+    ),
+)
+
+
+@pytest.mark.parametrize("insert_returning", (False, True), ids=("lookup", "insert-returning"))
+@pytest.mark.parametrize(
+    ("returned_row", "rejected_marker"),
+    tuple((row, marker) for row, _, marker in _DOMAIN_INVALID_ROWS),
+    ids=tuple(identifier for _, identifier, _ in _DOMAIN_INVALID_ROWS),
+)
+def test_domain_invalid_rows_are_sanitized_and_rolled_back(
+    returned_row: tuple[object, ...],
+    rejected_marker: str,
+    insert_returning: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceInvariantError
+
+    operations = [_statement_timeout(), _lookup(returned_row)]
+    if insert_returning:
+        operations = [
+            _statement_timeout(),
+            _lookup(),
+            _lock_timeout(),
+            _advisory_lock(),
+            _lookup(),
+            _count_queued(0),
+            _insert(returned_row),
+        ]
+    pool = _ScriptedPool(operations)
+    captured = _capture(_repository(pool), _candidate())
+
+    _assert_exception_safe(
+        captured,
+        AnalysisJobPersistenceInvariantError,
+        _INVARIANT_MESSAGE,
+        markers=(rejected_marker, *_CANDIDATE_MARKERS),
+    )
+    assert captured.__cause__ is None
+    assert captured.__context__ is None
+    assert pool.connection_value.operations == []
+    _assert_rollback_lifecycle(pool)
+    _assert_logs_safe(caplog.records, (rejected_marker, *_CANDIDATE_MARKERS))
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        RuntimeError("constructor-runtime-marker"),
+        AttributeError("constructor-attribute-marker"),
+        AssertionError("constructor-assertion-marker"),
+        asyncio.CancelledError("constructor-cancellation-marker"),
+        KeyboardInterrupt("constructor-keyboard-marker"),
+        SystemExit("constructor-system-exit-marker"),
+        MemoryError("constructor-memory-marker"),
+    ),
+    ids=("runtime", "attribute", "assertion", "cancellation", "keyboard", "system", "memory"),
+)
+def test_nonvalidation_constructor_errors_propagate_by_identity(
+    error: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from adapters import psycopg_analysis_job_repository as repository_module
+
+    def fail_construction(**kwargs: object) -> AnalysisJob:
+        raise error
+
+    # Inject only the adapter's construction boundary, not the domain class itself.
+    monkeypatch.setattr(repository_module, "AnalysisJob", fail_construction)
+    pool = _ScriptedPool([_statement_timeout(), _lookup(_row())])
+    captured = _capture(_repository(pool), _candidate())
+
+    assert captured is error
+    assert pool.connection_value.operations == []
+    _assert_rollback_lifecycle(pool)

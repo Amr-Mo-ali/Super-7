@@ -462,15 +462,22 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
 
     lookup = idempotency_lookup
     fingerprint = request_fingerprint
-    job = AnalysisJob(
-        job_id=job_id,
-        video_id=video_id_text,
-        player_id=player_id_text,
-        video_reference=video_reference_text,
-        callback_url=callback_url_text,
-        state=AnalysisJobState(state_value),
-        accepted_at=accepted_at,
-    )
+    state = AnalysisJobState(state_value)
+    job: AnalysisJob | None = None
+    try:
+        job = AnalysisJob(
+            job_id=job_id,
+            video_id=video_id_text,
+            player_id=player_id_text,
+            video_reference=video_reference_text,
+            callback_url=callback_url_text,
+            state=state,
+            accepted_at=accepted_at,
+        )
+    except (TypeError, ValueError):
+        pass
+    if job is None:
+        raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     return _StoredAnalysisJob(
         job=job,
         idempotency_lookup=lookup,

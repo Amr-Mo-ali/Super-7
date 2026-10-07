@@ -15,6 +15,9 @@ from domain.analysis_job import (
     AnalysisJobExisting,
     AnalysisJobIdempotencyConflict,
     NewAnalysisJob,
+    _validate_callback_url,
+    _validate_request_identifiers,
+    _validate_uuid,
 )
 
 _FINGERPRINT_VERSION: Final = "super7.analysis-job-fingerprint.v1"
@@ -143,6 +146,7 @@ async def admit_analysis_job(
         video_reference=video_reference,
     )
     canonical_callback = str(canonicalize_callback_url(callback_url))
+    _validate_callback_url(canonical_callback)
     protected_lookup = protect_idempotency_lookup(
         protector,
         caller_scope=caller_scope,
@@ -176,8 +180,7 @@ def _validate_admission_inputs(
     player_id: str,
     video_reference: str,
 ) -> None:
-    if not isinstance(job_id, UUID):
-        raise TypeError("Job ID must be a UUID.")
+    _validate_uuid(job_id)
     values = (
         caller_scope,
         raw_idempotency_key,
@@ -187,6 +190,7 @@ def _validate_admission_inputs(
     )
     if any(type(value) is not str for value in values):
         raise TypeError("Admission identifiers must be strings.")
+    _validate_request_identifiers(video_id, player_id, video_reference)
 
 
 def _validated_callback_url(callback_url: str) -> HttpUrl:

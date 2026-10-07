@@ -610,6 +610,7 @@ def test_analysis_job_state_vocabulary_and_lifecycle_are_exact() -> None:
         ("RUNNING", "COMPLETED"),
         ("RUNNING", "FAILED"),
         ("RUNNING", "CANCELLED"),
+        ("RUNNING", "QUEUED"),
     }
 
     assert {member.name for member in state_type} == expected_states
@@ -622,7 +623,7 @@ def test_analysis_job_state_vocabulary_and_lifecycle_are_exact() -> None:
     }
     assert observed == allowed
     assert not is_allowed(state_type.QUEUED, state_type.FAILED)
-    assert not is_allowed(state_type.RUNNING, state_type.QUEUED)
+    assert is_allowed(state_type.RUNNING, state_type.QUEUED)
 
 
 def test_baseline_fingerprint_freezes_json_order_serialization_and_binary_digest() -> None:
