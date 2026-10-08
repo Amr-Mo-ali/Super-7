@@ -17,7 +17,8 @@ from yoyo import read_migrations  # type: ignore[import-untyped]
 
 _FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
-_EXPECTED_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION)
+_WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
+_EXPECTED_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION, _WORKER_ATTEMPT_REVISION)
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATION_DIRECTORY = _REPOSITORY_ROOT / "src" / "adapters" / "migrations" / "postgres"
 _FOUNDATION_PATH = _MIGRATION_DIRECTORY / f"{_FOUNDATION_REVISION}.py"
