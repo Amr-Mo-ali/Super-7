@@ -53,6 +53,7 @@ prove Apex implementation or provide staging/production infrastructure evidence.
 4. [Implementation plan](03-implementation-plan.md) — one-slice-at-a-time sequence and stop boundaries.
 5. [Worker claim, lease, fencing, and recovery contract](04-worker-claim-lease-fencing-contract.md) — approved inactive RED-F/G/H/I contract; runtime activation remains forbidden.
 6. [APX-15 result mapping](04-apx-15-result-mapping-preparation.md) — accepted Super-7 canonical scoring/mapping direction; implementation, scientific validation, identity assurance, Apex interoperability, and cutover remain pending.
+7. [Worker repository construction contract](05-worker-repository-construction-contract.md) — approved Planning-H construction and snapshot-evolution decisions; documentation review, test-change authorization, implementation and live evidence remain separate gates; runtime activation remains forbidden.
 
 ## Approved direction, not approved activation
 
