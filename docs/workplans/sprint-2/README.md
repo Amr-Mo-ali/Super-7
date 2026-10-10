@@ -54,6 +54,7 @@ prove Apex implementation or provide staging/production infrastructure evidence.
 5. [Worker claim, lease, fencing, and recovery contract](04-worker-claim-lease-fencing-contract.md) — approved inactive RED-F/G/H/I contract; runtime activation remains forbidden.
 6. [APX-15 result mapping](04-apx-15-result-mapping-preparation.md) — accepted Super-7 canonical scoring/mapping direction; implementation, scientific validation, identity assurance, Apex interoperability, and cutover remain pending.
 7. [Worker repository construction contract](05-worker-repository-construction-contract.md) — approved Planning-H construction and snapshot-evolution decisions; documentation review, test-change authorization, implementation and live evidence remain separate gates; runtime activation remains forbidden.
+8. [Worker repository row contract](06-worker-repository-row-contract.md) — approved C1–C10 row and observation decisions, including C9a/C9b failure-classification extensions; documentation-fidelity review, test/implementation authorization and live evidence remain separate gates; runtime activation remains forbidden.
 
 ## Approved direction, not approved activation
 
