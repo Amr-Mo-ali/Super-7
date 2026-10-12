@@ -135,7 +135,9 @@ def _job() -> Any:
         player_id="player-456",
         video_reference="match-01.mp4",
         callback_url="https://example.com/callback",
+        analysis_version="1.0.0",
         state=state_type.QUEUED,
+        attempt_limit=3,
         accepted_at=_ACCEPTED_AT,
     )
 
@@ -156,6 +158,8 @@ def _candidate(
         player_id="player-456",
         video_reference="match-01.mp4",
         callback_url="https://example.com/callback",
+        analysis_version="1.0.0",
+        attempt_limit=3,
     )
 
 
@@ -480,6 +484,8 @@ def _run_admission(
     player_id: object = "player-456",
     video_reference: object = "match-01.mp4",
     callback_url: object | None = None,
+    analysis_version: object = "1.0.0",
+    attempt_limit: object = 3,
     max_queue_size: object = 1,
 ) -> object:
     admit = _require_symbol(
@@ -499,6 +505,8 @@ def _run_admission(
             player_id=player_id,
             video_reference=video_reference,
             callback_url=resolved_callback,
+            analysis_version=analysis_version,
+            attempt_limit=attempt_limit,
             max_queue_size=max_queue_size,
         )
     )
@@ -1279,6 +1287,8 @@ def test_valid_admission_orchestrates_in_order_and_returns_exact_outcome(
         "player_id",
         "video_reference",
         "callback_url",
+        "analysis_version",
+        "attempt_limit",
         "max_queue_size",
     )
     assert all(
@@ -1300,11 +1310,15 @@ def test_valid_admission_orchestrates_in_order_and_returns_exact_outcome(
     )
     assert candidate.idempotency_lookup == protected_lookup
     assert candidate.request_fingerprint == _reference_fingerprint()
+    assert candidate.analysis_version == "1.0.0"
+    assert candidate.attempt_limit == 3
     _assert_forbidden_public_fields_absent(
         candidate,
         {"idempotency_key", "raw_idempotency_key", "caller_scope", "canonical_json"},
     )
     assert parameters["max_queue_size"].default is inspect.Parameter.empty
+    assert parameters["analysis_version"].default is inspect.Parameter.empty
+    assert parameters["attempt_limit"].default is inspect.Parameter.empty
 
 
 @pytest.mark.parametrize(

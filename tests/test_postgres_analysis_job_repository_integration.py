@@ -397,6 +397,8 @@ def _candidate(
         player_id=f"player-{fingerprint}",
         video_reference=f"match-{fingerprint}.mp4",
         callback_url=f"https://callback.invalid/{fingerprint}",
+        analysis_version="1.0.0",
+        attempt_limit=3,
     )
 
 

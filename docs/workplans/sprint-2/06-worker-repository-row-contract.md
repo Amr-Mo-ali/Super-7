@@ -88,6 +88,8 @@ The private structural ports remain unchanged:
 
 Construction does not inspect or invoke the pool or factory. Real `PsycopgDatabasePool` structural compatibility remains a required future strict-Mypy composition witness without casts or suppression.
 
+Read this construction prohibition with [Planning-H §7](05-worker-repository-construction-contract.md#7-approved-constructor-time-factory-recognition), which explicitly permits the approved passive native factory-recognition and pure module-initialization rules (FR1–FR11) while prohibiting factory invocation and custom recognition hooks; this cross-reference changes no row layout, operation, lifecycle, snapshot or fencing rule.
+
 The five operation signatures remain:
 
 ```

@@ -16,6 +16,7 @@ from domain.analysis_job import (
     AnalysisJobIdempotencyConflict,
     NewAnalysisJob,
     _validate_callback_url,
+    _validate_policy,
     _validate_request_identifiers,
     _validate_uuid,
 )
@@ -129,6 +130,8 @@ async def admit_analysis_job(
     player_id: str,
     video_reference: str,
     callback_url: HttpUrl,
+    analysis_version: str,
+    attempt_limit: int,
     max_queue_size: int,
 ) -> _AnalysisJobAdmissionOutcome:
     """Build a protected candidate and delegate one atomic admission operation."""
@@ -136,6 +139,7 @@ async def admit_analysis_job(
         raise TypeError("Maximum queue size must be an integer.")
     if max_queue_size <= 0:
         raise ValueError("Maximum queue size must be greater than zero.")
+    _validate_policy(analysis_version, attempt_limit)
 
     _validate_admission_inputs(
         job_id=job_id,
@@ -167,6 +171,8 @@ async def admit_analysis_job(
         player_id=player_id,
         video_reference=video_reference,
         callback_url=canonical_callback,
+        analysis_version=analysis_version,
+        attempt_limit=attempt_limit,
     )
     return await repository.accept_or_get(candidate, max_queue_size=max_queue_size)
 

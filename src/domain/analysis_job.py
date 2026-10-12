@@ -24,6 +24,7 @@ __all__ = [
 ]
 
 _SAFE_ID: Final = re.compile(r"^[A-Za-z0-9_-]+$")
+_ANALYSIS_VERSION: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _CALLBACK_URL_ADAPTER: Final = TypeAdapter(HttpUrl)
 
 
@@ -66,7 +67,9 @@ class AnalysisJob:
     player_id: str
     video_reference: str
     callback_url: str
+    analysis_version: str
     state: AnalysisJobState
+    attempt_limit: int
     accepted_at: datetime
 
     def __post_init__(self) -> None:
@@ -74,6 +77,7 @@ class AnalysisJob:
         _validate_request_text(
             self.video_id, self.player_id, self.video_reference, self.callback_url
         )
+        _validate_policy(self.analysis_version, self.attempt_limit)
         _validate_datetime(self.accepted_at)
 
 
@@ -88,12 +92,15 @@ class NewAnalysisJob:
     player_id: str
     video_reference: str
     callback_url: str
+    analysis_version: str
+    attempt_limit: int
 
     def __post_init__(self) -> None:
         _validate_uuid(self.job_id)
         _validate_request_text(
             self.video_id, self.player_id, self.video_reference, self.callback_url
         )
+        _validate_policy(self.analysis_version, self.attempt_limit)
         if type(self.idempotency_lookup) is not bytes:
             raise TypeError("Idempotency lookup must be binary.")
         if not self.idempotency_lookup:
@@ -138,6 +145,17 @@ def _validate_uuid(value: UUID) -> None:
         raise TypeError("Job ID must be a UUID.")
     if value.int == 0:
         raise ValueError("Job ID must not be nil.")
+
+
+def _validate_policy(analysis_version: str, attempt_limit: int) -> None:
+    if type(analysis_version) is not str:
+        raise TypeError("Admission identifiers must be strings.")
+    if not _ANALYSIS_VERSION.fullmatch(analysis_version):
+        raise ValueError("Analysis version must have bounded safe syntax.")
+    if type(attempt_limit) is not int:
+        raise TypeError("Policy value must be an exact integer.")
+    if attempt_limit <= 0:
+        raise ValueError("Policy value must be positive.")
 
 
 def _validate_datetime(value: datetime) -> None:

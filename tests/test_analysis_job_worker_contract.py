@@ -251,13 +251,15 @@ def _value(name: str, **overrides: object) -> Any:
 
 
 def _durable_value(name: str, **overrides: object) -> object:
-    # RED-F does not add policy-snapshot fields to these Slice 2 values (RED-H).
+    # Explicit approved RED-H snapshots; these are fixtures, not runtime defaults.
     values: dict[str, object] = {
         "job_id": _JOB,
         "video_id": "video-123",
         "player_id": "player-456",
         "video_reference": "match-01.mp4",
         "callback_url": _CALLBACK,
+        "analysis_version": "1.0.0",
+        "attempt_limit": 3,
     }
     if name == "NewAnalysisJob":
         values.update(idempotency_lookup=b"protected", request_fingerprint=_DIGEST)
@@ -356,6 +358,8 @@ def _admit(repository: _AdmissionPortSpy, protector: _ProtectorSpy, **overrides:
         "player_id": "player-456",
         "video_reference": "match-01.mp4",
         "callback_url": HttpUrl(_CALLBACK),
+        "analysis_version": "1.0.0",
+        "attempt_limit": 3,
         "max_queue_size": 3,
     }
     values.update(overrides)
@@ -626,7 +630,7 @@ def test_job_payload_preserves_valid_uuid_and_has_no_sensitive_fields(name: str)
 
 
 @pytest.mark.parametrize("name", ("NewAnalysisJob", "AnalysisJob"))
-def test_existing_red_f_domain_shape_does_not_add_red_h_policy_snapshots(name: str) -> None:
+def test_red_h_domain_shape_requires_exact_policy_snapshots(name: str) -> None:
     value = _durable_value(name)
     assert is_dataclass(value)
     cls = type(value)
@@ -634,13 +638,122 @@ def test_existing_red_f_domain_shape_does_not_add_red_h_policy_snapshots(name: s
     if name == "NewAnalysisJob":
         expected.update(idempotency_lookup=bytes, request_fingerprint=bytes)
     expected.update(video_id=str, player_id=str, video_reference=str, callback_url=str)
+    expected.update(analysis_version=str)
     if name == "AnalysisJob":
-        expected.update(state=durable.AnalysisJobState, accepted_at=datetime)
+        expected.update(state=durable.AnalysisJobState)
+    expected.update(attempt_limit=int)
+    if name == "AnalysisJob":
+        expected.update(accepted_at=datetime)
     assert tuple(item.name for item in fields(value)) == tuple(expected)
     assert get_type_hints(cls) == expected
     assert tuple(inspect.signature(cls).parameters) == tuple(expected)
     assert not hasattr(value, "__dict__")
     assert cast(Any, cls).__dataclass_params__.frozen is True
+    assert all(
+        inspect.signature(cls).parameters[field].default is inspect.Parameter.empty
+        for field in ("analysis_version", "attempt_limit")
+    )
+
+
+@pytest.mark.parametrize("name", ("NewAnalysisJob", "AnalysisJob"))
+@pytest.mark.parametrize(
+    ("field", "bad", "message", "error_type"),
+    (
+        ("analysis_version", None, "Admission identifiers must be strings.", TypeError),
+        (
+            "analysis_version",
+            _TextSubclass("v1"),
+            "Admission identifiers must be strings.",
+            TypeError,
+        ),
+        *(
+            (
+                "analysis_version",
+                value,
+                "Analysis version must have bounded safe syntax.",
+                ValueError,
+            )
+            for value in ("", "v" * 65, "_v", "é", "v+1", "v\n")
+        ),
+        *(
+            ("attempt_limit", value, "Policy value must be an exact integer.", TypeError)
+            for value in (True, _IntSubclass(3), 3.0, None)
+        ),
+        *(
+            ("attempt_limit", value, "Policy value must be positive.", ValueError)
+            for value in (0, -1)
+        ),
+    ),
+)
+def test_red_h_snapshot_validation_matches_worker_payload(
+    name: str, field: str, bad: object, message: str, error_type: type[Exception]
+) -> None:
+    with pytest.raises(error_type) as caught:
+        _durable_value(name, **{field: bad})
+    _assert_fixed_failure(caught.value, message)
+
+
+@pytest.mark.parametrize("version", ("1.0.0", "A" + "." * 63, "Version_1-2.0"))
+@pytest.mark.parametrize("name", ("NewAnalysisJob", "AnalysisJob"))
+def test_red_h_snapshot_values_are_preserved_without_public_count(name: str, version: str) -> None:
+    value = cast(Any, _durable_value(name, analysis_version=version, attempt_limit=2**63))
+    assert value.analysis_version is version and value.attempt_limit == 2**63
+    assert not hasattr(value, "attempt_count")
+
+
+@pytest.mark.parametrize(
+    ("field", "bad", "message", "error_type"),
+    (
+        ("analysis_version", None, "Admission identifiers must be strings.", TypeError),
+        (
+            "analysis_version",
+            "bad+version",
+            "Analysis version must have bounded safe syntax.",
+            ValueError,
+        ),
+        ("attempt_limit", True, "Policy value must be an exact integer.", TypeError),
+        ("attempt_limit", 0, "Policy value must be positive.", ValueError),
+    ),
+)
+def test_red_h_admission_snapshot_validation_precedes_all_boundary_effects(
+    field: str,
+    bad: object,
+    message: str,
+    error_type: type[Exception],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository, protector = _AdmissionPortSpy(events), _ProtectorSpy(events)
+
+    def forbidden_fingerprint(**kwargs: object) -> bytes:
+        events.append("fingerprint")
+        raise AssertionError("Invalid policy reached fingerprinting")
+
+    monkeypatch.setattr(admission, "fingerprint_analysis_request", forbidden_fingerprint)
+    with pytest.raises(error_type) as caught:
+        _admit(repository, protector, **{field: bad})
+    _assert_fixed_failure(caught.value, message)
+    assert events == [] and repository.calls == [] and protector.calls == []
+
+
+def test_red_h_policy_snapshots_do_not_change_fingerprint_v1_or_protected_lookup() -> None:
+    candidates: list[durable.NewAnalysisJob] = []
+    for version, limit in (("1.0.0", 3), ("Version_2.0", 7)):
+        events: list[str] = []
+        repository, protector = _AdmissionPortSpy(events), _ProtectorSpy(events)
+        assert (
+            _admit(repository, protector, analysis_version=version, attempt_limit=limit)
+            is repository.result
+        )
+        assert events == ["protect", "repository"]
+        candidate, _ = repository.calls[0]
+        assert (
+            cast(Any, candidate).analysis_version == version
+            and cast(Any, candidate).attempt_limit == limit
+        )
+        candidates.append(cast(durable.NewAnalysisJob, candidate))
+    assert candidates[0].request_fingerprint == candidates[1].request_fingerprint == _DIGEST
+    assert candidates[0].idempotency_lookup == candidates[1].idempotency_lookup == b"protected"
 
 
 @pytest.mark.parametrize("field", ("authority", "job"))

@@ -40,17 +40,20 @@ _LOCK_TIMEOUT_MESSAGE = "PostgreSQL AnalysisJob admission lock timed out."
 
 _TIMEOUT_SQL = "SELECT set_config(%s, %s, %s)"
 _LOOKUP_SQL = """SELECT job_id, idempotency_lookup, request_fingerprint, video_id,
-    player_id, video_reference, callback_url, state, accepted_at
+    player_id, video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count
 FROM analysis_jobs
 WHERE idempotency_lookup = %s"""
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s, %s)"
 _COUNT_QUEUED_SQL = "SELECT count(*) FROM analysis_jobs WHERE state = %s"
 _INSERT_SQL = """INSERT INTO analysis_jobs (
     job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
-    video_reference, callback_url, state, accepted_at
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+    video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
 RETURNING job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
-    video_reference, callback_url, state, accepted_at"""
+    video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count"""
 
 _Outcome = (
     AnalysisJobAccepted
@@ -102,6 +105,7 @@ class _StoredAnalysisJob:
     job: AnalysisJob
     idempotency_lookup: bytes
     request_fingerprint: bytes
+    attempt_count: int
 
 
 class PsycopgAnalysisJobAdmissionRepository:
@@ -407,6 +411,9 @@ async def _insert(
             candidate.video_reference,
             candidate.callback_url,
             "QUEUED",
+            candidate.analysis_version,
+            candidate.attempt_limit,
+            0,
         ),
     )
     if row is None:
@@ -424,7 +431,7 @@ def _existing_or_conflict(
 
 
 def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
-    if type(row) is not tuple or len(row) != 9:
+    if type(row) is not tuple or len(row) != 12:
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     (
         job_id,
@@ -436,6 +443,9 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
         callback_url,
         state_value,
         accepted_at,
+        analysis_version,
+        attempt_limit,
+        attempt_count,
     ) = row
     if not isinstance(job_id, UUID):
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
@@ -447,6 +457,11 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
     player_id_text = _decode_text(player_id)
     video_reference_text = _decode_text(video_reference)
     callback_url_text = _decode_text(callback_url)
+    analysis_version_text = _decode_text(analysis_version)
+    if type(attempt_limit) is not int or attempt_limit <= 0:
+        raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
+    if type(attempt_count) is not int or not 0 <= attempt_count <= attempt_limit:
+        raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     if type(state_value) is not str or state_value not in {
         state.value for state in AnalysisJobState
     }:
@@ -471,7 +486,9 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
             player_id=player_id_text,
             video_reference=video_reference_text,
             callback_url=callback_url_text,
+            analysis_version=analysis_version_text,
             state=state,
+            attempt_limit=attempt_limit,
             accepted_at=accepted_at,
         )
     except (TypeError, ValueError):
@@ -482,6 +499,7 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
         job=job,
         idempotency_lookup=lookup,
         request_fingerprint=fingerprint,
+        attempt_count=attempt_count,
     )
 
 
@@ -504,6 +522,9 @@ def _validate_insert_consistency(
         or job.player_id != candidate.player_id
         or job.video_reference != candidate.video_reference
         or job.callback_url != candidate.callback_url
+        or job.analysis_version != candidate.analysis_version
+        or job.attempt_limit != candidate.attempt_limit
+        or stored.attempt_count != 0
         or job.state is not AnalysisJobState.QUEUED
     ):
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
