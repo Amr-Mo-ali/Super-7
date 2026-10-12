@@ -71,6 +71,11 @@ class _DisposablePostgresSession:
     def __repr__(self) -> str:
         return "_DisposablePostgresSession(configured=True)"
 
+    @property
+    def inspection_settings(self) -> DatabaseSettings:
+        """Return task-owned bootstrap settings for server-state assertions."""
+        return self._inspection_settings
+
     def application_relations(self) -> frozenset[str]:
         relations = _non_system_relations(self._inspection_settings)
         if self._migration_bookkeeping is None:
@@ -124,10 +129,17 @@ class _DisposablePostgresContext(AbstractContextManager[_DisposablePostgresSessi
         exc: BaseException | None,
         traceback: object,
     ) -> None:
-        del exc_type, exc, traceback
+        del exc_type, traceback
         resource = self._resource
         if resource is not None:
-            self._factory._cleanup(resource)
+            try:
+                self._factory._cleanup(resource)
+            except BaseException as cleanup_error:
+                if exc is not None:
+                    if isinstance(cleanup_error, Exception):
+                        raise exc from cleanup_error
+                    raise cleanup_error from exc
+                raise
 
 
 class _DisposablePostgresFactory:

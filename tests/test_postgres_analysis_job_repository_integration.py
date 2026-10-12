@@ -41,14 +41,16 @@ from services.postgres_foundation import MigrationRunner, PostgresFoundation
 
 _OPT_IN = "--slice1-disposable-postgres"
 _SKIP_REASON = (
-    "Slice 2 disposable PostgreSQL evidence was not executed because the explicit "
+    "AnalysisJob admission disposable PostgreSQL evidence was not executed because the explicit "
     "task-scoped opt-in is absent."
 )
 _MIGRATION_SOURCE = "package:adapters:migrations/postgres"
 _FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
-_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION)
-_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs"})
+_WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
+_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION, _WORKER_ATTEMPT_REVISION)
+_SLICE2_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs"})
+_CURRENT_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
 _ADVISORY_NAMESPACE = 1_396_113_410
 _ADVISORY_RESOURCE = 1
 _ACQUIRE_TIMEOUT_SECONDS = 5.0
@@ -143,8 +145,8 @@ def _catalog() -> tuple[str, ...]:
     return tuple(str(migration.id) for migration in read_migrations(_MIGRATION_SOURCE))
 
 
-def _slice2_settings(settings: DatabaseSettings) -> DatabaseSettings:
-    return replace(settings, required_schema_version=_ANALYSIS_JOB_REVISION)
+def _current_settings(settings: DatabaseSettings) -> DatabaseSettings:
+    return replace(settings, required_schema_version=_WORKER_ATTEMPT_REVISION)
 
 
 def _grant_runtime_admission_privileges(
@@ -386,6 +388,8 @@ def _candidate(
     *,
     lookup_group: str | None = None,
     fingerprint_group: str | None = None,
+    analysis_version: str = "1.0.0",
+    attempt_limit: int = 3,
 ) -> NewAnalysisJob:
     lookup = lookup_group or f"lookup-{index}"
     fingerprint = fingerprint_group or f"fingerprint-{index}"
@@ -397,8 +401,8 @@ def _candidate(
         player_id=f"player-{fingerprint}",
         video_reference=f"match-{fingerprint}.mp4",
         callback_url=f"https://callback.invalid/{fingerprint}",
-        analysis_version="1.0.0",
-        attempt_limit=3,
+        analysis_version=analysis_version,
+        attempt_limit=attempt_limit,
     )
 
 
@@ -409,6 +413,8 @@ def _jobs_match(left: AnalysisJob, right: AnalysisJob) -> bool:
         and left.player_id == right.player_id
         and left.video_reference == right.video_reference
         and left.callback_url == right.callback_url
+        and left.analysis_version == right.analysis_version
+        and left.attempt_limit == right.attempt_limit
         and left.state is right.state
         and left.accepted_at == right.accepted_at
     )
@@ -430,6 +436,9 @@ async def _assert_persisted_job(
             player_id = %s,
             video_reference = %s,
             callback_url = %s,
+            analysis_version = %s,
+            attempt_limit = %s,
+            attempt_count = 0,
             state = 'QUEUED',
             accepted_at = %s
         FROM analysis_jobs
@@ -443,11 +452,13 @@ async def _assert_persisted_job(
             candidate.player_id,
             candidate.video_reference,
             candidate.callback_url,
+            candidate.analysis_version,
+            candidate.attempt_limit,
             job.accepted_at,
             job.job_id,
         ),
     )
-    if row != (True,) * 9:
+    if row != (True,) * 12:
         pytest.fail("Persisted AnalysisJob did not match the authoritative result.", pytrace=False)
 
 
@@ -477,8 +488,16 @@ def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
     assert database.application_relations() == frozenset()
     assert _catalog() == _CATALOG
     runner.apply_pending()
+    assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+    assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
+    return runner
+
+
+def _prepare_slice2_database(database: _DisposablePostgresSession) -> MigrationRunner:
+    runner = _prepare_database(database)
+    runner.rollback_last()
     assert runner.current_version() == _ANALYSIS_JOB_REVISION
-    assert database.application_relations() == _APPLICATION_RELATIONS
+    assert database.application_relations() == _SLICE2_APPLICATION_RELATIONS
     return runner
 
 
@@ -494,7 +513,7 @@ def test_real_migration_privileges_and_sequential_admission(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
         _run_database(_assert_foundation_ready(runtime_settings))
 
         async def verify() -> None:
@@ -502,6 +521,8 @@ def test_real_migration_privileges_and_sequential_admission(
             async with _repository(runtime_settings) as (repository, pool):
                 accepted = await repository.accept_or_get(candidate, max_queue_size=1)
                 assert isinstance(accepted, AnalysisJobAccepted)
+                assert accepted.job.analysis_version == candidate.analysis_version
+                assert accepted.job.attempt_limit == candidate.attempt_limit
                 assert accepted.job.accepted_at.tzinfo is not None
                 assert accepted.job.accepted_at.utcoffset() is not None
                 await _assert_persisted_job(pool, candidate, accepted.job)
@@ -511,6 +532,23 @@ def test_real_migration_privileges_and_sequential_admission(
                 existing = await repository.accept_or_get(candidate, max_queue_size=1)
                 assert isinstance(existing, AnalysisJobExisting)
                 assert _jobs_match(existing.job, accepted.job)
+                assert await _row_count(pool) == 1
+
+                proposed_policy_retry = replace(
+                    candidate,
+                    job_id=UUID(int=10_099),
+                    analysis_version="2.0.0",
+                    attempt_limit=5,
+                )
+                authoritative = await repository.accept_or_get(
+                    proposed_policy_retry,
+                    max_queue_size=1,
+                )
+                assert isinstance(authoritative, AnalysisJobExisting)
+                assert _jobs_match(authoritative.job, accepted.job)
+                assert authoritative.job.analysis_version == candidate.analysis_version
+                assert authoritative.job.attempt_limit == candidate.attempt_limit
+                await _assert_persisted_job(pool, candidate, authoritative.job)
                 assert await _row_count(pool) == 1
 
                 conflict = await repository.accept_or_get(
@@ -535,7 +573,7 @@ def test_empty_slice2_rollback_and_deterministic_reapply(
 ) -> None:
     factory = _disposable_factory(request)
     with factory() as database:
-        runner = _prepare_database(database)
+        runner = _prepare_slice2_database(database)
         first_signature = _schema_signature(database.migration_settings)
         _grant_runtime_admission_privileges(
             database.migration_settings,
@@ -547,8 +585,11 @@ def test_empty_slice2_rollback_and_deterministic_reapply(
         assert database.application_relations() == frozenset()
 
         runner.apply_pending()
+        assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+        assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
+        runner.rollback_last()
         assert runner.current_version() == _ANALYSIS_JOB_REVISION
-        assert database.application_relations() == _APPLICATION_RELATIONS
+        assert database.application_relations() == _SLICE2_APPLICATION_RELATIONS
         assert _migration_role_owns_table(database.migration_settings)
         assert _schema_signature(database.migration_settings) == first_signature
         assert _runtime_privileges(database.runtime_settings)[1] is False
@@ -566,33 +607,44 @@ def test_nonempty_slice2_rollback_is_refused_without_partial_change(
 ) -> None:
     factory = _disposable_factory(request)
     with factory() as database:
-        runner = _prepare_database(database)
-        _grant_runtime_admission_privileges(
-            database.migration_settings,
-            database.runtime_settings,
-        )
-        runtime_settings = _slice2_settings(database.runtime_settings)
-
-        async def insert_one() -> None:
-            async with _repository(runtime_settings) as (repository, pool):
-                outcome = await repository.accept_or_get(_candidate(10), max_queue_size=2)
-                assert isinstance(outcome, AnalysisJobAccepted)
-                assert await _row_count(pool) == 1
-
-        _run_database(insert_one())
+        runner = _prepare_slice2_database(database)
+        historical = _candidate(10)
+        with _connect(database.migration_settings) as connection:
+            connection.execute(
+                """
+                INSERT INTO analysis_jobs (
+                    job_id,
+                    idempotency_lookup,
+                    request_fingerprint,
+                    video_id,
+                    player_id,
+                    video_reference,
+                    callback_url,
+                    state,
+                    accepted_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'QUEUED', clock_timestamp())
+                """,
+                (
+                    historical.job_id,
+                    historical.idempotency_lookup,
+                    historical.request_fingerprint,
+                    historical.video_id,
+                    historical.player_id,
+                    historical.video_reference,
+                    historical.callback_url,
+                ),
+            ).close()
         assert runner.current_version() == _ANALYSIS_JOB_REVISION
         schema_signature_before_rollback = _schema_signature(database.migration_settings)
         with pytest.raises(DatabaseMigrationError):
             runner.rollback_last()
         assert runner.current_version() == _ANALYSIS_JOB_REVISION
-        assert database.application_relations() == _APPLICATION_RELATIONS
+        assert database.application_relations() == _SLICE2_APPLICATION_RELATIONS
         assert _schema_signature(database.migration_settings) == schema_signature_before_rollback
 
-        async def verify_row() -> None:
-            async with _repository(runtime_settings) as (_, pool):
-                assert await _row_count(pool) == 1
-
-        _run_database(verify_row())
+        with _connect(database.migration_settings) as connection:
+            row = connection.execute("SELECT job_id, state FROM analysis_jobs").fetchone()
+        assert row == (historical.job_id, "QUEUED")
     assert factory.active_count == 0
 
 
@@ -607,7 +659,7 @@ def test_concurrent_identical_admission_has_one_authoritative_job(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
 
         async def verify() -> None:
             candidates = tuple(
@@ -657,7 +709,7 @@ def test_concurrent_conflicting_fingerprints_classify_against_the_winner(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
 
         async def verify() -> None:
             candidates = tuple(
@@ -727,7 +779,7 @@ def test_concurrent_distinct_admission_never_exceeds_queued_capacity(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
 
         async def verify() -> None:
             capacity = 1
@@ -791,7 +843,7 @@ def test_real_advisory_lock_timeout_rolls_back_and_repository_recovers(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
 
         async def verify() -> None:
             async with _repository(
@@ -838,7 +890,7 @@ def test_real_statement_timeout_rolls_back_and_repository_recovers(
             database.migration_settings,
             database.runtime_settings,
         )
-        runtime_settings = _slice2_settings(database.runtime_settings)
+        runtime_settings = _current_settings(database.runtime_settings)
 
         async def verify() -> None:
             async with _repository(
