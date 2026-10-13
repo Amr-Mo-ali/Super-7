@@ -35,6 +35,7 @@ class AttemptStatus(StrEnum):
     RETRYABLE_FAILURE = "RETRYABLE_FAILURE"
     TERMINAL_FAILURE = "TERMINAL_FAILURE"
     EXHAUSTED = "EXHAUSTED"
+    SUCCEEDED = "SUCCEEDED"
 
 
 @dataclass(frozen=True, slots=True)

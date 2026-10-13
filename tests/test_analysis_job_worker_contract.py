@@ -564,7 +564,14 @@ def test_public_value_fields_annotations_and_immutability(name: str) -> None:
 def test_status_vocabulary_and_four_part_authority_are_exact() -> None:
     status = _symbol("AttemptStatus")
     assert issubclass(status, StrEnum)
-    names = ("ACTIVE", "INTERRUPTED", "RETRYABLE_FAILURE", "TERMINAL_FAILURE", "EXHAUSTED")
+    names = (
+        "ACTIVE",
+        "INTERRUPTED",
+        "RETRYABLE_FAILURE",
+        "TERMINAL_FAILURE",
+        "EXHAUSTED",
+        "SUCCEEDED",
+    )
     assert tuple(status.__members__) == names
     assert tuple(member.value for member in status) == names
     authority = _authority()
@@ -1483,7 +1490,14 @@ def test_helper_fencing_and_status_assertions_reject_reviewed_adversaries(
             if case == "rewritten-generation":
                 object.__setattr__(self, "attempt_number", 1)
 
-    vocabulary = ("ACTIVE", "INTERRUPTED", "RETRYABLE_FAILURE", "TERMINAL_FAILURE", "EXHAUSTED")
+    vocabulary = (
+        "ACTIVE",
+        "INTERRUPTED",
+        "RETRYABLE_FAILURE",
+        "TERMINAL_FAILURE",
+        "EXHAUSTED",
+        "SUCCEEDED",
+    )
     base = cast(Any, Enum if case == "plain-enum" else StrEnum)
     symbols = {
         "AttemptStatus": base("AttemptStatus", {name: name for name in vocabulary}),

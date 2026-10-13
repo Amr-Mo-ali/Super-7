@@ -48,9 +48,18 @@ _MIGRATION_SOURCE = "package:adapters:migrations/postgres"
 _FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
 _WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
-_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION, _WORKER_ATTEMPT_REVISION)
+_RESULT_OUTBOX_REVISION = "sprint2_slice4_result_outbox"
+_CATALOG = (
+    _FOUNDATION_REVISION,
+    _ANALYSIS_JOB_REVISION,
+    _WORKER_ATTEMPT_REVISION,
+    _RESULT_OUTBOX_REVISION,
+)
 _SLICE2_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs"})
-_CURRENT_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
+_SLICE3_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
+_CURRENT_APPLICATION_RELATIONS = _SLICE3_APPLICATION_RELATIONS | frozenset(
+    {"public.analysis_job_terminals", "public.analysis_callback_outbox"}
+)
 _ADVISORY_NAMESPACE = 1_396_113_410
 _ADVISORY_RESOURCE = 1
 _ACQUIRE_TIMEOUT_SECONDS = 5.0
@@ -146,7 +155,7 @@ def _catalog() -> tuple[str, ...]:
 
 
 def _current_settings(settings: DatabaseSettings) -> DatabaseSettings:
-    return replace(settings, required_schema_version=_WORKER_ATTEMPT_REVISION)
+    return replace(settings, required_schema_version=_RESULT_OUTBOX_REVISION)
 
 
 def _grant_runtime_admission_privileges(
@@ -488,13 +497,16 @@ def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
     assert database.application_relations() == frozenset()
     assert _catalog() == _CATALOG
     runner.apply_pending()
-    assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+    assert runner.current_version() == _RESULT_OUTBOX_REVISION
     assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
     return runner
 
 
 def _prepare_slice2_database(database: _DisposablePostgresSession) -> MigrationRunner:
     runner = _prepare_database(database)
+    runner.rollback_last()
+    assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+    assert database.application_relations() == _SLICE3_APPLICATION_RELATIONS
     runner.rollback_last()
     assert runner.current_version() == _ANALYSIS_JOB_REVISION
     assert database.application_relations() == _SLICE2_APPLICATION_RELATIONS
@@ -585,8 +597,11 @@ def test_empty_slice2_rollback_and_deterministic_reapply(
         assert database.application_relations() == frozenset()
 
         runner.apply_pending()
-        assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+        assert runner.current_version() == _RESULT_OUTBOX_REVISION
         assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
+        runner.rollback_last()
+        assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+        assert database.application_relations() == _SLICE3_APPLICATION_RELATIONS
         runner.rollback_last()
         assert runner.current_version() == _ANALYSIS_JOB_REVISION
         assert database.application_relations() == _SLICE2_APPLICATION_RELATIONS

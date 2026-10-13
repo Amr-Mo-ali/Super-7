@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import json
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Callable
@@ -30,6 +31,7 @@ from psycopg import InterfaceError, OperationalError
 from psycopg.errors import CheckViolation, LockNotAvailable, QueryCanceled, UniqueViolation
 from psycopg_pool import PoolTimeout
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
 from adapters.psycopg_database import PsycopgDatabasePool
 from domain.analysis_job_attempt import (
     AttemptAuthority,
@@ -313,9 +315,19 @@ def _read(label: str, rows: object, *bound: object) -> _Step:
     table = (
         "analysis_job_attempts"
         if label in ("locator", "attempt", "recovery-attempt", "active")
+        else "analysis_job_terminals"
+        if label == "terminal"
+        else "analysis_callback_outbox"
+        if label == "outbox"
         else "analysis_jobs"
     )
-    tokens: tuple[str, ...] = ("clock_timestamp",) if label == "clock" else ("select", table)
+    tokens: tuple[str, ...] = (
+        ("clock_timestamp",)
+        if label == "clock"
+        else ("select", "equivalent")
+        if label == "equivalent"
+        else ("select", table)
+    )
     if label in ("job", "attempt", "recovery-attempt", "candidate"):
         tokens += ("for update",)
     if label == "recovery-attempt":
@@ -326,9 +338,94 @@ def _read(label: str, rows: object, *bound: object) -> _Step:
 
 
 def _write(label: str, rows: object, *bound: object) -> _Step:
-    table = "analysis_jobs" if label == "job-write" else "analysis_job_attempts"
-    verb = "insert" if label == "insert" else "update"
+    table = (
+        "analysis_jobs"
+        if label == "job-write"
+        else "analysis_job_terminals"
+        if label == "terminal-write"
+        else "analysis_callback_outbox"
+        if label == "outbox-write"
+        else "analysis_job_attempts"
+    )
+    verb = "insert" if label in ("insert", "terminal-write", "outbox-write") else "update"
     return _Step(label, rows, (verb, table, "returning"), tuple(bound))
+
+
+def _failure_terminal_rows(
+    job: tuple[object, ...], attempt: tuple[object, ...]
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    status, code = attempt[4], attempt[9]
+    origin = (
+        "CLASSIFIED_TERMINAL"
+        if status == "TERMINAL_FAILURE"
+        else "CLASSIFIED_EXHAUSTION"
+        if code is not None
+        else "EXPIRY_EXHAUSTION"
+    )
+    terminal_code = code if status == "TERMINAL_FAILURE" else "attempts_exhausted"
+    assert type(terminal_code) is str
+    finished = attempt[8]
+    terminal = (
+        job[0],
+        attempt[1],
+        "FAILED",
+        finished,
+        "analysis_terminal_v1",
+        None,
+        None,
+        None,
+        None,
+        terminal_code,
+        origin,
+    )
+    job_id, video_id, player_id = job[:3]
+    assert type(job_id) is UUID and type(video_id) is str and type(player_id) is str
+    payload = json.loads(
+        failure_callback_snapshot_v1(
+            job_id=job_id,
+            video_id=video_id,
+            player_id=player_id,
+            safe_code=terminal_code,
+        )
+    )
+    outbox = (
+        UUID(int=44),
+        job[0],
+        "analysis_callback_snapshot_v1",
+        payload,
+        "PENDING",
+        finished,
+        finished,
+    )
+    return terminal, outbox
+
+
+def _terminal_reads(job: tuple[object, ...], attempt: tuple[object, ...]) -> list[_Step]:
+    terminal, outbox = _failure_terminal_rows(job, attempt)
+    return [
+        _read("terminal", [terminal], job[0]),
+        _read("outbox", [outbox], job[0]),
+    ]
+
+
+def _terminal_absence(job_id: UUID = _JOB) -> list[_Step]:
+    return [_read("terminal", [], job_id), _read("outbox", [], job_id)]
+
+
+def _terminal_writes(job: tuple[object, ...], attempt: tuple[object, ...]) -> list[_Step]:
+    terminal, outbox = _failure_terminal_rows(job, attempt)
+    return [
+        _write(
+            "terminal-write",
+            [terminal],
+            job[0],
+            attempt[1],
+            "FAILED",
+            terminal[9],
+            terminal[10],
+        ),
+        _write("outbox-write", [outbox], job[0], "PENDING", "analysis_callback_snapshot_v1"),
+    ]
 
 
 def _slot(job: object = None, attempt: object = None, locator: object = None) -> list[_Step]:
@@ -340,12 +437,20 @@ def _slot(job: object = None, attempt: object = None, locator: object = None) ->
     ]
 
 
-def _owner(job: object = None, attempt: object = None) -> list[_Step]:
-    return [
+def _owner(
+    job: list[tuple[object, ...]] | None = None,
+    attempt: list[tuple[object, ...]] | None = None,
+) -> list[_Step]:
+    job_rows = [_j()] if job is None else job
+    attempt_rows = [_a()] if attempt is None else attempt
+    steps = [
         *_settings(),
-        _read("job", [_j()] if job is None else job, _JOB),
-        _read("attempt", [_a()] if attempt is None else attempt, _JOB, 2),
+        _read("job", job_rows, _JOB),
+        _read("attempt", attempt_rows, _JOB, 2),
     ]
+    if job_rows and attempt_rows and job_rows[0][6] == "FAILED":
+        steps.extend(_terminal_reads(job_rows[0], attempt_rows[0]))
+    return steps
 
 
 def _fresh() -> list[_Step]:
@@ -1240,7 +1345,10 @@ def test_failure_code_nullability_is_status_specific(status: str) -> None:
         finished_at=_NOW,
         safe_failure_code="retry" if interrupted else None,
     )
-    pool = _Pool(_slot(job=[job], attempt=[row]))
+    steps = _slot(job=[job], attempt=[row])
+    if status == "EXHAUSTED":
+        steps.extend(_terminal_reads(job, row))
+    pool = _Pool(steps)
     if status == "EXHAUSTED":
         # Null-code exhaustion is valid expiry history, not malformed classification.
         _fixed(_capture(_repository(pool)), unavailable=True)
@@ -1280,7 +1388,7 @@ def test_complete_committed_pair_consistency_table(
                 safe_failure_code="retry",
             )
         steps.append(_read("attempt", [current], _JOB, 2))
-        # COMPLETED has no approved current successful-attempt representation in Slice 3.
+        # Historical resolutions may precede a current terminal attempt.
         valid = retry and state != "COMPLETED"
     else:
         valid = (
@@ -1290,6 +1398,9 @@ def test_complete_committed_pair_consistency_table(
         )
     if valid and status == "ACTIVE" and state == "RUNNING":
         steps.append(_read("clock", [(_NOW,)]))
+    if valid and state == "FAILED":
+        current_row = current if relation == "historical" else row
+        steps.extend(_terminal_reads(job, current_row))
     pool = _Pool(steps)
     factory = _Factory(pool)
     repo = _repository(pool, factory)
@@ -1341,19 +1452,20 @@ def test_resolution_replay_requires_exact_current_fence_code_kind_and_state(
         state = "CANCELLED"
     elif conflict == "cancelled":
         state = "CANCELLED"
-    pool = _Pool(
-        _owner(
-            job=[_j(state=state, attempt_limit=limit)],
-            attempt=[
-                _a(
-                    status=status,
-                    lease_expires_at=None,
-                    finished_at=_NOW,
-                    safe_failure_code="retry",
-                )
-            ],
-        )
+    steps = _owner(
+        job=[_j(state=state, attempt_limit=limit)],
+        attempt=[
+            _a(
+                status=status,
+                lease_expires_at=None,
+                finished_at=_NOW,
+                safe_failure_code="retry",
+            )
+        ],
     )
+    if conflict == "exact" and status != "RETRYABLE_FAILURE":
+        steps.append(_read("equivalent", [(True,)]))
+    pool = _Pool(steps)
     changes: dict[str, object] = {}
     if conflict == "code":
         changes["failure_code"] = AttemptFailureCode("different")
@@ -1384,6 +1496,14 @@ def test_resolution_replay_requires_exact_current_fence_code_kind_and_state(
     else:
         assert type(outcome) is worker.ClaimLost
     assert outcome.authority == changes.get("authority", _AUTHORITY)
+    if conflict == "exact" and status != "RETRYABLE_FAILURE":
+        query, parameters = pool.value.executions[-1][1:]
+        assert "o.payload_json = %s::jsonb" in query
+        expected_code = "retry" if method == "finalize_terminal_failure" else "attempts_exhausted"
+        expected = failure_callback_snapshot_v1(
+            job_id=_JOB, video_id="Video_123", player_id="Player_456", safe_code=expected_code
+        )
+        assert parameters == (expected.decode(), _JOB)
     _done(pool)
 
 
@@ -1397,6 +1517,8 @@ def test_owner_expiry_observation_and_later_zero_gate_never_write_job(
         clock = _NOW
     steps = [*_owner(), _read("clock", [(clock,)])]
     if boundary == "mutation-zero":
+        if method == "finalize_terminal_failure":
+            steps.extend(_terminal_absence())
         steps.append(_write("attempt-write", [], _JOB, 2, _SLOT, _LEASE))
     pool = _Pool(steps)
     outcome = _run(_repository(pool), method)
@@ -1447,6 +1569,7 @@ def test_failure_finalization_attempt_then_job_commits_only_complete_pair(
         [
             *_owner(job=[_j(attempt_limit=limit)]),
             _read("clock", [(_NOW,)]),
+            *(_terminal_absence() if state == "FAILED" else []),
             _write(
                 "attempt-write",
                 [
@@ -1464,6 +1587,19 @@ def test_failure_finalization_attempt_then_job_commits_only_complete_pair(
                 "retry",
             ),
             _write("job-write", [_j(state=state, attempt_limit=limit)], _JOB),
+            *(
+                _terminal_writes(
+                    _j(state=state, attempt_limit=limit),
+                    _a(
+                        status=status,
+                        lease_expires_at=None,
+                        finished_at=finish,
+                        safe_failure_code="retry",
+                    ),
+                )
+                if state == "FAILED"
+                else []
+            ),
         ]
     )
     factory = _Factory(pool)
@@ -1957,6 +2093,7 @@ def test_failure_returning_requires_full_preservation_and_mutation_gate(
         [
             *_owner(),
             _read("clock", [(_NOW,)]),
+            *(_terminal_absence() if method == "finalize_terminal_failure" else []),
             _write("attempt-write", [row], _JOB, 2, _SLOT, _LEASE, "retry"),
         ]
     )
@@ -1982,6 +2119,7 @@ def test_failure_second_write_evidence_rolls_back_first_write(method: str, defec
         [
             *_owner(),
             _read("clock", [(_NOW,)]),
+            *(_terminal_absence() if not retry else []),
             _write(
                 "attempt-write",
                 [
@@ -2037,6 +2175,7 @@ def test_expiry_recovery_uses_null_code_and_does_not_increment_generation(limit:
     steps = [
         *_recovery(job, [_a()]),
         _read("clock", [(_EXPIRY,)]),
+        *(_terminal_absence() if exhausted else []),
         _write(
             "attempt-write",
             [
@@ -2053,6 +2192,14 @@ def test_expiry_recovery_uses_null_code_and_does_not_increment_generation(limit:
         ),
         _write(
             "job-write", [_j(state="FAILED" if exhausted else "QUEUED", attempt_limit=limit)], _JOB
+        ),
+        *(
+            _terminal_writes(
+                _j(state="FAILED", attempt_limit=limit),
+                _a(status="EXHAUSTED", lease_expires_at=None, finished_at=_EXPIRY),
+            )
+            if exhausted
+            else []
         ),
     ]
     pool = _Pool(steps)
@@ -2781,6 +2928,7 @@ def test_owner_guard_duplicate_rows_are_invariant_not_success(method: str) -> No
         [
             *_owner(),
             _read("clock", [(_NOW,)]),
+            *(_terminal_absence() if method == "finalize_terminal_failure" else []),
             _write("attempt-write", [row, row], _JOB, 2, _SLOT, _LEASE),
         ]
     )
@@ -2904,6 +3052,7 @@ def test_recovery_mixed_complete_pairs_account_once_without_refill() -> None:
                 2,
             ),
             _read("clock", [(_EXPIRY,)]),
+            *_terminal_absence(_OTHER_JOB),
             _write(
                 "attempt-write",
                 [
@@ -2923,12 +3072,72 @@ def test_recovery_mixed_complete_pairs_account_once_without_refill() -> None:
             _write(
                 "job-write", [_j(job_id=_OTHER_JOB, attempt_limit=2, state="FAILED")], _OTHER_JOB
             ),
+            *_terminal_writes(
+                _j(job_id=_OTHER_JOB, attempt_limit=2, state="FAILED"),
+                _a(
+                    job_id=_OTHER_JOB,
+                    worker_slot_id=_OTHER,
+                    lease_id=_OTHER,
+                    status="EXHAUSTED",
+                    lease_expires_at=None,
+                    finished_at=_EXPIRY,
+                ),
+            ),
         ]
     )
     factory = _Factory(pool)
     assert _run(_repository(pool, factory), "recover_expired") == worker.RecoverySummary(1, 1)
     assert factory.calls == 0
     _done(pool)
+
+
+def test_recovery_second_event_evidence_failure_rolls_back_whole_batch() -> None:
+    first = _j()
+    second = _j(job_id=_OTHER_JOB, attempt_limit=2)
+    second_active = _a(job_id=_OTHER_JOB, worker_slot_id=_OTHER, lease_id=_OTHER)
+    second_resolved = _a(
+        job_id=_OTHER_JOB,
+        worker_slot_id=_OTHER,
+        lease_id=_OTHER,
+        status="EXHAUSTED",
+        lease_expires_at=None,
+        finished_at=_EXPIRY,
+    )
+    event_steps = _terminal_writes(
+        _j(job_id=_OTHER_JOB, attempt_limit=2, state="FAILED"), second_resolved
+    )
+    event_steps[-1] = replace(event_steps[-1], rows=[])
+    pool = _Pool(
+        [
+            *_settings(),
+            _read("clock", [(_EXPIRY,)]),
+            _read("recovery", [first, second], 2),
+            _read("recovery-attempt", [_a()], _JOB, 2),
+            _read("clock", [(_EXPIRY,)]),
+            _write(
+                "attempt-write",
+                [_a(status="INTERRUPTED", lease_expires_at=None, finished_at=_EXPIRY)],
+                _JOB,
+                2,
+                _SLOT,
+                _LEASE,
+            ),
+            _write("job-write", [_j(state="QUEUED")], _JOB),
+            _read("recovery-attempt", [second_active], _OTHER_JOB, 2),
+            _read("clock", [(_EXPIRY,)]),
+            *_terminal_absence(_OTHER_JOB),
+            _write("attempt-write", [second_resolved], _OTHER_JOB, 2, _OTHER, _OTHER),
+            _write(
+                "job-write", [_j(job_id=_OTHER_JOB, attempt_limit=2, state="FAILED")], _OTHER_JOB
+            ),
+            *event_steps,
+        ]
+    )
+    factory = _Factory(pool)
+    _fixed(_capture(_repository(pool, factory), "recover_expired"))
+    assert factory.calls == 0
+    assert pool.events.index("execute:job-write") < pool.events.index("execute:outbox-write")
+    _done(pool, rollback=True)
 
 
 @pytest.mark.parametrize("method", _METHODS[2:4])

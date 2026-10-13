@@ -8,10 +8,12 @@ mutation clock. Nothing here composes a pool, starts a worker, or executes analy
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from functools import partial
 from math import isfinite
 from types import (
@@ -29,6 +31,7 @@ from psycopg import InterfaceError, OperationalError
 from psycopg.errors import UniqueViolation
 from psycopg_pool import PoolTimeout
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
 from domain.analysis_job import AnalysisJobState, _validate_datetime
 from domain.analysis_job_attempt import (
     AttemptAuthority,
@@ -43,6 +46,16 @@ from domain.analysis_job_attempt import (
     _instant_key,
     _validate_authority,
     _validate_failure_code,
+)
+from services.analysis_job_finalization import (
+    _AMBIGUOUS_RESULT,
+    _CALLBACK_FIELDS,
+    _COMMON_RESULT,
+    _COMPLETED_RESULT,
+    _NONCOMPLETED_RESULT,
+    _strict_json_object,
+    _validate_json_value,
+    _validate_retained_result_fields,
 )
 from services.analysis_job_worker import (
     AnalysisJobWorkerPersistenceInvariantError,
@@ -78,6 +91,15 @@ _J = (
 _A = (
     "job_id, attempt_number, worker_slot_id, lease_id, status, started_at, "
     "heartbeat_at, lease_expires_at, finished_at, safe_failure_code"
+)
+_R = (
+    "job_id, attempt_number, terminal_kind, finalized_at, terminal_schema_version, "
+    "result_schema_version, result_json, model_version, processing_duration_ms, "
+    "safe_failure_code, failure_origin"
+)
+_O = (
+    "callback_event_id, job_id, payload_schema_version, payload_json, delivery_state, "
+    "created_at, next_attempt_at"
 )
 _JOB_READ = f"SELECT {_J} FROM analysis_jobs WHERE job_id = %s FOR UPDATE"
 _ATTEMPT_READ = (
@@ -141,6 +163,24 @@ FROM analysis_jobs AS j JOIN analysis_job_attempts AS a
     ON a.job_id = j.job_id AND a.attempt_number = j.attempt_count
 WHERE j.state = %s AND a.status = %s AND a.lease_expires_at <= %s
 ORDER BY j.job_id ASC LIMIT %s FOR UPDATE OF j SKIP LOCKED"""
+_TERMINAL_READ = f"SELECT {_R} FROM analysis_job_terminals WHERE job_id = %s"
+_OUTBOX_READ = f"SELECT {_O} FROM analysis_callback_outbox WHERE job_id = %s"
+_TERMINAL_INSERT = f"""INSERT INTO analysis_job_terminals (
+    {_R}
+) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+RETURNING {_R}"""
+_OUTBOX_INSERT = f"""INSERT INTO analysis_callback_outbox (
+    job_id, payload_schema_version, payload_json, delivery_state, created_at, next_attempt_at
+) VALUES (%s, %s, %s::jsonb, %s, %s, %s)
+RETURNING {_O}"""
+_FAILURE_Q = """SELECT o.payload_json = %s::jsonb AS equivalent
+FROM analysis_job_terminals AS r JOIN analysis_callback_outbox AS o ON o.job_id = r.job_id
+WHERE r.job_id = %s"""
+_SUCCESS_Q = """SELECT
+    (r.result_json - 'processing_time_ms') = (%s::jsonb - 'processing_time_ms')
+    AND o.payload_json = %s::jsonb AS equivalent
+FROM analysis_job_terminals AS r JOIN analysis_callback_outbox AS o ON o.job_id = r.job_id
+WHERE r.job_id = %s"""
 
 
 class _Cursor(Protocol):
@@ -177,6 +217,38 @@ class _Attempt:
     expiry: datetime | None
     finished: datetime | None
     code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Terminal:
+    job_id: UUID
+    attempt_number: int
+    kind: str
+    finalized_at: datetime
+    schema_version: str
+    result_schema_version: str | None
+    result_json: dict[str, object] | None
+    model_version: str | None
+    processing_duration_ms: int | None
+    safe_failure_code: str | None
+    failure_origin: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Outbox:
+    event_id: UUID
+    job_id: UUID
+    schema_version: str
+    payload_json: dict[str, object]
+    delivery_state: str
+    created_at: datetime
+    next_attempt_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _TerminalPair:
+    terminal: _Terminal
+    outbox: _Outbox
 
 
 def _native_descriptor(owner: type, name: str) -> GetSetDescriptorType | MemberDescriptorType:
@@ -388,20 +460,47 @@ class PsycopgAnalysisJobWorkerRepository:
         async def operation(
             connection: _Connection,
         ) -> AttemptFailed | AttemptResolutionAlreadyApplied | ClaimLost:
-            pair = await _owner(connection, authority)
+            pair = await _owner(connection, authority, inspect_terminal=True)
             if pair is None:
                 return ClaimLost(authority)
             job, old = pair
             if _replay(job, old, failure_code, terminal=True):
-                return AttemptResolutionAlreadyApplied(authority, old.status, failure_code)
+                expected = failure_callback_snapshot_v1(
+                    job_id=job.payload.job_id,
+                    video_id=job.payload.video_id,
+                    player_id=job.payload.player_id,
+                    safe_code=failure_code.value,
+                )
+                if await _equivalent(
+                    connection, job.payload.job_id, callback_json=expected, result_json=None
+                ):
+                    return AttemptResolutionAlreadyApplied(authority, old.status, failure_code)
+                return ClaimLost(authority)
             if not await _eligible(connection, job, old):
                 return ClaimLost(authority)
+            await _terminal_rows(connection, job, old, require_absent=True)
             changed = await _resolve(
                 connection, job, old, AttemptStatus.TERMINAL_FAILURE, failure_code.value
             )
             if changed is None:
                 return ClaimLost(authority)
-            await _transition_job(connection, job, changed, AnalysisJobState.FAILED)
+            terminal_job = await _transition_job(connection, job, changed, AnalysisJobState.FAILED)
+            await _insert_terminal_pair(
+                connection,
+                terminal_job,
+                changed,
+                result_json=None,
+                callback_json=failure_callback_snapshot_v1(
+                    job_id=job.payload.job_id,
+                    video_id=job.payload.video_id,
+                    player_id=job.payload.player_id,
+                    safe_code=failure_code.value,
+                ),
+                model_version=None,
+                processing_duration_ms=None,
+                safe_failure_code=failure_code.value,
+                failure_origin="CLASSIFIED_TERMINAL",
+            )
             return AttemptFailed(authority, failure_code)
 
         return await self._run(operation)
@@ -440,16 +539,35 @@ class PsycopgAnalysisJobWorkerRepository:
                 ):
                     continue
                 at_limit = job.count == job.payload.attempt_limit
+                if at_limit:
+                    await _terminal_rows(connection, job, old, require_absent=True)
                 status = AttemptStatus.EXHAUSTED if at_limit else AttemptStatus.INTERRUPTED
                 changed = await _resolve(connection, job, old, status, None, recovery=True)
                 if changed is None:
                     continue
-                await _transition_job(
+                updated_job = await _transition_job(
                     connection,
                     job,
                     changed,
                     AnalysisJobState.FAILED if at_limit else AnalysisJobState.QUEUED,
                 )
+                if at_limit:
+                    await _insert_terminal_pair(
+                        connection,
+                        updated_job,
+                        changed,
+                        result_json=None,
+                        callback_json=failure_callback_snapshot_v1(
+                            job_id=job.payload.job_id,
+                            video_id=job.payload.video_id,
+                            player_id=job.payload.player_id,
+                            safe_code="attempts_exhausted",
+                        ),
+                        model_version=None,
+                        processing_duration_ms=None,
+                        safe_failure_code="attempts_exhausted",
+                        failure_origin="EXPIRY_EXHAUSTION",
+                    )
                 exhausted += int(at_limit)
                 requeued += int(not at_limit)
             return RecoverySummary(requeued, exhausted)
@@ -499,19 +617,27 @@ class PsycopgAnalysisJobWorkerRepository:
             def locator_check(attempt: _Attempt) -> None:
                 if attempt.authority.worker_slot_id.value != slot.value:
                     _invalid()
-                if number == job.count and attempt.status is not AttemptStatus.ACTIVE:
+                if (
+                    number == job.count
+                    and attempt.status is not AttemptStatus.ACTIVE
+                    and job.state not in (AnalysisJobState.COMPLETED, AnalysisJobState.FAILED)
+                ):
                     _unavailable()
 
             old = await _read_attempt(connection, job, number, check=locator_check)
             if old is None:
                 _invalid()
             if number < job.count:
-
-                def replacement_check(attempt: _Attempt) -> None:
-                    _unavailable()
-
-                await _read_attempt(connection, job, job.count, check=replacement_check)
-                _invalid()
+                replacement = await _read_attempt(connection, job, job.count)
+                if replacement is None:
+                    _invalid()
+                if job.state in (AnalysisJobState.COMPLETED, AnalysisJobState.FAILED):
+                    await _terminal_rows(connection, job, replacement)
+                _unavailable()
+            if old.status is not AttemptStatus.ACTIVE:
+                if job.state in (AnalysisJobState.COMPLETED, AnalysisJobState.FAILED):
+                    await _terminal_rows(connection, job, old)
+                _unavailable()
             if job.state is AnalysisJobState.CANCELLED:
                 return WorkerSlotUnavailable(slot)
             observed = await _clock(connection)
@@ -575,26 +701,56 @@ class PsycopgAnalysisJobWorkerRepository:
     async def _retryable(
         self, connection: _Connection, authority: AttemptAuthority, code: AttemptFailureCode
     ) -> AttemptRequeued | AttemptExhausted | AttemptResolutionAlreadyApplied | ClaimLost:
-        pair = await _owner(connection, authority)
+        pair = await _owner(connection, authority, inspect_terminal=True)
         if pair is None:
             return ClaimLost(authority)
         job, old = pair
         if _replay(job, old, code, terminal=False):
-            return AttemptResolutionAlreadyApplied(authority, old.status, code)
+            if old.status is AttemptStatus.RETRYABLE_FAILURE:
+                return AttemptResolutionAlreadyApplied(authority, old.status, code)
+            expected = failure_callback_snapshot_v1(
+                job_id=job.payload.job_id,
+                video_id=job.payload.video_id,
+                player_id=job.payload.player_id,
+                safe_code="attempts_exhausted",
+            )
+            if await _equivalent(
+                connection, job.payload.job_id, callback_json=expected, result_json=None
+            ):
+                return AttemptResolutionAlreadyApplied(authority, old.status, code)
+            return ClaimLost(authority)
         if not await _eligible(connection, job, old):
             return ClaimLost(authority)
         at_limit = job.count == job.payload.attempt_limit
+        if at_limit:
+            await _terminal_rows(connection, job, old, require_absent=True)
         status = AttemptStatus.EXHAUSTED if at_limit else AttemptStatus.RETRYABLE_FAILURE
         changed = await _resolve(connection, job, old, status, code.value)
         if changed is None:
             return ClaimLost(authority)
-        await _transition_job(
+        updated_job = await _transition_job(
             connection,
             job,
             changed,
             AnalysisJobState.FAILED if at_limit else AnalysisJobState.QUEUED,
         )
         if at_limit:
+            await _insert_terminal_pair(
+                connection,
+                updated_job,
+                changed,
+                result_json=None,
+                callback_json=failure_callback_snapshot_v1(
+                    job_id=job.payload.job_id,
+                    video_id=job.payload.video_id,
+                    player_id=job.payload.player_id,
+                    safe_code="attempts_exhausted",
+                ),
+                model_version=None,
+                processing_duration_ms=None,
+                safe_failure_code="attempts_exhausted",
+                failure_origin="CLASSIFIED_EXHAUSTION",
+            )
             return AttemptExhausted(authority, job.payload.attempt_limit, code)
         return AttemptRequeued(authority, job.payload.attempt_limit)
 
@@ -824,7 +980,7 @@ def _decode_job(row: tuple[object, ...]) -> _Job:
     if state not in AnalysisJobState.__members__:
         _invalid()
     limit, count = _integer(row[7], positive=True), _integer(row[8])
-    if count > limit or (state in ("RUNNING", "FAILED") and count == 0):
+    if count > limit or (state in ("RUNNING", "COMPLETED", "FAILED") and count == 0):
         _invalid()
     payload: ClaimableAnalysisJob | None = None
     video, player, reference, callback = (_text(row[i]) for i in (1, 2, 3, 4))
@@ -883,7 +1039,7 @@ def _decode_attempt(row: tuple[object, ...]) -> _Attempt:
         expiry is not None
         or finish is None
         or _instant_key(finish) < _instant_key(heartbeat)
-        or (status is AttemptStatus.INTERRUPTED and code is not None)
+        or (status in (AttemptStatus.INTERRUPTED, AttemptStatus.SUCCEEDED) and code is not None)
         or (
             status in (AttemptStatus.RETRYABLE_FAILURE, AttemptStatus.TERMINAL_FAILURE)
             and code is None
@@ -896,6 +1052,347 @@ def _decode_attempt(row: tuple[object, ...]) -> _Attempt:
 def _optional_attempt(rows: list[tuple[object, ...]]) -> _Attempt | None:
     row = _singleton(rows)
     return None if row is None else _decode_attempt(row)
+
+
+def _json_object(value: object) -> dict[str, object]:
+    if type(value) is not dict:
+        _invalid()
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if type(key) is not str:
+            _invalid()
+        try:
+            _validate_json_value(key)
+            _validate_json_value(item)
+        except ValueError:
+            _invalid()
+        result[key] = item
+    return result
+
+
+def _returned_jsonb_equal(left: object, right: object) -> bool:
+    """Check INSERT RETURNING evidence only; replay equality remains PostgreSQL Q."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            _returned_jsonb_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _returned_jsonb_equal(a, b) for a, b in zip(left, right, strict=True)
+        )
+    if type(left) is bool or type(right) is bool:
+        return type(left) is type(right) and left == right
+    if type(left) in (int, float, Decimal) and type(right) in (int, float, Decimal):
+        return Decimal(str(left)) == Decimal(str(right))
+    return type(left) is type(right) and left == right
+
+
+def _nullable_text(value: object) -> str | None:
+    return None if value is None else _text(value)
+
+
+def _decode_terminal(row: tuple[object, ...]) -> _Terminal:
+    if len(row) != 11:
+        _invalid()
+    job_id, number = _uuid(row[0]), _integer(row[1], positive=True)
+    kind, finished, schema = _text(row[2]), _timestamp(row[3]), _text(row[4])
+    result_schema = _nullable_text(row[5])
+    result_json = None if row[6] is None else _json_object(row[6])
+    model = _nullable_text(row[7])
+    duration = None if row[8] is None else _integer(row[8])
+    code, origin = _nullable_text(row[9]), _nullable_text(row[10])
+    if schema != "analysis_terminal_v1":
+        _invalid()
+    if kind == "COMPLETED":
+        if (
+            result_schema != "analysis_result_v1"
+            or result_json is None
+            or model is None
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", model)
+            or duration is None
+            or duration < 0
+            or code is not None
+            or origin is not None
+        ):
+            _invalid()
+    elif kind == "FAILED":
+        if (
+            result_schema is not None
+            or result_json is not None
+            or model is not None
+            or duration is not None
+            or code is None
+            or origin
+            not in (
+                "CLASSIFIED_TERMINAL",
+                "CLASSIFIED_EXHAUSTION",
+                "EXPIRY_EXHAUSTION",
+            )
+        ):
+            _invalid()
+        try:
+            AttemptFailureCode(code)
+        except (TypeError, ValueError):
+            _invalid()
+    else:
+        _invalid()
+    return _Terminal(
+        job_id,
+        number,
+        kind,
+        finished,
+        schema,
+        result_schema,
+        result_json,
+        model,
+        duration,
+        code,
+        origin,
+    )
+
+
+def _decode_outbox(row: tuple[object, ...]) -> _Outbox:
+    if len(row) != 7:
+        _invalid()
+    event_id, job_id = _uuid(row[0]), _uuid(row[1])
+    schema, payload, state = _text(row[2]), _json_object(row[3]), _text(row[4])
+    created, next_at = _timestamp(row[5]), _timestamp(row[6])
+    if schema != "analysis_callback_snapshot_v1" or state not in (
+        "PENDING",
+        "RETRYING",
+        "DELIVERED",
+        "EXHAUSTED",
+    ):
+        _invalid()
+    return _Outbox(event_id, job_id, schema, payload, state, created, next_at)
+
+
+def _validate_terminal_pair(job: _Job, attempt: _Attempt, pair: _TerminalPair) -> None:
+    terminal, outbox = pair.terminal, pair.outbox
+    payload = outbox.payload_json
+    if (
+        terminal.job_id != job.payload.job_id
+        or terminal.attempt_number != job.count
+        or attempt.authority.attempt_number != job.count
+        or terminal.kind != job.state.value
+        or attempt.finished is None
+        or _instant_key(terminal.finalized_at) != _instant_key(attempt.finished)
+        or outbox.job_id != job.payload.job_id
+        or _instant_key(outbox.created_at) != _instant_key(terminal.finalized_at)
+        or payload.get("request_id") != str(job.payload.job_id)
+        or payload.get("video_id") != job.payload.video_id
+        or payload.get("player_id") != job.payload.player_id
+        or not all(isinstance(payload.get(key), dict) for key in ("summary", "ratings", "events"))
+    ):
+        _invalid()
+    if terminal.kind == "COMPLETED":
+        result = terminal.result_json
+        if (
+            attempt.status is not AttemptStatus.SUCCEEDED
+            or result is None
+            or result.get("analysis_id") != str(job.payload.job_id)
+            or result.get("status")
+            not in (
+                "completed",
+                "ambiguous_target",
+                "invalid_video",
+                "no_players_detected",
+                "no_valid_tracks",
+                "failed",
+                "player_detection_completed_tracking_not_available",
+            )
+            or payload.keys() != _CALLBACK_FIELDS
+            or payload.get("error") is not None
+            or not isinstance(payload.get("detailed"), dict)
+            or payload.get("status")
+            != ("COMPLETED" if result.get("status") == "completed" else result.get("status"))
+        ):
+            _invalid()
+        projected_status = result["status"]
+        expected_fields = _COMMON_RESULT | (
+            _COMPLETED_RESULT
+            if projected_status == "completed"
+            else _AMBIGUOUS_RESULT
+            if projected_status == "ambiguous_target"
+            else _NONCOMPLETED_RESULT
+        )
+        if result.keys() != expected_fields or (
+            projected_status != "completed" and result.get("selected_player") is not None
+        ):
+            _invalid()
+        versions = result.get("algorithm_versions")
+        pipeline_duration = result.get("processing_time_ms")
+        if result.get("status") == "completed" and (
+            result.get("analysis_version") != job.payload.analysis_version
+            or result.get("model_version") != terminal.model_version
+            or not isinstance(versions, dict)
+            or versions.get("player_detection") != terminal.model_version
+            or type(pipeline_duration) is not int
+            or pipeline_duration < 0
+        ):
+            _invalid()
+        try:
+            _validate_retained_result_fields(result)
+        except (TypeError, ValueError):
+            _invalid()
+    else:
+        expected_origin = (
+            "CLASSIFIED_TERMINAL"
+            if attempt.status is AttemptStatus.TERMINAL_FAILURE
+            else "EXPIRY_EXHAUSTION"
+            if attempt.status is AttemptStatus.EXHAUSTED and attempt.code is None
+            else "CLASSIFIED_EXHAUSTION"
+            if attempt.status is AttemptStatus.EXHAUSTED
+            else None
+        )
+        expected_code = (
+            attempt.code if expected_origin == "CLASSIFIED_TERMINAL" else "attempts_exhausted"
+        )
+        error = payload.get("error")
+        if (
+            expected_origin is None
+            or terminal.failure_origin != expected_origin
+            or terminal.safe_failure_code != expected_code
+            or payload.keys()
+            != frozenset(
+                {
+                    "request_id",
+                    "video_id",
+                    "player_id",
+                    "status",
+                    "summary",
+                    "ratings",
+                    "overall",
+                    "events",
+                    "error",
+                }
+            )
+            or payload.get("status") != "failed"
+            or payload.get("overall") is not None
+            or not isinstance(error, dict)
+            or error.keys() != {"code", "message"}
+            or error.get("code") != expected_code
+            or error.get("message") != "Analysis could not be completed."
+        ):
+            _invalid()
+
+
+def _required_row(rows: list[tuple[object, ...]]) -> tuple[object, ...]:
+    row = _singleton(rows, required=True)
+    if row is None:
+        _invalid()
+    return row
+
+
+async def _terminal_rows(
+    connection: _Connection, job: _Job, attempt: _Attempt, *, require_absent: bool = False
+) -> _TerminalPair | None:
+    terminal_pair = job.state in (AnalysisJobState.COMPLETED, AnalysisJobState.FAILED)
+    if not terminal_pair and not require_absent:
+        return None
+    terminal = await _query(
+        connection,
+        _TERMINAL_READ,
+        (job.payload.job_id,),
+        lambda rows: None if (row := _singleton(rows)) is None else _decode_terminal(row),
+    )
+    outbox = await _query(
+        connection,
+        _OUTBOX_READ,
+        (job.payload.job_id,),
+        lambda rows: None if (row := _singleton(rows)) is None else _decode_outbox(row),
+    )
+    if require_absent:
+        if terminal is not None or outbox is not None:
+            _invalid()
+        return None
+    if not terminal_pair or terminal is None or outbox is None:
+        _invalid()
+    pair = _TerminalPair(terminal, outbox)
+    _validate_terminal_pair(job, attempt, pair)
+    return pair
+
+
+async def _insert_terminal_pair(
+    connection: _Connection,
+    job: _Job,
+    attempt: _Attempt,
+    *,
+    result_json: bytes | None,
+    callback_json: bytes,
+    model_version: str | None,
+    processing_duration_ms: int | None,
+    safe_failure_code: str | None,
+    failure_origin: str | None,
+) -> _TerminalPair:
+    if attempt.finished is None:
+        _invalid()
+    terminal = await _query(
+        connection,
+        _TERMINAL_INSERT,
+        (
+            job.payload.job_id,
+            job.count,
+            job.state.value,
+            attempt.finished,
+            "analysis_terminal_v1",
+            "analysis_result_v1" if result_json is not None else None,
+            result_json.decode("utf-8") if result_json is not None else None,
+            model_version,
+            processing_duration_ms,
+            safe_failure_code,
+            failure_origin,
+        ),
+        lambda rows: _decode_terminal(_required_row(rows)),
+    )
+    outbox = await _query(
+        connection,
+        _OUTBOX_INSERT,
+        (
+            job.payload.job_id,
+            "analysis_callback_snapshot_v1",
+            callback_json.decode("utf-8"),
+            "PENDING",
+            attempt.finished,
+            attempt.finished,
+        ),
+        lambda rows: _decode_outbox(_required_row(rows)),
+    )
+    pair = _TerminalPair(terminal, outbox)
+    _validate_terminal_pair(job, attempt, pair)
+    if (
+        _instant_key(outbox.next_attempt_at) != _instant_key(attempt.finished)
+        or terminal.model_version != model_version
+        or terminal.processing_duration_ms != processing_duration_ms
+        or terminal.safe_failure_code != safe_failure_code
+        or terminal.failure_origin != failure_origin
+        or not _returned_jsonb_equal(outbox.payload_json, _strict_json_object(callback_json))
+        or (
+            result_json is not None
+            and not _returned_jsonb_equal(terminal.result_json, _strict_json_object(result_json))
+        )
+    ):
+        _invalid()
+    return pair
+
+
+async def _equivalent(
+    connection: _Connection, job_id: UUID, *, callback_json: bytes, result_json: bytes | None
+) -> bool:
+    def decode(rows: list[tuple[object, ...]]) -> bool:
+        row = _required_row(rows)
+        if len(row) != 1 or type(row[0]) is not bool:
+            _invalid()
+        return row[0]
+
+    if result_json is None:
+        return await _query(connection, _FAILURE_Q, (callback_json.decode("utf-8"), job_id), decode)
+    return await _query(
+        connection,
+        _SUCCESS_Q,
+        (result_json.decode("utf-8"), callback_json.decode("utf-8"), job_id),
+        decode,
+    )
 
 
 def _required_attempt(rows: list[tuple[object, ...]]) -> _Attempt:
@@ -933,6 +1430,9 @@ def _pair(job: _Job, attempt: _Attempt) -> None:
             _invalid()
     elif retry:
         if job.state not in (AnalysisJobState.QUEUED, AnalysisJobState.CANCELLED):
+            _invalid()
+    elif attempt.status is AttemptStatus.SUCCEEDED:
+        if job.state is not AnalysisJobState.COMPLETED:
             _invalid()
     elif job.state is not AnalysisJobState.FAILED:
         _invalid()
@@ -995,7 +1495,7 @@ async def _clock(connection: _Connection) -> datetime:
 
 
 async def _owner(
-    connection: _Connection, authority: AttemptAuthority
+    connection: _Connection, authority: AttemptAuthority, *, inspect_terminal: bool = False
 ) -> tuple[_Job, _Attempt] | None:
     job = await _read_job(connection, authority.job_id)
     if job is not None:
@@ -1005,6 +1505,8 @@ async def _owner(
     attempt = await _read_attempt(connection, job, job.count)
     if attempt is None:
         _invalid()
+    if inspect_terminal and job.state in (AnalysisJobState.COMPLETED, AnalysisJobState.FAILED):
+        await _terminal_rows(connection, job, attempt)
     if attempt.authority != authority:
         return None
     return job, attempt

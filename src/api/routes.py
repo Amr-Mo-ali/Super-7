@@ -13,7 +13,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, status
 from pydantic import HttpUrl
 
-from api.public_rating_mapper import event_arbitration, game_intelligence_result, public_rating_v2
+from adapters.analysis_callback_presentation import callback_payload
+from api.public_rating_mapper import game_intelligence_result
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
 from concurrency.exceptions import AnalysisCancelled
@@ -59,13 +60,11 @@ from services.ball_proximity import BallProximityAnalyzer, BallProximityResult
 from services.callback_service import (
     CallbackPayload,
     CallbackService,
-    DetailedRatings,
     FailedCallbackPayload,
 )
 from services.camera_motion import CameraMotionEstimator, CameraMotionResult
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
-from services.detailed_rating.engine import DetailedRatingEngine
 from services.dominant_target_selection import TargetSelectionStatus, resolve_dominant_target
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
@@ -209,62 +208,7 @@ def _callback_payload(
     result: AnalyzeResponse,
 ) -> CallbackPayload:
     """Build the backend callback body from an already-finalized analysis result."""
-    if isinstance(result, CompletedResponse) and result.result_availability == "UNAVAILABLE":
-        return CallbackPayload(
-            request_id=result.analysis_id,
-            video_id=request.video_id,
-            player_id=request.player_id,
-            status="COMPLETED",
-            summary={},
-            ratings={},
-            overall=None,
-            detailed=DetailedRatings(),
-            events={},
-            resultAvailability="UNAVAILABLE",
-            unavailabilityReason=result.unavailability_reason,
-            player=None,
-            overallConfidence=None,
-        )
-    if isinstance(result, CompletedResponse):
-        assert result.selected_player is not None
-        assert result.scores is not None
-    arbitration = event_arbitration(result) if isinstance(result, CompletedResponse) else None
-    public_result = public_rating_v2(result, arbitration)
-    serialized = public_result.model_dump(mode="json")
-    detailed = DetailedRatings()
-    if isinstance(result, CompletedResponse):
-        assert result.selected_player is not None
-        assert result.scores is not None
-        detailed = DetailedRatingEngine().evaluate(
-            result.scores.physical,
-            result.technical_event_analysis,
-            result.diagnostics.technical_event_analysis_quality,
-            result.pass_detection,
-            result.shot_detection,
-            arbitration,
-            result.selected_player.track_id,
-        )
-    return CallbackPayload(
-        request_id=result.analysis_id,
-        video_id=request.video_id,
-        player_id=request.player_id,
-        status="COMPLETED" if isinstance(result, CompletedResponse) else result.status,
-        summary=serialized.get("summary", {}),
-        ratings=serialized.get("ratings", {}),
-        overall=serialized.get("overall"),
-        detailed=detailed,
-        events=serialized.get("events", {}),
-        **(
-            {
-                "result_availability": "AVAILABLE",
-                "unavailability_reason": None,
-                "player": serialized["player"],
-                "overall_confidence": result.player_rating_summary.overall.confidence,
-            }
-            if isinstance(result, CompletedResponse) and result.player_rating_summary is not None
-            else {}
-        ),
-    )
+    return callback_payload(request.video_id, request.player_id, result)
 
 
 class ProcessAnalysisExecutor(Protocol):

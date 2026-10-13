@@ -52,15 +52,24 @@ from services.postgres_foundation import MigrationRunner
 
 _OPT_IN = "--slice1-disposable-postgres"
 _SKIP_REASON = (
-    "Slice 3 worker disposable PostgreSQL evidence was not executed because the explicit "
+    "Durable AnalysisJob disposable PostgreSQL evidence was not executed because the explicit "
     "task-scoped opt-in is absent."
 )
 _MIGRATION_SOURCE = "package:adapters:migrations/postgres"
 _FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
 _WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
-_CATALOG = (_FOUNDATION_REVISION, _ANALYSIS_JOB_REVISION, _WORKER_ATTEMPT_REVISION)
-_CURRENT_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
+_RESULT_OUTBOX_REVISION = "sprint2_slice4_result_outbox"
+_CATALOG = (
+    _FOUNDATION_REVISION,
+    _ANALYSIS_JOB_REVISION,
+    _WORKER_ATTEMPT_REVISION,
+    _RESULT_OUTBOX_REVISION,
+)
+_SLICE3_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
+_CURRENT_RELATIONS = _SLICE3_RELATIONS | frozenset(
+    {"public.analysis_job_terminals", "public.analysis_callback_outbox"}
+)
 _ACQUIRE_TIMEOUT_SECONDS = 5.0
 _OPERATION_TIMEOUT_MS = 5_000
 _LOCK_TIMEOUT_MS = 2_000
@@ -315,7 +324,7 @@ def _disposable_factory(request: pytest.FixtureRequest) -> _DisposablePostgresFa
         fixture = request.getfixturevalue("slice1_disposable_postgres_factory")
     except pytest.FixtureLookupError:
         pytest.fail(
-            "Slice 3 opt-in requires the existing task-owned disposable PostgreSQL fixture.",
+            "Durable AnalysisJob opt-in requires the existing task-owned disposable PostgreSQL fixture.",
             pytrace=False,
         )
     return cast(_DisposablePostgresFactory, fixture)
@@ -353,7 +362,7 @@ def _catalog() -> tuple[str, ...]:
 
 
 def _current_settings(settings: DatabaseSettings) -> DatabaseSettings:
-    return replace(settings, required_schema_version=_WORKER_ATTEMPT_REVISION)
+    return replace(settings, required_schema_version=_RESULT_OUTBOX_REVISION)
 
 
 def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
@@ -362,8 +371,16 @@ def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
     assert database.application_relations() == frozenset()
     assert _catalog() == _CATALOG
     runner.apply_pending()
-    assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+    assert runner.current_version() == _RESULT_OUTBOX_REVISION
     assert database.application_relations() == _CURRENT_RELATIONS
+    return runner
+
+
+def _prepare_slice3_database(database: _DisposablePostgresSession) -> MigrationRunner:
+    runner = _prepare_database(database)
+    runner.rollback_last()
+    assert runner.current_version() == _WORKER_ATTEMPT_REVISION
+    assert database.application_relations() == _SLICE3_RELATIONS
     return runner
 
 
@@ -382,6 +399,12 @@ def _grant_runtime_worker_privileges(
                 sql.Identifier(runtime_settings._user)
             )
         ).close()
+        for relation in ("analysis_job_terminals", "analysis_callback_outbox"):
+            connection.execute(
+                sql.SQL("GRANT SELECT, INSERT ON TABLE {} TO {}").format(
+                    sql.Identifier(relation), sql.Identifier(runtime_settings._user)
+                )
+            ).close()
     with _connect(runtime_settings) as connection:
         row = connection.execute(
             """
@@ -394,10 +417,36 @@ def _grant_runtime_worker_privileges(
                 has_table_privilege(current_user, 'analysis_job_attempts', 'INSERT'),
                 has_table_privilege(current_user, 'analysis_job_attempts', 'UPDATE'),
                 has_table_privilege(current_user, 'analysis_job_attempts', 'DELETE'),
-                has_schema_privilege(current_user, 'public', 'CREATE')
+                has_schema_privilege(current_user, 'public', 'CREATE'),
+                has_table_privilege(current_user, 'analysis_job_terminals', 'SELECT'),
+                has_table_privilege(current_user, 'analysis_job_terminals', 'INSERT'),
+                has_table_privilege(current_user, 'analysis_job_terminals', 'UPDATE'),
+                has_table_privilege(current_user, 'analysis_job_terminals', 'DELETE'),
+                has_table_privilege(current_user, 'analysis_callback_outbox', 'SELECT'),
+                has_table_privilege(current_user, 'analysis_callback_outbox', 'INSERT'),
+                has_table_privilege(current_user, 'analysis_callback_outbox', 'UPDATE'),
+                has_table_privilege(current_user, 'analysis_callback_outbox', 'DELETE')
             """
         ).fetchone()
-    assert row == (True, True, True, False, True, True, True, False, False)
+    assert row == (
+        True,
+        True,
+        True,
+        False,
+        True,
+        True,
+        True,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+    )
 
 
 def _candidate(index: int, *, attempt_limit: int = 3) -> NewAnalysisJob:
@@ -1628,7 +1677,7 @@ def test_slice3_downgrade_waits_for_writer_then_refuses_without_change(
 ) -> None:
     factory = _disposable_factory(request)
     with factory() as database:
-        runner = _prepare_database(database)
+        runner = _prepare_slice3_database(database)
         signature = _schema_signature(database.migration_settings)
         writer = _connect(database.migration_settings, autocommit=False)
         actor_errors: list[BaseException | None] = []
@@ -1693,7 +1742,7 @@ def test_slice3_downgrade_waits_for_writer_then_refuses_without_change(
         assert len(actor_errors) == 1
         assert isinstance(actor_errors[0], DatabaseMigrationError)
         assert runner.current_version() == _WORKER_ATTEMPT_REVISION
-        assert database.application_relations() == _CURRENT_RELATIONS
+        assert database.application_relations() == _SLICE3_RELATIONS
         assert _schema_signature(database.migration_settings) == signature
         with _connect(database.migration_settings) as connection:
             job = connection.execute(

@@ -24,7 +24,12 @@ _ROOT = Path(__file__).resolve().parents[1]
 _DIRECTORY = _ROOT / "src/adapters/migrations/postgres"
 _REVISION = "sprint2_slice3_worker_attempt"
 _DEPENDENCY = "sprint2_slice2_analysis_job"
-_CATALOG = ("sprint2_slice1_foundation", _DEPENDENCY, _REVISION)
+_CATALOG = (
+    "sprint2_slice1_foundation",
+    _DEPENDENCY,
+    _REVISION,
+    "sprint2_slice4_result_outbox",
+)
 _PATH = _DIRECTORY / f"{_REVISION}.py"
 _RED = "Slice 3 RED-G: canonical worker-attempt migration is absent; GREEN-G must add it."
 _SHAPE = "RED-G literal migration surface is not supported."

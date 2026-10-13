@@ -52,6 +52,7 @@ _MIGRATION_ADAPTER_MODULE = "adapters.yoyo_migration_backend"
 _EXPECTED_FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _EXPECTED_ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
 _EXPECTED_WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
+_EXPECTED_RESULT_OUTBOX_REVISION = "sprint2_slice4_result_outbox"
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATION_DIRECTORY = _REPOSITORY_ROOT / "src" / "adapters" / "migrations" / "postgres"
 _STALE_MIGRATION = _REPOSITORY_ROOT / "migrations" / "postgres" / "sprint2_slice1_foundation.py"
@@ -997,6 +998,7 @@ def test_canonical_migration_resource_is_source_discoverable_and_unique() -> Non
         _EXPECTED_FOUNDATION_REVISION,
         _EXPECTED_ANALYSIS_JOB_REVISION,
         _EXPECTED_WORKER_ATTEMPT_REVISION,
+        _EXPECTED_RESULT_OUTBOX_REVISION,
     ]
     assert resource.is_file()
     assert not _STALE_MIGRATION.exists()
