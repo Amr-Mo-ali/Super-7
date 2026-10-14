@@ -79,6 +79,11 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
     runtime = _runtime
     if runtime is None:
         raise RuntimeError("analysis child is not initialized")
+    if (
+        request.analysis_version is not None
+        and request.analysis_version != runtime.settings.analysis_version
+    ):
+        raise RuntimeError("analysis child does not support the requested version")
     started = perf_counter()
     artifacts = None
     outcome: ChildAnalysisResult | None = None

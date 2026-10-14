@@ -23,6 +23,7 @@ class ChildAnalysisRequest:
     player_id: str
     video_reference: str
     schema_version: int = CHILD_ANALYSIS_SCHEMA_VERSION
+    analysis_version: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.analysis_id, self.video_id, self.player_id):
@@ -30,6 +31,11 @@ class ChildAnalysisRequest:
                 raise ValueError("child analysis identifiers must be safe")
         _validate_reference(self.video_reference)
         _validate_version(self.schema_version)
+        if self.analysis_version is not None and (
+            type(self.analysis_version) is not str
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.analysis_version)
+        ):
+            raise ValueError("analysis_version must have bounded safe syntax")
 
 
 @dataclass(frozen=True, slots=True)

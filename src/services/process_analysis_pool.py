@@ -14,21 +14,34 @@ import multiprocessing
 from collections.abc import Callable
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+from dataclasses import dataclass
 from multiprocessing.context import BaseContext
+from threading import Lock
 from time import perf_counter
 from typing import Literal, Protocol, cast
 
 from core.config import Settings
 from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
+from schemas.analysis import AnalyzeResponse
 from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisRequest,
     ChildAnalysisResult,
+    ChildAnalysisSuccess,
+    ParentCancelled,
     ParentChildResult,
     ParentFailure,
     validate_child_result,
 )
 from services.process_entrypoint import initialize_analysis_child, run_child_analysis
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedChildSuccess:
+    """Retain the child envelope needed by durable result projection."""
+
+    child: ChildAnalysisSuccess
+    response: AnalyzeResponse
 
 
 class _ProcessExecutor(Protocol):
@@ -84,6 +97,15 @@ class ProcessAnalysisPool:
         self._logger = logger or logging.getLogger("football_analysis.process_pool")
         self._executor: _ProcessExecutor | None = None
         self._shutdown = False
+        self._submitted_lock = Lock()
+        self._submitted: set[Future[ChildAnalysisResult]] = set()
+        self._cancelled_observers: set[Future[ChildAnalysisResult]] = set()
+
+    @property
+    def outstanding_submissions(self) -> tuple[Future[ChildAnalysisResult], ...]:
+        """Running/queued work remains visible even if its asyncio observer is cancelled."""
+        with self._submitted_lock:
+            return tuple(self._submitted)
 
     def start(self) -> None:
         """Create the one-worker spawn pool once; construction itself starts no process."""
@@ -100,22 +122,51 @@ class ProcessAnalysisPool:
 
     async def execute(self, request: ChildAnalysisRequest) -> ParentChildResult:
         """Submit one child request and validate its serializable result in the parent."""
+        _, validated = await self._execute_validated(request)
+        return validated
+
+    async def execute_enveloped(
+        self, request: ChildAnalysisRequest
+    ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled:
+        """Coordinator-only path; legacy execute() keeps its existing return shape."""
+        if request.analysis_version is None:
+            raise ValueError("durable child request requires an analysis version")
+        raw, validated = await self._execute_validated(request)
+        if isinstance(raw, ChildAnalysisSuccess):
+            if isinstance(validated, (ParentFailure, ParentCancelled)):
+                raise ValueError("child success did not validate as a response")
+            return ValidatedChildSuccess(raw, validated)
+        if isinstance(validated, (ParentFailure, ParentCancelled)):
+            return validated
+        raise ValueError("child result has an unexpected validated shape")
+
+    async def _execute_validated(
+        self, request: ChildAnalysisRequest
+    ) -> tuple[ChildAnalysisResult | None, ParentChildResult]:
         executor = self._require_running_executor()
         stage_started = perf_counter()
+        future: Future[ChildAnalysisResult] | None = None
         try:
             future = executor.submit(run_child_analysis, request)
+            with self._submitted_lock:
+                self._submitted.add(future)
+            future.add_done_callback(
+                lambda completed: self._forget_submission(completed, request.analysis_id)
+            )
             result = await asyncio.wrap_future(future)
         except asyncio.CancelledError:
+            if future is not None:
+                self._note_cancelled_observer(future, request.analysis_id)
             self._log_stage_timing(request.analysis_id, "cancelled", stage_started)
             raise
         except BrokenProcessPool as error:
             self._log_stage_timing(request.analysis_id, "failed", stage_started)
             self._log_execution_failure(request.analysis_id, error)
-            return ParentFailure("ProcessPoolError", "Analysis could not be completed.")
+            return None, ParentFailure("ProcessPoolError", "Analysis could not be completed.")
         except Exception as error:
             self._log_stage_timing(request.analysis_id, "failed", stage_started)
             self._log_execution_failure(request.analysis_id, error)
-            return ParentFailure("ProcessPoolError", "Analysis could not be completed.")
+            return None, ParentFailure("ProcessPoolError", "Analysis could not be completed.")
         try:
             validated = validate_child_result(
                 request.analysis_id,
@@ -129,7 +180,42 @@ class ProcessAnalysisPool:
             self._log_stage_timing(request.analysis_id, "failed", stage_started)
             raise
         self._log_stage_timing(request.analysis_id, "success", stage_started)
-        return validated
+        return result, validated
+
+    def _forget_submission(self, future: Future[ChildAnalysisResult], analysis_id: str) -> None:
+        error = self._completed_error(future)
+        with self._submitted_lock:
+            observer_cancelled = future in self._cancelled_observers
+            self._cancelled_observers.discard(future)
+            self._submitted.discard(future)
+        if observer_cancelled and error is not None:
+            self._report_late_failure(analysis_id, error)
+
+    def _note_cancelled_observer(
+        self, future: Future[ChildAnalysisResult], analysis_id: str
+    ) -> None:
+        with self._submitted_lock:
+            if future in self._submitted:
+                self._cancelled_observers.add(future)
+                return
+        # Completion may have removed the handle before cancellation settled.
+        error = self._completed_error(future)
+        if error is not None:
+            self._report_late_failure(analysis_id, error)
+
+    @staticmethod
+    def _completed_error(future: Future[ChildAnalysisResult]) -> BaseException | None:
+        try:
+            return None if future.cancelled() else future.exception()
+        except BaseException as error:
+            return error
+
+    def _report_late_failure(self, analysis_id: str, error: BaseException) -> None:
+        try:
+            self._log_execution_failure(analysis_id, error)
+        except BaseException:
+            # A logging failure must not escape a concurrent-future done callback.
+            pass
 
     async def shutdown(self) -> None:
         """Stop accepting submissions and offload the executor's blocking shutdown."""
@@ -147,7 +233,7 @@ class ProcessAnalysisPool:
             raise RuntimeError("process analysis pool has not been started")
         return self._executor
 
-    def _log_execution_failure(self, analysis_id: str, error: Exception) -> None:
+    def _log_execution_failure(self, analysis_id: str, error: BaseException) -> None:
         self._logger.error(
             "analysis_process_pool_execution_failed analysis_id=%s error_type=%s",
             analysis_id,

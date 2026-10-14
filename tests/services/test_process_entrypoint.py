@@ -90,6 +90,18 @@ def test_contracts_pickle_and_reject_unsafe_values() -> None:
         ChildAnalysisSuccess("id", "[]", "v", "m", 0)
     with pytest.raises(ValueError):
         ChildAnalysisFailure("id", "bad code", "Analysis could not be completed.", 0)
+    with pytest.raises(ValueError, match="analysis_version"):
+        ChildAnalysisRequest("id", "video", "player", "safe.mp4", analysis_version="bad version")
+
+
+def test_durable_request_rejects_unsupported_version_before_analysis(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    request = ChildAnalysisRequest(
+        "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="other_version"
+    )
+    with pytest.raises(RuntimeError, match="does not support the requested version"):
+        run_child_analysis(request)
 
 
 def test_child_success_failure_cancellation_and_parent_conversion(
