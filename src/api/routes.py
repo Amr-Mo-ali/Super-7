@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from shutil import copyfile
@@ -10,10 +10,12 @@ from time import perf_counter
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.routing import APIRoute
 from pydantic import HttpUrl
 
 from adapters.analysis_callback_presentation import callback_payload
+from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnavailable
 from api.public_rating_mapper import game_intelligence_result
 from api.request_lifecycle import RequestLifecycle
 from concurrency.cancellation import CancellationChecker, CancellationManager
@@ -66,6 +68,13 @@ from services.camera_motion import CameraMotionEstimator, CameraMotionResult
 from services.camera_motion import diagnostics as camera_motion_diagnostics
 from services.debug_renderer import render_debug_video
 from services.dominant_target_selection import TargetSelectionStatus, resolve_dominant_target
+from services.durable_local_admission import (
+    DurableAdmissionConflict,
+    DurableAdmissionFull,
+    DurableAdmissionInvalidKey,
+    DurableAdmissionUnauthorized,
+    DurableLocalAdmission,
+)
 from services.feature_extractor import FeatureExtractor
 from services.interactions.analyzer import BallInteractionAnalyzerProtocol
 from services.interactions.models import (
@@ -129,9 +138,28 @@ def create_router(
     path_resolver: VideoPathResolver,
     callback_service: CallbackService,
     analysis_queue: AnalysisQueue,
+    durable_admission: DurableLocalAdmission | None = None,
 ) -> APIRouter:
     """Create the only public route with injected analysis dependencies."""
-    router = APIRouter()
+    if durable_admission is None:
+        router = APIRouter()
+    else:
+        protected_admission = durable_admission
+
+        class _DurableAuthorizedRoute(APIRoute):
+            def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+                handle = super().get_route_handler()
+
+                async def authenticate_first(request: Request) -> Response:
+                    try:
+                        protected_admission.authenticate(request.headers.getlist("authorization"))
+                    except DurableAdmissionUnauthorized as error:
+                        raise HTTPException(status_code=401, detail={"error": str(error)}) from None
+                    return await handle(request)
+
+                return authenticate_first
+
+        router = APIRouter(route_class=_DurableAuthorizedRoute)
 
     @router.post(
         "/analyze",
@@ -140,10 +168,15 @@ def create_router(
     )
     async def analyze(
         payload: AnalyzeRequest,
+        request: Request,
     ) -> AnalyzeQueuedResponse:
         """Validate a lightweight job and enqueue it for the single background worker."""
         admission_started = perf_counter()
-        analysis_id = str(uuid4())
+        if durable_admission is not None:
+            try:
+                idempotency_key = durable_admission.key(request.headers.getlist("idempotency-key"))
+            except DurableAdmissionInvalidKey as error:
+                raise HTTPException(status_code=422, detail={"error": str(error)}) from None
         try:
             path_resolver.validate_reference(payload.video_url)
             callback_service.validate_callback_url(payload.callback_url)
@@ -151,6 +184,30 @@ def create_router(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"error": str(error)}
             ) from error
+        if durable_admission is not None:
+            try:
+                outcome = await durable_admission.admit(
+                    key=idempotency_key,
+                    video_id=payload.video_id,
+                    player_id=payload.player_id,
+                    video_reference=payload.video_url,
+                    callback_url=payload.callback_url,
+                )
+            except DurableAdmissionConflict as error:
+                raise HTTPException(status_code=409, detail={"error": str(error)}) from None
+            except DurableAdmissionFull as error:
+                raise HTTPException(status_code=503, detail={"error": str(error)}) from None
+            except AnalysisJobPersistenceUnavailable:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"error": "Analysis admission is temporarily unavailable."},
+                ) from None
+            return AnalyzeQueuedResponse(
+                analysis_id=str(outcome.job.job_id),
+                video_id=outcome.job.video_id,
+                player_id=outcome.job.player_id,
+            )
+        analysis_id = str(uuid4())
         job = AnalysisJob.create(
             analysis_id,
             payload.video_id,

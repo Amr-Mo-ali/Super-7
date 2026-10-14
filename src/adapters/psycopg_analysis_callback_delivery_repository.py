@@ -45,6 +45,11 @@ SET delivery_state = 'RETRYING',
 WHERE callback_event_id = %s AND delivery_state IN ('PENDING', 'RETRYING')
     AND next_attempt_at <= clock_timestamp()
 RETURNING callback_event_id"""
+_NEXT_DUE = """SELECT callback_event_id FROM analysis_callback_outbox
+WHERE delivery_state IN ('PENDING', 'RETRYING')
+  AND next_attempt_at <= clock_timestamp()
+ORDER BY next_attempt_at, callback_event_id
+LIMIT 1"""
 
 
 class PsycopgAnalysisCallbackDeliveryRepository:
@@ -55,6 +60,20 @@ class PsycopgAnalysisCallbackDeliveryRepository:
             raise ValueError("Connection acquisition timeout must be positive and bounded.")
         self._pool = pool
         self._acquire = connection_acquire_timeout_seconds
+
+    async def next_due_event_id(self) -> UUID | None:
+        """Select one persisted due event for the sole local dispatcher."""
+        async with self._pool.connection(timeout_seconds=self._acquire) as connection:
+            cursor = await connection.execute(_NEXT_DUE, ())
+            try:
+                row = await cursor.fetchone()
+            finally:
+                await cursor.close()
+        if row is None:
+            return None
+        if len(row) != 1 or type(row[0]) is not UUID or row[0].int == 0:
+            raise ValueError("Due callback event has invalid identity.")
+        return row[0]
 
     async def load(self, event_id: UUID) -> StoredCallbackEvent | None:
         async with self._pool.connection(timeout_seconds=self._acquire) as connection:
