@@ -1,0 +1,94 @@
+name: super7-durable-compose-trial-20261015
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm@sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
+    pull_policy: never
+    environment:
+      POSTGRES_USER: ${TRIAL_BOOTSTRAP_USER:?Run trial prepare first}
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - trial_pgdata:/var/lib/postgresql/data
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  bootstrap:
+    profiles: [bootstrap]
+    image: football-analysis:durable-compose-trial-local
+    pull_policy: never
+    command: ["python", "/app/src/durable_compose_setup.py", "bootstrap"]
+    volumes:
+      - ./scripts/durable_compose_setup.py:/app/src/durable_compose_setup.py:ro
+    secrets:
+      - postgres_password
+      - bootstrap_config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  durable-api:
+    image: football-analysis:durable-compose-trial-local
+    pull_policy: never
+    command:
+      - uvicorn
+      - durable_local_main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    env_file:
+      - ./.local-durable-compose/runtime.env
+    ports:
+      - "127.0.0.1:18080:8000"
+    volumes:
+      - ./models:/models:ro
+      - ./dataset/raw/social_media:/videos:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "from urllib.request import urlopen; r = urlopen('http://127.0.0.1:8000/health/ready', timeout=10); assert r.status == 200"
+      interval: 10s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+
+  inspect:
+    profiles: [inspect]
+    image: football-analysis:durable-compose-trial-local
+    pull_policy: never
+    env_file:
+      - ./.local-durable-compose/inspect.env
+    command: ["python", "/app/src/durable_compose_setup.py", "inspect"]
+    volumes:
+      - ./scripts/durable_compose_setup.py:/app/src/durable_compose_setup.py:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+secrets:
+  postgres_password:
+    file: ./.local-durable-compose/postgres-password.secret
+  bootstrap_config:
+    file: ./.local-durable-compose/bootstrap-config.json
+
+volumes:
+  trial_pgdata:
+    name: super7-durable-compose-pgdata-20261015
+    labels:
+      com.super7.durable-compose-trial.owner: ${TRIAL_OWNER_ID:?Run trial prepare first}

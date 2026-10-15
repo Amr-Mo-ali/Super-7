@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Literal, cast
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import UUID, uuid4
 
 import pytest
@@ -39,7 +39,6 @@ from domain.analysis_job import AnalysisJobAccepted, NewAnalysisJob
 from domain.analysis_job_attempt import LeaseDuration, WorkerClaim, WorkerSlotId
 from services.analysis_callback_delivery import CallbackTransport, deliver_one
 from services.analysis_job_finalization import AnalysisJobCompleted
-from services.callback_service import _RejectRedirects
 
 _TIMEOUT_SECONDS = 2.0
 _RETRY_DELAY_MS = 500
@@ -144,6 +143,14 @@ class _Receiver:
             if len(errors) == 1 and sys.exception() is None:
                 raise errors[0]
             raise BaseExceptionGroup("Receiver cleanup failures.", errors)
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    """Keep this test receiver's loopback request from following redirects."""
+
+    def redirect_request(self, *args: object, **kwargs: object) -> Request | None:
+        del args, kwargs
+        return None
 
 
 async def _local_transport(

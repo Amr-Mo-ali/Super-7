@@ -1,4 +1,6 @@
 .env
+.local-durable/
+.local-durable-compose/
 .venv/
 .uv-cache/
 .pytest_cache/
