@@ -4,16 +4,19 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from ipaddress import ip_address
-from socket import SOCK_STREAM, getaddrinfo
+from socket import getaddrinfo
 from time import perf_counter
 from typing import Any, Final
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from schemas.analysis import ResultAvailability, TargetUnavailabilityReason
+from services.callback_destination import (
+    CallbackDestination,
+    post_pinned,
+    resolve_callback_destination,
+)
 
 _RETRY_DELAYS: Final = (1.0, 2.0, 4.0)
 
@@ -91,14 +94,6 @@ class FailedCallbackPayload(BaseModel):
     overall: dict[str, Any] | None = None
     events: dict[str, Any]
     error: dict[str, str] | None = None
-
-
-class _RejectRedirects(HTTPRedirectHandler):
-    """Prevent a validated callback endpoint from redirecting to a private target."""
-
-    def redirect_request(self, *args: object, **kwargs: object) -> Request | None:
-        del args, kwargs
-        return None
 
 
 class CallbackService:
@@ -211,26 +206,22 @@ class CallbackService:
         self._validate_url(callback_url)
 
     def _validate_url(self, callback_url: HttpUrl) -> None:
-        if callback_url.scheme not in {"http", "https"}:
-            raise ValueError("callback URL must use HTTP or HTTPS")
-        host = callback_url.host
-        if host is None:
-            raise ValueError("callback URL must include a host")
-        port = callback_url.port or (443 if callback_url.scheme == "https" else 80)
-        addresses = {str(item[4][0]) for item in self._resolver(host, port, type=SOCK_STREAM)}
-        if not addresses or any(not ip_address(address).is_global for address in addresses):
-            raise ValueError("callback URL must resolve only to public IP addresses")
+        self.resolve_callback_destination(callback_url)
 
-    @staticmethod
-    def _post(url: str, body: bytes, timeout: float) -> int:
-        request = Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
+    def resolve_callback_destination(self, callback_url: HttpUrl) -> CallbackDestination:
+        return resolve_callback_destination(callback_url, self._resolver)
+
+    def _post(self, url: str, body: bytes, timeout: float) -> int:
+        try:
+            destination = self.resolve_callback_destination(HttpUrl(url))
+        except ValueError as error:
+            raise OSError("Callback destination unavailable.") from error
+        return post_pinned(
+            destination,
+            body,
+            {"Content-Type": "application/json", "Accept": "application/json"},
+            timeout,
         )
-        with build_opener(_RejectRedirects()).open(request, timeout=timeout) as response:
-            return int(response.getcode())
 
 
 def _milliseconds(seconds: float) -> int:

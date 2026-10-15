@@ -32,12 +32,21 @@ def _transport(validator: CallbackService) -> CallbackTransport:
     async def post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> int:
         # The app never allows loopback through this transport. An isolated
         # receiver needs an explicitly injected test-only validator/transport.
-        validator.validate_callback_url(HttpUrl(url))
+        try:
+            destination = validator.resolve_callback_destination(HttpUrl(url))
+        except ValueError as error:
+            raise OSError("Callback destination unavailable.") from error
+        pinned_url = httpx.URL(url).copy_with(host=str(destination.address))
         try:
             async with httpx.AsyncClient(
                 follow_redirects=False, trust_env=False, timeout=timeout
             ) as client:
-                response = await client.post(url, content=body, headers=headers)
+                response = await client.post(
+                    pinned_url,
+                    content=body,
+                    headers={**headers, "Host": destination.host_header},
+                    extensions={"sni_hostname": destination.hostname},
+                )
             return response.status_code
         except httpx.TransportError as error:
             raise OSError("Callback transport unavailable.") from error
