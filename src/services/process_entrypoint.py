@@ -11,6 +11,7 @@ from time import perf_counter
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
+from core.exceptions import VideoNotFoundError
 from core.logging import configure_logging, get_logger
 from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from diagnostics.artifacts import ArtifactManager
@@ -22,6 +23,7 @@ from services.process_contracts import (
     ChildAnalysisRequest,
     ChildAnalysisResult,
     ChildAnalysisSuccess,
+    ChildFailureKind,
 )
 from services.video_path_resolver import VideoPathResolver
 
@@ -87,9 +89,14 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
     started = perf_counter()
     artifacts = None
     outcome: ChildAnalysisResult | None = None
+    failure_kind: ChildFailureKind | None = None
     try:
         runtime.path_resolver.validate_reference(request.video_reference)
-        video_path = runtime.path_resolver.resolve(request.video_reference)
+        try:
+            video_path = runtime.path_resolver.resolve(request.video_reference)
+        except VideoNotFoundError:
+            failure_kind = ChildFailureKind.VIDEO_UNAVAILABLE
+            raise
         artifacts = runtime.artifact_manager.create_session(request.analysis_id)
         cancellation = CancellationManager(request.analysis_id)
         components = runtime.components
@@ -161,6 +168,7 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
             type(error).__name__,
             "Analysis could not be completed.",
             _milliseconds(started),
+            failure_kind=failure_kind,
         )
     finally:
         if artifacts is not None:

@@ -34,7 +34,20 @@ class VideoPathResolver:
         try:
             resolved = candidate.resolve(strict=True)
         except FileNotFoundError as error:
-            raise VideoNotFoundError("Requested video file does not exist.") from error
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                # Recheck the root: its disappearance is not evidence that the
+                # requested file was missing from an available storage root.
+                self._resolve_root()
+                raise VideoNotFoundError("Requested video file does not exist.") from error
+            except OSError as inspection_error:
+                raise VideoPathResolutionError(
+                    "Requested video path could not be resolved."
+                ) from inspection_error
+            # An existing entry (for example a dangling symlink) failed to
+            # resolve; that does not prove the requested filename is absent.
+            raise VideoPathResolutionError("Requested video path could not be resolved.") from error
         except OSError as error:
             raise VideoPathResolutionError("Requested video path could not be resolved.") from error
         if not resolved.is_relative_to(root):

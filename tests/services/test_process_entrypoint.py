@@ -20,11 +20,13 @@ from services.process_contracts import (
     ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
     validate_child_result,
 )
 from services.process_entrypoint import initialize_analysis_child, run_child_analysis
+from services.video_path_resolver import VideoPathResolver
 
 
 @pytest.fixture(autouse=True)
@@ -148,6 +150,61 @@ def test_child_success_failure_cancellation_and_parent_conversion(
     assert validate_child_result(
         "analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, cancellation
     ) == ParentCancelled("analysis-1")
+
+
+def test_only_missing_video_at_resolution_carries_typed_evidence(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    missing = run_child_analysis(
+        ChildAnalysisRequest("missing", "video-1", "player-1", "missing.mp4")
+    )
+    assert isinstance(missing, ChildAnalysisFailure)
+    assert missing.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
+    assert validate_child_result(
+        "missing", CHILD_ANALYSIS_SCHEMA_VERSION, missing
+    ) == ParentFailure(
+        "VideoNotFoundError", "Analysis could not be completed.", ChildFailureKind.VIDEO_UNAVAILABLE
+    )
+
+    runtime = process_entrypoint._runtime
+    assert runtime is not None
+    runtime.path_resolver = VideoPathResolver(
+        settings.video_storage_root, lambda path, _: path.is_dir()
+    )
+    inaccessible = run_child_analysis(_request("inaccessible"))
+    assert isinstance(inaccessible, ChildAnalysisFailure)
+    assert inaccessible.failure_kind is None
+    assert inaccessible.error_code == "VideoAccessError"
+
+    process_entrypoint._reset_child_runtime_for_test()
+    initialize_analysis_child(
+        Settings(
+            video_storage_root=str(tmp_path / "missing-root"),
+            debug_output_dir=str(tmp_path / "debug"),
+        )
+    )
+    root_failure = run_child_analysis(_request("root-failure"))
+    assert isinstance(root_failure, ChildAnalysisFailure)
+    assert root_failure.failure_kind is None
+    assert root_failure.error_code == "VideoStorageRootError"
+
+
+def test_parent_rejects_malformed_received_failure_evidence() -> None:
+    failure = ChildAnalysisFailure(
+        "analysis-1",
+        "VideoNotFoundError",
+        "Analysis could not be completed.",
+        0,
+        failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
+    )
+    object.__setattr__(failure, "failure_kind", "VIDEO_UNAVAILABLE")
+    with pytest.raises(TypeError, match="typed evidence"):
+        validate_child_result("analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, failure)
+
+    object.__setattr__(failure, "failure_kind", ChildFailureKind.VIDEO_UNAVAILABLE)
+    object.__setattr__(failure, "public_message", "untrusted detail")
+    with pytest.raises(ValueError, match="fixed sanitized message"):
+        validate_child_result("analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, failure)
 
 
 def test_runtime_initialization_and_parent_validation(tmp_path: Path) -> None:

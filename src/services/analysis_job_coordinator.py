@@ -1,8 +1,8 @@
-"""Inactive one-slot, one-job durable success experiment boundary.
+"""Inactive one-slot, one-job durable finalization boundary.
 
 The caller owns the process pool and must observe ``outstanding_tasks`` after a
-fail-stop outcome. This module does not poll, send callbacks, or classify child
-failures into durable business outcomes.
+fail-stop outcome. This module does not poll or send callbacks. Only typed
+missing-video evidence has a durable failure mapping.
 """
 
 from __future__ import annotations
@@ -14,7 +14,14 @@ from math import isfinite
 from time import monotonic
 from typing import Protocol, cast
 
-from domain.analysis_job_attempt import AttemptAuthority, LeaseDuration, WorkerClaim, WorkerSlotId
+from domain.analysis_job_attempt import (
+    AttemptAuthority,
+    AttemptFailureCode,
+    AttemptStatus,
+    LeaseDuration,
+    WorkerClaim,
+    WorkerSlotId,
+)
 from schemas.analysis import AnalyzeResponse
 from services.analysis_job_finalization import (
     AnalysisJobCompleted,
@@ -26,17 +33,21 @@ from services.analysis_job_finalization import (
 )
 from services.analysis_job_worker import (
     AnalysisJobWorkerRepository,
+    AttemptFailed,
+    AttemptResolutionAlreadyApplied,
     ClaimLost,
     LeaseRenewed,
     NoJobAvailable,
     WorkerSlotUnavailable,
     claim_next_analysis_job,
+    finalize_terminal_failure,
     renew_analysis_job_lease,
 )
 from services.process_analysis_pool import ValidatedChildSuccess
 from services.process_contracts import (
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
 )
@@ -74,7 +85,7 @@ class CoordinatorUnresolved(CoordinatorStopped):
 
 
 class CoordinatorUnclassifiedFailure(CoordinatorStopped):
-    """The child did not produce a validated success; no durable code was guessed."""
+    """The child produced no approved durable outcome; no code was guessed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +163,8 @@ class AnalysisJobCoordinator:
     ) -> (
         AnalysisJobCompleted
         | AnalysisJobCompletionAlreadyApplied
+        | AttemptFailed
+        | AttemptResolutionAlreadyApplied
         | NoJobAvailable
         | WorkerSlotUnavailable
     ):
@@ -191,6 +204,12 @@ class AnalysisJobCoordinator:
             child_outcome = await child
             stop_heartbeat.set()
             await heartbeat  # Settle any renewal before the first finalizer.
+            if (
+                isinstance(child_outcome, ParentFailure)
+                and child_outcome.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
+            ):
+                await self._renew(claim.authority)
+                return await self._finalize_missing_video(claim)
             if not isinstance(child_outcome, ValidatedChildSuccess):
                 raise CoordinatorUnclassifiedFailure("Child outcome has no approved durable code.")
             frozen = self._result_projector(
@@ -236,6 +255,31 @@ class AnalysisJobCoordinator:
         if monotonic() >= deadline:
             raise CoordinatorUnresolved("Renewal returned after its conservative lease window.")
         self._lease_deadline = deadline
+
+    async def _finalize_missing_video(
+        self, claim: WorkerClaim
+    ) -> AttemptFailed | AttemptResolutionAlreadyApplied:
+        code = AttemptFailureCode("video_unavailable")
+        outcome = await self._observe(
+            finalize_terminal_failure(
+                repository=self._worker_repository,
+                authority=claim.authority,
+                failure_code=code,
+            )
+        )
+        if isinstance(outcome, AttemptFailed):
+            if outcome.authority == claim.authority and outcome.failure_code == code:
+                return outcome
+        elif isinstance(outcome, AttemptResolutionAlreadyApplied):
+            if (
+                outcome.authority == claim.authority
+                and outcome.status is AttemptStatus.TERMINAL_FAILURE
+                and outcome.failure_code == code
+            ):
+                return outcome
+        elif isinstance(outcome, ClaimLost):
+            raise CoordinatorOwnershipLost("Failure finalization rejected the authority.")
+        raise CoordinatorUnresolved("Failure finalization returned an unexpected outcome.")
 
     async def _finalize(
         self, claim: WorkerClaim, frozen: FinalizableAnalysisResult

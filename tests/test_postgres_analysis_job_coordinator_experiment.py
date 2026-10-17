@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import logging
 import os
 import sys
 from concurrent.futures import Future
@@ -11,9 +13,10 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Protocol
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from test_analysis_job_finalization_contract import _RAW_MODEL, _SAFE_MODEL, _response
 from test_postgres_analysis_job_finalization_integration import _finalizer
 from test_postgres_analysis_job_worker_integration import (
     _current_settings,
@@ -25,11 +28,19 @@ from test_postgres_analysis_job_worker_integration import (
     _run_database,
 )
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
 from adapters.analysis_result_projection import convert_child_success
 from config.debug import DebugSettings
 from core.config import Settings
+from core.exceptions import VideoNotFoundError
 from domain.analysis_job import AnalysisJobAccepted, NewAnalysisJob
-from domain.analysis_job_attempt import AttemptAuthority, LeaseDuration, WorkerSlotId
+from domain.analysis_job_attempt import (
+    AttemptAuthority,
+    AttemptFailureCode,
+    LeaseDuration,
+    RecoveryBatchSize,
+    WorkerSlotId,
+)
 from services.analysis_job_coordinator import AnalysisJobCoordinator, CoordinatorTiming
 from services.analysis_job_finalization import (
     AnalysisJobCompleted,
@@ -37,15 +48,27 @@ from services.analysis_job_finalization import (
     AnalysisJobSuccessFinalizationRepository,
     FinalizableAnalysisResult,
 )
-from services.analysis_job_worker import ClaimLost, LeaseRenewed
+from services.analysis_job_worker import (
+    AttemptFailed,
+    AttemptResolutionAlreadyApplied,
+    ClaimLost,
+    LeaseRenewed,
+)
+from services.durable_worker_loop import DurableWorkerLoop
 from services.process_analysis_pool import ProcessAnalysisPool, ValidatedChildSuccess
 from services.process_contracts import (
+    CHILD_ANALYSIS_SCHEMA_VERSION,
     ChildAnalysisCancelled,
+    ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisResult,
+    ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
+    validate_child_result,
 )
+from services.video_path_resolver import VideoPathResolver
 
 _ROOT = Path(__file__).resolve().parents[1]
 _VIDEO = (_ROOT / "dataset/raw/social_media/video_003.mp4").resolve()
@@ -499,4 +522,222 @@ def test_one_real_video_commits_one_result_and_replays_once(
                     await _cleanup_experiment(coordinator, executor)
 
         _run_database(experiment())
+    assert factory.active_count == 0
+
+
+@pytest.mark.integration
+def test_missing_video_terminalizes_and_same_worker_completes_next_job(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> None:
+    """Default-off real repository/loop boundary; child outcomes stay deterministic."""
+    factory = _disposable_factory(request)
+    video_root = tmp_path / "videos"
+    video_root.mkdir()
+    (video_root / "available.mp4").write_bytes(b"deterministic fixture")
+    resolver = VideoPathResolver(video_root)
+    resolver.validate_reference("missing.mp4")
+    resolver.validate_reference("available.mp4")
+
+    class ControlledChild:
+        def __init__(self) -> None:
+            self.requests: list[ChildAnalysisRequest] = []
+
+        async def execute_enveloped(
+            self, child_request: ChildAnalysisRequest
+        ) -> ValidatedChildSuccess | ParentFailure:
+            self.requests.append(child_request)
+            if child_request.video_reference == "missing.mp4":
+                try:
+                    resolver.resolve(child_request.video_reference)
+                except VideoNotFoundError:
+                    raw = ChildAnalysisFailure(
+                        child_request.analysis_id,
+                        "VideoNotFoundError",
+                        "Analysis could not be completed.",
+                        0,
+                        failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
+                    )
+                    parent = validate_child_result(
+                        child_request.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, raw
+                    )
+                    assert isinstance(parent, ParentFailure)
+                    return parent
+                raise AssertionError("The missing fixture unexpectedly resolved.")
+            assert child_request.video_reference == "available.mp4"
+            resolver.resolve(child_request.video_reference)
+            response = _response("completed").model_copy(
+                update={
+                    "analysis_id": child_request.analysis_id,
+                    "analysis_version": child_request.analysis_version,
+                }
+            )
+            raw_success = ChildAnalysisSuccess(
+                child_request.analysis_id,
+                response.model_dump_json(),
+                child_request.analysis_version or "",
+                _RAW_MODEL,
+                17,
+            )
+            parent_success = validate_child_result(
+                child_request.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, raw_success
+            )
+            assert not isinstance(parent_success, (ParentFailure, ParentCancelled))
+            return ValidatedChildSuccess(raw_success, parent_success)
+
+    class SignalledFinalizer(_RecordingFinalizer):
+        def __init__(self, repository: AnalysisJobSuccessFinalizationRepository) -> None:
+            super().__init__(repository)
+            self.completed = asyncio.Event()
+
+        async def finalize_success(
+            self, *, authority: AttemptAuthority, result: FinalizableAnalysisResult
+        ) -> AnalysisJobCompleted | AnalysisJobCompletionAlreadyApplied | ClaimLost:
+            outcome = await super().finalize_success(authority=authority, result=result)
+            self.completed.set()
+            return outcome
+
+    with factory() as database:
+        _prepare_database(database)
+        _grant_runtime_worker_privileges(database.migration_settings, database.runtime_settings)
+        database_settings = _current_settings(database.runtime_settings)
+
+        async def scenario() -> None:
+            async with _repositories(database_settings) as (admission, worker, pool):
+
+                def candidate(index: int, reference: str, attempt_limit: int) -> NewAnalysisJob:
+                    return NewAnalysisJob(
+                        job_id=UUID(int=index),
+                        idempotency_lookup=hashlib.sha256(f"lookup:{index}".encode()).digest(),
+                        request_fingerprint=hashlib.sha256(
+                            f"fingerprint:{index}".encode()
+                        ).digest(),
+                        video_id=f"video-{index}",
+                        player_id=f"player-{index}",
+                        video_reference=reference,
+                        callback_url=f"https://callback.invalid/{index}",
+                        analysis_version="1.0.0",
+                        attempt_limit=attempt_limit,
+                    )
+
+                missing = candidate(900_001, "missing.mp4", 3)
+                valid = candidate(900_002, "available.mp4", 2)
+                first = await admission.accept_or_get(missing, max_queue_size=2)
+                second = await admission.accept_or_get(valid, max_queue_size=2)
+                assert isinstance(first, AnalysisJobAccepted)
+                assert isinstance(second, AnalysisJobAccepted)
+                assert first.job.attempt_limit == 3
+                assert second.job.attempt_limit == 2
+                child = ControlledChild()
+                finalizer = SignalledFinalizer(_finalizer(pool))
+                slot = WorkerSlotId(UUID(int=900_003))
+                coordinator = AnalysisJobCoordinator(
+                    worker_repository=worker,
+                    finalization_repository=finalizer,
+                    child_executor=child,
+                    result_projector=convert_child_success,
+                    worker_slot_id=slot,
+                    model_catalog={_RAW_MODEL: _SAFE_MODEL},
+                    timing=CoordinatorTiming(
+                        LeaseDuration(timedelta(seconds=30)), 1, 5, 1, 10, (0, 0)
+                    ),
+                )
+                loop = DurableWorkerLoop(
+                    coordinator=coordinator,
+                    recovery_repository=worker,
+                    recovery_batch_size=RecoveryBatchSize(2),
+                    idle_wait_seconds=0.05,
+                    logger=logging.getLogger("football_analysis.tests.missing_video_postgres"),
+                )
+                original_terminal = worker.finalize_terminal_failure
+                terminal_calls: list[tuple[AttemptAuthority, AttemptFailureCode]] = []
+
+                async def observed_terminal(
+                    *, authority: AttemptAuthority, failure_code: AttemptFailureCode
+                ) -> AttemptFailed | AttemptResolutionAlreadyApplied | ClaimLost:
+                    terminal_calls.append((authority, failure_code))
+                    return await original_terminal(authority=authority, failure_code=failure_code)
+
+                with patch.object(
+                    worker, "finalize_terminal_failure", side_effect=observed_terminal
+                ):
+                    loop.start()
+                    try:
+                        await asyncio.wait_for(finalizer.completed.wait(), 20)
+                    finally:
+                        await asyncio.wait_for(loop.stop(), 20)
+                assert loop.failure is None
+                assert not coordinator.stopped
+                assert not coordinator.outstanding_tasks
+                assert [item.analysis_id for item in child.requests] == [
+                    str(missing.job_id),
+                    str(valid.job_id),
+                ]
+                assert len(terminal_calls) == 1
+                failure_authority, failure_code = terminal_calls[0]
+                assert failure_code == AttemptFailureCode("video_unavailable")
+                assert finalizer.input is not None
+                success_authority, _ = finalizer.input
+
+                rows = await _fetch_all(
+                    pool,
+                    """SELECT j.job_id, j.state, j.attempt_limit, j.attempt_count,
+                              a.attempt_number, a.worker_slot_id, a.lease_id, a.status,
+                              a.safe_failure_code, r.terminal_kind, r.safe_failure_code,
+                              r.failure_origin, r.result_json, o.callback_event_id,
+                              o.delivery_state, o.payload_schema_version, o.payload_json
+                       FROM analysis_jobs AS j
+                       LEFT JOIN analysis_job_attempts AS a ON a.job_id = j.job_id
+                       LEFT JOIN analysis_job_terminals AS r ON r.job_id = j.job_id
+                       LEFT JOIN analysis_callback_outbox AS o ON o.job_id = j.job_id
+                       WHERE j.job_id IN (%s, %s) ORDER BY j.job_id""",
+                    (missing.job_id, valid.job_id),
+                )
+                assert len(rows) == 2  # Exactly one attempt, terminal, and outbox per job.
+                failed, completed = rows
+                assert failed[:9] == (
+                    missing.job_id,
+                    "FAILED",
+                    3,
+                    1,
+                    failure_authority.attempt_number,
+                    failure_authority.worker_slot_id.value,
+                    failure_authority.lease_id.value,
+                    "TERMINAL_FAILURE",
+                    "video_unavailable",
+                )
+                assert failure_authority.job_id == missing.job_id
+                assert failure_authority.worker_slot_id == slot
+                assert failed[9:13] == ("FAILED", "video_unavailable", "CLASSIFIED_TERMINAL", None)
+                assert isinstance(failed[13], UUID)
+                assert failed[14:16] == ("PENDING", "analysis_callback_snapshot_v1")
+                assert failed[16] == json.loads(
+                    failure_callback_snapshot_v1(
+                        job_id=missing.job_id,
+                        video_id=missing.video_id,
+                        player_id=missing.player_id,
+                        safe_code="video_unavailable",
+                    )
+                )
+                assert await _fetch_all(
+                    pool,
+                    """SELECT callback_event_id, delivery_state, payload_json
+                       FROM analysis_callback_outbox WHERE job_id = %s""",
+                    (missing.job_id,),
+                ) == [(failed[13], "PENDING", failed[16])]
+                assert completed[:8] == (
+                    valid.job_id,
+                    "COMPLETED",
+                    2,
+                    1,
+                    success_authority.attempt_number,
+                    success_authority.worker_slot_id.value,
+                    success_authority.lease_id.value,
+                    "SUCCEEDED",
+                )
+                assert success_authority.job_id == valid.job_id
+                assert success_authority.worker_slot_id == slot
+                assert completed[9] == "COMPLETED"
+                assert completed[14] == "PENDING"
+
+        _run_database(scenario())
     assert factory.active_count == 0

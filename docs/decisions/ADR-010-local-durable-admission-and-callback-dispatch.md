@@ -27,12 +27,43 @@ indefinitely. Production exhaustion/redrive, callback authentication, and
 multi-dispatcher coordination remain separate decisions. Callback delivery
 cannot rewrite the terminal analysis result.
 
-The coordinator still has no approved durable child-failure classification.
+The coordinator originally had no approved durable child-failure classification.
 An unclassified failure stops the worker incarnation and leaves recovery to
 the lease boundary; this local runtime does not claim production fail-stop or
 hard native-child termination behavior. Its lease, heartbeat, recovery batch,
 idle cadence, attempt limit, model mapping, and secrets are explicitly
 injected for an isolated experiment, not adopted as production defaults.
+
+## Child-failure policy amendment (2026-10-17)
+
+This supersedes the earlier deferred retryable `video_unavailable` policy.
+When the requested video file is positively absent at child path resolution,
+the child carries typed `VIDEO_UNAVAILABLE` evidence. After child work and
+renewal settle, the coordinator calls the existing fenced terminal-failure
+operation with `AttemptFailureCode("video_unavailable")`. The terminal
+attempt/job/result/outbox and fixed safe failed-callback message remain one
+atomic repository transaction. A confirmed resolution permits discovery of
+another job; lost authority or ambiguous persistence stops this incarnation.
+The composition root retains the required V1 result-projector and
+failure-snapshot-builder injections; the coordinator supplies only the approved
+safe code to the fenced repository operation.
+
+This is a product policy, not a claim that the file can never appear later.
+Apex must make the video available before submitting analysis. Intentional
+analysis after supplying a previously missing file requires a new
+`Idempotency-Key`; reuse of the old key returns its existing terminal job and
+result. No retry scheduling, migration, setting, or worker sleep is added.
+
+Missing storage roots, access errors, arbitrary path or I/O failures, decoder
+errors, malformed envelopes, executor failures, and unknown child exceptions
+receive no `video_unavailable` classification. Shutdown or cancellation alone
+does not create a terminal failure or permit slot reuse while child work is
+outstanding. Those unresolved cases retain stop-on-uncertainty and existing
+lease/recovery behavior.
+
+Normal durable HTTP admission rejects unsupported filename suffixes before
+persistence. The owner-approved `UNSUPPORTED_VIDEO_FORMAT` terminal
+mapping is therefore defensive for this composition and is not wired.
 
 The opt-in Python composition requires validated `DatabaseSettings` (the
 existing `POSTGRES_*` names), `Settings` for video/model paths, a bearer secret,

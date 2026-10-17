@@ -20,6 +20,7 @@ from services.process_contracts import (
     ChildAnalysisRequest,
     ChildAnalysisResult,
     ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
 )
@@ -168,6 +169,30 @@ def test_durable_execution_retains_success_envelope_without_changing_legacy_resu
         )
         assert await pool.execute(_request()) == _response("analysis-1")
         assert executor.submissions == [durable, _request()]
+
+    asyncio.run(scenario())
+
+
+def test_durable_execution_preserves_typed_missing_video_failure() -> None:
+    async def scenario() -> None:
+        raw = ChildAnalysisFailure(
+            "analysis-1",
+            "VideoNotFoundError",
+            "Analysis could not be completed.",
+            0,
+            failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
+        )
+        executor = RecordingExecutor([raw])
+        pool = ProcessAnalysisPool(Settings(), executor_factory=RecordingFactory(executor))
+        pool.start()
+        request = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "missing.mp4", analysis_version="1.0.0"
+        )
+        assert await pool.execute_enveloped(request) == ParentFailure(
+            "VideoNotFoundError",
+            "Analysis could not be completed.",
+            ChildFailureKind.VIDEO_UNAVAILABLE,
+        )
 
     asyncio.run(scenario())
 

@@ -18,7 +18,13 @@ from services.analysis_job_finalization import (
     AnalysisJobCompleted,
     AnalysisJobCompletionAlreadyApplied,
 )
-from services.analysis_job_worker import NoJobAvailable, RecoverySummary, WorkerSlotUnavailable
+from services.analysis_job_worker import (
+    AttemptFailed,
+    AttemptResolutionAlreadyApplied,
+    NoJobAvailable,
+    RecoverySummary,
+    WorkerSlotUnavailable,
+)
 
 
 class _OneJobCoordinator(Protocol):
@@ -27,6 +33,8 @@ class _OneJobCoordinator(Protocol):
     ) -> (
         AnalysisJobCompleted
         | AnalysisJobCompletionAlreadyApplied
+        | AttemptFailed
+        | AttemptResolutionAlreadyApplied
         | NoJobAvailable
         | WorkerSlotUnavailable
     ): ...
@@ -110,7 +118,13 @@ class DurableWorkerLoop:
                     except TimeoutError:
                         pass
                 elif not isinstance(
-                    outcome, (AnalysisJobCompleted, AnalysisJobCompletionAlreadyApplied)
+                    outcome,
+                    (
+                        AnalysisJobCompleted,
+                        AnalysisJobCompletionAlreadyApplied,
+                        AttemptFailed,
+                        AttemptResolutionAlreadyApplied,
+                    ),
                 ):
                     raise TypeError("Coordinator returned an invalid outcome.")
         except BaseException as error:
