@@ -6,9 +6,9 @@ from typing import cast
 
 import pytest
 
-from api.routes import _completed
 from core.config import Settings
 from schemas.analysis import CompletedResponse, TechnicalScoreResponse
+from services.analysis_pipeline import _completed
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.ball_tracker import BallTrackPoint
 from services.feature_extractor import FeatureExtractor

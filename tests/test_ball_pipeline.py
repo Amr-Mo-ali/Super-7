@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from adapters.yolo_ball_detector import YOLOBallDetector
-from api.routes import _ball_quality, _validate_completed_diagnostics
 from core.config import Settings
 from core.exceptions import BallDetectionError, InternalDiagnosticsError
 from schemas.analysis import (
@@ -20,6 +19,7 @@ from schemas.analysis import (
     UnsupportedMetric,
     VideoResponse,
 )
+from services.analysis_pipeline import _ball_quality, _validate_completed_diagnostics
 from services.ball_detector import BallDetection
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker

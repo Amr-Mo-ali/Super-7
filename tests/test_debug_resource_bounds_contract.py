@@ -10,7 +10,7 @@ from typing import Any, Never, Protocol, cast
 
 import pytest
 
-import api.routes as routes
+import services.analysis_pipeline as pipeline
 from concurrency.cancellation import CancellationManager
 from config.debug import DebugSettings
 from core.config import Settings
@@ -139,9 +139,9 @@ def test_debug_disabled_route_creates_no_debug_artifact_and_preserves_result(
     completed = CompletedResponse.model_construct(analysis_id="analysis-f14", status="completed")
     debug_sources: list[Path | None] = []
 
-    monkeypatch.setattr(routes, "reproducibility_metadata", lambda *_: {})
+    monkeypatch.setattr(pipeline, "reproducibility_metadata", lambda *_: {})
     monkeypatch.setattr(
-        routes,
+        pipeline,
         "resolve_dominant_target",
         lambda *_args, **_kwargs: (
             TargetEligibilityResult(
@@ -157,9 +157,9 @@ def test_debug_disabled_route_creates_no_debug_artifact_and_preserves_result(
         debug_sources.append(cast(Path | None, args[20]))
         return completed
 
-    monkeypatch.setattr(routes, "_completed", complete)
+    monkeypatch.setattr(pipeline, "_completed", complete)
     unexpected = cast(Any, _UnexpectedDependency())
-    result = routes._analyze_uploaded(
+    result = pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, _Validator()),
         _Tracker(),
@@ -718,9 +718,9 @@ def test_debug_route_retains_only_after_complete_publication(
     original_publish = cast(_DebugRenderPublisher, session).publish_debug_render
     original_retain = session.retain
 
-    monkeypatch.setattr(routes, "reproducibility_metadata", lambda *_: {})
+    monkeypatch.setattr(pipeline, "reproducibility_metadata", lambda *_: {})
     monkeypatch.setattr(
-        routes,
+        pipeline,
         "resolve_dominant_target",
         lambda *_args, **_kwargs: (
             TargetEligibilityResult(
@@ -789,9 +789,9 @@ def test_debug_route_retains_only_after_complete_publication(
     monkeypatch.setattr(ArtifactSession, "materialize_input", materialize)
     monkeypatch.setattr(ArtifactSession, "publish_debug_render", publish)
     monkeypatch.setattr(ArtifactSession, "retain", retain)
-    monkeypatch.setattr(routes, "CameraMotionEstimator", NoCameraMotion)
-    monkeypatch.setattr(routes, "render_debug_video", render)
-    result = routes._analyze_uploaded(
+    monkeypatch.setattr(pipeline, "CameraMotionEstimator", NoCameraMotion)
+    monkeypatch.setattr(pipeline, "render_debug_video", render)
+    result = pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, SuccessfulRouteValidator()),
         _Tracker(),
@@ -860,9 +860,9 @@ def test_debug_route_failure_preserves_analysis_and_avoids_retention(
     retain_calls: list[ArtifactSession] = []
     render_calls: list[tuple[Path, Path]] = []
 
-    monkeypatch.setattr(routes, "reproducibility_metadata", lambda *_: {})
+    monkeypatch.setattr(pipeline, "reproducibility_metadata", lambda *_: {})
     monkeypatch.setattr(
-        routes,
+        pipeline,
         "resolve_dominant_target",
         lambda *_args, **_kwargs: (
             TargetEligibilityResult(
@@ -887,9 +887,9 @@ def test_debug_route_failure_preserves_analysis_and_avoids_retention(
         render_calls.append((source, output))
         raise render_failure
 
-    monkeypatch.setattr(routes, "CameraMotionEstimator", NoCameraMotion)
-    monkeypatch.setattr(routes, "render_debug_video", fail_render)
-    result = routes._analyze_uploaded(
+    monkeypatch.setattr(pipeline, "CameraMotionEstimator", NoCameraMotion)
+    monkeypatch.setattr(pipeline, "render_debug_video", fail_render)
+    result = pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, _Validator()),
         _Tracker(),

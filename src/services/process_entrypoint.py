@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
-from api.routes import _analyze_uploaded
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
@@ -16,6 +15,7 @@ from core.logging import configure_logging, get_logger
 from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_composition import AnalysisComponents, create_analysis_components
+from services.analysis_pipeline import _analyze_uploaded
 from services.process_contracts import (
     ChildAnalysisCancelled,
     ChildAnalysisFailure,

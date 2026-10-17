@@ -9,7 +9,7 @@ from typing import Never, cast
 
 import pytest
 
-import api.routes as routes
+import services.analysis_pipeline as pipeline
 from concurrency.cancellation import CancellationManager
 from core.config import Settings
 from diagnostics.artifacts import ArtifactSession
@@ -263,12 +263,12 @@ def test_route_uses_real_resolver_and_preserves_exact_boundary_availability(
         completed_selections.append(cast(Selection, args[3]))
         return completed
 
-    monkeypatch.setattr(routes, "_completed", complete)
+    monkeypatch.setattr(pipeline, "_completed", complete)
     unexpected = _UnexpectedDependency()
     settings = Settings()
     snapshot_session = _SnapshotSession()
     source_path = Path(__file__)
-    result = routes._analyze_uploaded(
+    result = pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, _Validator()),
         _Tracker(_tracking_run()),
