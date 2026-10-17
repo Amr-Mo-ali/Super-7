@@ -60,3 +60,23 @@ def test_child_pipeline_transitive_imports_do_not_reach_http() -> None:
             }:
                 pending.append((imported, (*chain, imported)))
     assert COMPOSITION in seen
+
+
+def test_durable_projection_consumers_do_not_import_concrete_presentation() -> None:
+    prohibited = (
+        "adapters.analysis_result_projection",
+        "adapters.analysis_callback_presentation",
+        "api",
+        "fastapi",
+    )
+    for module in (
+        "services.analysis_job_coordinator",
+        "adapters.psycopg_analysis_job_worker_repository",
+    ):
+        path = _source(module)
+        assert path is not None
+        for imported in _imports(module, path):
+            assert all(
+                imported != prefix and not imported.startswith(f"{prefix}.")
+                for prefix in prohibited
+            ), (module, imported)

@@ -58,6 +58,7 @@ if TYPE_CHECKING:
             operation_timeout_ms=4321,
             lock_timeout_ms=1234,
             lease_id_factory=factory,
+            failure_snapshot_builder=failure_callback_snapshot_v1,
         )
         return repository
 
@@ -298,6 +299,7 @@ def _repository(pool: _Pool, factory: object | None = None, **changes: object) -
         operation_timeout_ms=4321,
         lock_timeout_ms=1234,
         lease_id_factory=_Factory(pool) if factory is None else factory,
+        failure_snapshot_builder=failure_callback_snapshot_v1,
     )
     values.update(changes)
     return _module().PsycopgAnalysisJobWorkerRepository(**values)
@@ -796,6 +798,7 @@ def test_exact_exports_constructor_private_ports_and_service_error_identity() ->
         "operation_timeout_ms",
         "lock_timeout_ms",
         "lease_id_factory",
+        "failure_snapshot_builder",
     )
     assert all(
         p.kind is inspect.Parameter.KEYWORD_ONLY and p.default is inspect.Parameter.empty
@@ -809,6 +812,7 @@ def test_exact_exports_constructor_private_ports_and_service_error_identity() ->
         "operation_timeout_ms",
         "lock_timeout_ms",
         "lease_id_factory",
+        "failure_snapshot_builder",
         "return",
     }
     assert hints["return"] is type(None)
@@ -816,6 +820,7 @@ def test_exact_exports_constructor_private_ports_and_service_error_identity() ->
     assert hints["connection_acquire_timeout_seconds"] is float
     assert hints["operation_timeout_ms"] is int and hints["lock_timeout_ms"] is int
     assert hints["lease_id_factory"] == Callable[[], UUID]
+    assert hints["failure_snapshot_builder"] is worker.FailureCallbackSnapshotV1Builder
     for name in ("_Pool", "_Connection", "_Cursor"):
         assert getattr(getattr(module, name), "_is_protocol", False)
     assert get_type_hints(module._Cursor.fetchall) == {"return": list[tuple[object, ...]]}
@@ -884,6 +889,7 @@ def test_concrete_operations_match_complete_approved_protocol(method: str) -> No
         "operation_timeout_ms",
         "lock_timeout_ms",
         "lease_id_factory",
+        "failure_snapshot_builder",
     ),
 )
 def test_constructor_requires_every_keyword(missing: str) -> None:
@@ -896,6 +902,7 @@ def test_constructor_requires_every_keyword(missing: str) -> None:
         operation_timeout_ms=4321,
         lock_timeout_ms=1234,
         lease_id_factory=factory,
+        failure_snapshot_builder=failure_callback_snapshot_v1,
     )
     del values[missing]
     with pytest.raises(TypeError):
@@ -1603,7 +1610,17 @@ def test_failure_finalization_attempt_then_job_commits_only_complete_pair(
         ]
     )
     factory = _Factory(pool)
-    outcome = _run(_repository(pool, factory), method)
+    projections: list[tuple[UUID, str, str, str]] = []
+
+    def failure_snapshot(*, job_id: UUID, video_id: str, player_id: str, safe_code: str) -> bytes:
+        assert "transaction-enter" in pool.events and "commit" not in pool.events
+        assert pool.events.index("close:job") < len(pool.events)
+        projections.append((job_id, video_id, player_id, safe_code))
+        return failure_callback_snapshot_v1(
+            job_id=job_id, video_id=video_id, player_id=player_id, safe_code=safe_code
+        )
+
+    outcome = _run(_repository(pool, factory, failure_snapshot_builder=failure_snapshot), method)
     assert type(outcome) is outcome_type
     assert cast(Any, outcome).authority is _AUTHORITY
     if outcome_type is not worker.AttemptRequeued:
@@ -1613,6 +1630,11 @@ def test_failure_finalization_attempt_then_job_commits_only_complete_pair(
             cast(worker.AttemptRequeued | worker.AttemptExhausted, outcome), limit
         )
     assert factory.calls == 0
+    assert projections == (
+        [(_JOB, "Video_123", "Player_456", "retry" if limit == 3 else "attempts_exhausted")]
+        if state == "FAILED"
+        else []
+    )
     assert pool.events.index("close:attempt-write") < pool.events.index("execute:job-write")
     _done(pool)
 
@@ -2204,8 +2226,24 @@ def test_expiry_recovery_uses_null_code_and_does_not_increment_generation(limit:
     ]
     pool = _Pool(steps)
     factory = _Factory(pool)
-    outcome = _run(_repository(pool, factory), "recover_expired")
+    projections: list[tuple[UUID, str, str, str]] = []
+
+    def failure_snapshot(*, job_id: UUID, video_id: str, player_id: str, safe_code: str) -> bytes:
+        assert "transaction-enter" in pool.events and "commit" not in pool.events
+        assert "close:recovery-attempt" in pool.events
+        projections.append((job_id, video_id, player_id, safe_code))
+        return failure_callback_snapshot_v1(
+            job_id=job_id, video_id=video_id, player_id=player_id, safe_code=safe_code
+        )
+
+    outcome = _run(
+        _repository(pool, factory, failure_snapshot_builder=failure_snapshot),
+        "recover_expired",
+    )
     assert outcome == worker.RecoverySummary(int(not exhausted), int(exhausted))
+    assert projections == (
+        [(_JOB, "Video_123", "Player_456", "attempts_exhausted")] if exhausted else []
+    )
     assert factory.calls == 0
     _done(pool)
 
@@ -2839,6 +2877,7 @@ def test_constructor_does_not_inspect_pool_and_acquisition_conversion_occurs_onc
         operation_timeout_ms=2,
         lock_timeout_ms=1,
         lease_id_factory=lambda: _LEASE,
+        failure_snapshot_builder=failure_callback_snapshot_v1,
     )
     assert probes == []
     pool = _Pool([*_settings(), _read("locator", [], _SLOT), _read("candidate", [])])
@@ -3561,6 +3600,7 @@ else:
     module.PsycopgAnalysisJobWorkerRepository(
         pool=Pool(), connection_acquire_timeout_seconds=1.25,
         operation_timeout_ms=2, lock_timeout_ms=1, lease_id_factory=factory,
+        failure_snapshot_builder=lambda **kwargs: b"{}",
     )
     check(len(calls) == 1, "cached import/construction never bootstrap")
     if case in ("reload", "failed-reload", "reload-recovery"):
@@ -3890,6 +3930,7 @@ module = importlib.import_module(module_name)
 module.PsycopgAnalysisJobWorkerRepository(
     pool=Pool(), connection_acquire_timeout_seconds=1.25,
     operation_timeout_ms=2, lock_timeout_ms=1, lease_id_factory=first,
+    failure_snapshot_builder=lambda **kwargs: b"{}",
 )
 check(calls == [], "cyclic factory never invoked")
 print("GRAPH_OK:" + case, flush=True)

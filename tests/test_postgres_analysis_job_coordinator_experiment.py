@@ -25,6 +25,7 @@ from test_postgres_analysis_job_worker_integration import (
     _run_database,
 )
 
+from adapters.analysis_result_projection import convert_child_success
 from config.debug import DebugSettings
 from core.config import Settings
 from domain.analysis_job import AnalysisJobAccepted, NewAnalysisJob
@@ -368,6 +369,7 @@ def test_one_real_video_commits_one_result_and_replays_once(
                     worker_repository=worker,
                     finalization_repository=finalizer,
                     child_executor=observed_child,
+                    result_projector=convert_child_success,
                     worker_slot_id=WorkerSlotId(uuid4()),
                     model_catalog={raw_model_pair: "experiment_yolo11n_pair_v1"},
                     timing=CoordinatorTiming(

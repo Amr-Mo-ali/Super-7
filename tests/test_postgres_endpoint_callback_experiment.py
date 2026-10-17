@@ -41,6 +41,7 @@ from test_postgres_analysis_job_worker_integration import (
     _run_database,
 )
 
+from adapters.analysis_result_projection import convert_child_success
 from adapters.hmac_idempotency_lookup_protector import HmacIdempotencyLookupProtector
 from adapters.psycopg_analysis_callback_delivery_repository import (
     PsycopgAnalysisCallbackDeliveryRepository,
@@ -303,6 +304,7 @@ def test_one_endpoint_request_survives_reconstruction_and_delivers_callback(
                             worker_repository=worker,
                             finalization_repository=finalizer,
                             child_executor=observed_child,
+                            result_projector=convert_child_success,
                             worker_slot_id=WorkerSlotId(uuid4()),
                             model_catalog={raw_model_pair: "experiment_yolo11n_pair_v1"},
                             timing=CoordinatorTiming(

@@ -14,8 +14,8 @@ from math import isfinite
 from time import monotonic
 from typing import Protocol, cast
 
-from adapters.analysis_result_projection import convert_child_success
 from domain.analysis_job_attempt import AttemptAuthority, LeaseDuration, WorkerClaim, WorkerSlotId
+from schemas.analysis import AnalyzeResponse
 from services.analysis_job_finalization import (
     AnalysisJobCompleted,
     AnalysisJobCompletionAlreadyApplied,
@@ -34,13 +34,31 @@ from services.analysis_job_worker import (
     renew_analysis_job_lease,
 )
 from services.process_analysis_pool import ValidatedChildSuccess
-from services.process_contracts import ChildAnalysisRequest, ParentCancelled, ParentFailure
+from services.process_contracts import (
+    ChildAnalysisRequest,
+    ChildAnalysisSuccess,
+    ParentCancelled,
+    ParentFailure,
+)
 
 
 class _ChildExecutor(Protocol):
     async def execute_enveloped(
         self, request: ChildAnalysisRequest
     ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled: ...
+
+
+class AnalysisResultV1Projector(Protocol):
+    """Freeze the current result and callback snapshots for a validated child."""
+
+    def __call__(
+        self,
+        *,
+        child: ChildAnalysisSuccess,
+        response: AnalyzeResponse,
+        claim: WorkerClaim,
+        model_catalog: Mapping[str, str],
+    ) -> FinalizableAnalysisResult: ...
 
 
 class CoordinatorStopped(RuntimeError):
@@ -103,6 +121,7 @@ class AnalysisJobCoordinator:
         worker_repository: AnalysisJobWorkerRepository,
         finalization_repository: AnalysisJobSuccessFinalizationRepository,
         child_executor: _ChildExecutor,
+        result_projector: AnalysisResultV1Projector,
         worker_slot_id: WorkerSlotId,
         model_catalog: Mapping[str, str],
         timing: CoordinatorTiming,
@@ -110,6 +129,7 @@ class AnalysisJobCoordinator:
         self._worker_repository = worker_repository
         self._finalization_repository = finalization_repository
         self._child_executor = child_executor
+        self._result_projector = result_projector
         self._worker_slot_id = worker_slot_id
         self._model_catalog = model_catalog
         self._timing = timing
@@ -173,7 +193,7 @@ class AnalysisJobCoordinator:
             await heartbeat  # Settle any renewal before the first finalizer.
             if not isinstance(child_outcome, ValidatedChildSuccess):
                 raise CoordinatorUnclassifiedFailure("Child outcome has no approved durable code.")
-            frozen = convert_child_success(
+            frozen = self._result_projector(
                 child=child_outcome.child,
                 response=child_outcome.response,
                 claim=claim,

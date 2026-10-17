@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from domain.analysis_job import _validate_datetime
 from domain.analysis_job_attempt import (
@@ -149,6 +150,12 @@ class RecoverySummary:
                 raise TypeError("Recovery count must be an exact integer.")
             if count < 0:
                 raise ValueError("Recovery count must not be negative.")
+
+
+class FailureCallbackSnapshotV1Builder(Protocol):
+    """Freeze the existing failure callback from authoritative job values."""
+
+    def __call__(self, *, job_id: UUID, video_id: str, player_id: str, safe_code: str) -> bytes: ...
 
 
 class AnalysisJobWorkerRepository(Protocol):

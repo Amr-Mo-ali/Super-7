@@ -8,6 +8,7 @@ from datetime import timedelta
 import pytest
 from test_analysis_job_finalization_contract import _RAW_MODEL, _SAFE_MODEL, _claim, _response
 
+from adapters.analysis_result_projection import convert_child_success
 from domain.analysis_job_attempt import (
     AttemptAuthority,
     AttemptFailureCode,
@@ -154,6 +155,7 @@ def test_success_renews_during_child_and_settles_before_finalization() -> None:
             worker_repository=worker,
             finalization_repository=finalizer,
             child_executor=child,
+            result_projector=convert_child_success,
             worker_slot_id=claim.authority.worker_slot_id,
             model_catalog={_RAW_MODEL: _SAFE_MODEL},
             timing=_timing(),
@@ -185,6 +187,7 @@ def test_ambiguous_finalization_replays_identical_frozen_input() -> None:
             worker_repository=worker,
             finalization_repository=finalizer,
             child_executor=child,
+            result_projector=convert_child_success,
             worker_slot_id=claim.authority.worker_slot_id,
             model_catalog={_RAW_MODEL: _SAFE_MODEL},
             timing=_timing(),
@@ -212,6 +215,7 @@ def test_lost_lease_preserves_child_for_owner_and_forbids_reuse() -> None:
             worker_repository=worker,
             finalization_repository=finalizer,
             child_executor=child,
+            result_projector=convert_child_success,
             worker_slot_id=claim.authority.worker_slot_id,
             model_catalog={_RAW_MODEL: _SAFE_MODEL},
             timing=_timing(),
@@ -243,6 +247,7 @@ def test_unclassified_child_failure_does_not_finalize() -> None:
             worker_repository=worker,
             finalization_repository=finalizer,
             child_executor=child,
+            result_projector=convert_child_success,
             worker_slot_id=claim.authority.worker_slot_id,
             model_catalog={_RAW_MODEL: _SAFE_MODEL},
             timing=_timing(),
@@ -280,6 +285,7 @@ def test_unresolved_finalization_keeps_slot_stopped_until_owner_settles_task() -
             worker_repository=worker,
             finalization_repository=finalizer,
             child_executor=child,
+            result_projector=convert_child_success,
             worker_slot_id=claim.authority.worker_slot_id,
             model_catalog={_RAW_MODEL: _SAFE_MODEL},
             timing=CoordinatorTiming(

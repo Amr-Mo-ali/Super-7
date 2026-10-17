@@ -7,6 +7,8 @@ import logging
 from collections.abc import Mapping
 from uuid import uuid4
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
+from adapters.analysis_result_projection import convert_child_success
 from adapters.hmac_idempotency_lookup_protector import HmacIdempotencyLookupProtector
 from adapters.psycopg_analysis_callback_delivery_repository import (
     PsycopgAnalysisCallbackDeliveryRepository,
@@ -74,6 +76,7 @@ class DurableLocalRuntime:
             operation_timeout_ms=operation_timeout_ms,
             lock_timeout_ms=lock_timeout_ms,
             lease_id_factory=uuid4,
+            failure_snapshot_builder=failure_callback_snapshot_v1,
         )
         finalizer = PsycopgAnalysisJobFinalizationRepository(
             pool=self._pool,
@@ -94,6 +97,7 @@ class DurableLocalRuntime:
             worker_repository=worker_repository,
             finalization_repository=finalizer,
             child_executor=self._executor,
+            result_projector=convert_child_success,
             worker_slot_id=WorkerSlotId(uuid4()),
             model_catalog=model_catalog,
             timing=timing,

@@ -24,6 +24,7 @@ from psycopg import sql
 from psycopg.errors import UniqueViolation
 from yoyo import read_migrations  # type: ignore[import-untyped]
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
 from adapters.psycopg_analysis_job_repository import PsycopgAnalysisJobAdmissionRepository
 from adapters.psycopg_analysis_job_worker_repository import (
     PsycopgAnalysisJobWorkerRepository,
@@ -492,6 +493,7 @@ async def _repositories(
                 operation_timeout_ms=_OPERATION_TIMEOUT_MS,
                 lock_timeout_ms=_LOCK_TIMEOUT_MS,
                 lease_id_factory=_LeaseIds(),
+                failure_snapshot_builder=failure_callback_snapshot_v1,
             ),
             pool,
         )
@@ -506,6 +508,7 @@ def _worker_repository(pool: Any) -> PsycopgAnalysisJobWorkerRepository:
         operation_timeout_ms=_OPERATION_TIMEOUT_MS,
         lock_timeout_ms=_LOCK_TIMEOUT_MS,
         lease_id_factory=_LeaseIds(),
+        failure_snapshot_builder=failure_callback_snapshot_v1,
     )
 
 
@@ -1528,6 +1531,7 @@ def test_recovery_holds_both_locks_then_old_owner_loses_before_reclaim(
                     operation_timeout_ms=_OPERATION_TIMEOUT_MS,
                     lock_timeout_ms=_LOCK_TIMEOUT_MS,
                     lease_id_factory=_LeaseIds(),
+                    failure_snapshot_builder=failure_callback_snapshot_v1,
                 )
                 recovery_task = asyncio.create_task(
                     recovery.recover_expired(batch_size=_RECOVERY_BATCH)

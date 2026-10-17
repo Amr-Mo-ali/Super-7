@@ -31,7 +31,6 @@ from psycopg import InterfaceError, OperationalError
 from psycopg.errors import UniqueViolation
 from psycopg_pool import PoolTimeout
 
-from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
 from domain.analysis_job import AnalysisJobState, _validate_datetime
 from domain.analysis_job_attempt import (
     AttemptAuthority,
@@ -65,6 +64,7 @@ from services.analysis_job_worker import (
     AttemptRequeued,
     AttemptResolutionAlreadyApplied,
     ClaimLost,
+    FailureCallbackSnapshotV1Builder,
     LeaseRenewed,
     NoJobAvailable,
     RecoverySummary,
@@ -373,6 +373,7 @@ class PsycopgAnalysisJobWorkerRepository:
         operation_timeout_ms: int,
         lock_timeout_ms: int,
         lease_id_factory: Callable[[], UUID],
+        failure_snapshot_builder: FailureCallbackSnapshotV1Builder,
     ) -> None:
         acquire = _acquisition_timeout(connection_acquire_timeout_seconds)
         _millisecond_timeout(operation_timeout_ms)
@@ -381,6 +382,8 @@ class PsycopgAnalysisJobWorkerRepository:
             raise ValueError("Operation timeout must exceed lock timeout.")
         if not callable(lease_id_factory):
             raise TypeError("Lease UUID factory must be callable.")
+        if not callable(failure_snapshot_builder):
+            raise TypeError("Failure snapshot builder must be callable.")
         for surface in (
             lease_id_factory,
             _raw_call(lease_id_factory),
@@ -392,6 +395,7 @@ class PsycopgAnalysisJobWorkerRepository:
         self._operation_timeout_ms = operation_timeout_ms
         self._lock_timeout_ms = lock_timeout_ms
         self._factory = lease_id_factory
+        self._failure_snapshot_builder = failure_snapshot_builder
 
     async def claim_next(
         self, *, worker_slot_id: WorkerSlotId, lease_duration: LeaseDuration
@@ -465,7 +469,7 @@ class PsycopgAnalysisJobWorkerRepository:
                 return ClaimLost(authority)
             job, old = pair
             if _replay(job, old, failure_code, terminal=True):
-                expected = failure_callback_snapshot_v1(
+                expected = self._failure_snapshot_builder(
                     job_id=job.payload.job_id,
                     video_id=job.payload.video_id,
                     player_id=job.payload.player_id,
@@ -490,7 +494,7 @@ class PsycopgAnalysisJobWorkerRepository:
                 terminal_job,
                 changed,
                 result_json=None,
-                callback_json=failure_callback_snapshot_v1(
+                callback_json=self._failure_snapshot_builder(
                     job_id=job.payload.job_id,
                     video_id=job.payload.video_id,
                     player_id=job.payload.player_id,
@@ -557,7 +561,7 @@ class PsycopgAnalysisJobWorkerRepository:
                         updated_job,
                         changed,
                         result_json=None,
-                        callback_json=failure_callback_snapshot_v1(
+                        callback_json=self._failure_snapshot_builder(
                             job_id=job.payload.job_id,
                             video_id=job.payload.video_id,
                             player_id=job.payload.player_id,
@@ -708,7 +712,7 @@ class PsycopgAnalysisJobWorkerRepository:
         if _replay(job, old, code, terminal=False):
             if old.status is AttemptStatus.RETRYABLE_FAILURE:
                 return AttemptResolutionAlreadyApplied(authority, old.status, code)
-            expected = failure_callback_snapshot_v1(
+            expected = self._failure_snapshot_builder(
                 job_id=job.payload.job_id,
                 video_id=job.payload.video_id,
                 player_id=job.payload.player_id,
@@ -740,7 +744,7 @@ class PsycopgAnalysisJobWorkerRepository:
                 updated_job,
                 changed,
                 result_json=None,
-                callback_json=failure_callback_snapshot_v1(
+                callback_json=self._failure_snapshot_builder(
                     job_id=job.payload.job_id,
                     video_id=job.payload.video_id,
                     player_id=job.payload.player_id,

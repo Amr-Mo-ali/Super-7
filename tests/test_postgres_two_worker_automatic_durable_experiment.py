@@ -38,6 +38,8 @@ from test_postgres_analysis_job_worker_integration import (
 from test_postgres_automatic_durable_local_runtime import _app, _settings
 from test_postgres_endpoint_callback_experiment import _STATE_QUERY
 
+from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
+from adapters.analysis_result_projection import convert_child_success
 from adapters.psycopg_analysis_job_finalization_repository import (
     PsycopgAnalysisJobFinalizationRepository,
 )
@@ -124,6 +126,7 @@ class _SecondWorker:
             operation_timeout_ms=5_000,
             lock_timeout_ms=1_000,
             lease_id_factory=uuid4,
+            failure_snapshot_builder=failure_callback_snapshot_v1,
         )
         finalizer = PsycopgAnalysisJobFinalizationRepository(
             pool=primary._pool,
@@ -137,6 +140,7 @@ class _SecondWorker:
             worker_repository=self.repository,
             finalization_repository=finalizer,
             child_executor=self.observed,
+            result_projector=convert_child_success,
             worker_slot_id=WorkerSlotId(uuid4()),
             model_catalog={f"{_MODEL}+{_MODEL}+bytetrack": "experiment_yolo11n_pair_v1"},
             timing=primary.coordinator._timing,
