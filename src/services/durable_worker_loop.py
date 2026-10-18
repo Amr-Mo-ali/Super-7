@@ -89,6 +89,12 @@ class DurableWorkerLoop:
         self._task = asyncio.create_task(self._run())
         self._task.add_done_callback(self._observe_completion)
 
+    async def wait(self) -> None:
+        """Observe the actor and propagate its failure to the process owner."""
+        if self._task is None:
+            raise RuntimeError("Durable worker loop has not started.")
+        await asyncio.shield(self._task)
+
     async def stop(self) -> None:
         """Stop new discovery and await in-flight work without business cancellation.
 

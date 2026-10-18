@@ -54,6 +54,12 @@ class DurableCallbackDispatcher:
         self._task = asyncio.create_task(self._run())
         self._task.add_done_callback(self._observe_completion)
 
+    async def wait(self) -> None:
+        """Observe the actor and propagate its failure to the process owner."""
+        if self._task is None:
+            raise RuntimeError("Durable dispatcher has not started.")
+        await asyncio.shield(self._task)
+
     async def stop(self) -> None:
         self._stop.set()
         if self._task is not None:

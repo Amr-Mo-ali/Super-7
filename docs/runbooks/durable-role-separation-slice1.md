@@ -1,0 +1,15 @@
+﻿# Isolated durable roles: Slice 1 review boundary
+
+This is an inactive, opt-in composition from source commit `6602f8e`. It does not activate separated production deployment or change `main:app`, the combined `durable_local_main:create_app` factory, the Windows launcher, Dockerfiles, or the Compose trial. No fleet admission policy has been approved.
+
+| Role | Entry point and opt-in | Owned resources and configuration |
+| --- | --- | --- |
+| API | `durable_api_main:create_app` with `SUPER7_DURABLE_API_ENABLED=1` | One PostgreSQL pool/foundation, durable admission repository, HMAC idempotency protector, Apex Bearer secret, HMAC secret, attempt/capacity/DB timeouts, filename syntax and callback URL validators. It constructs no process pool, analysis worker, dispatcher, models, or video mount check. |
+| Analysis worker | `python -m durable_worker_main` with `SUPER7_DURABLE_WORKER_ENABLED=1` | One PostgreSQL pool/foundation, worker and finalization repositories, V1 failure snapshot builder, success projector/coordinator, fresh slot UUID, one spawned single-child process pool, and one worker discovery loop. It receives the analysis settings, model catalog, lease/recovery timing, and DB configuration. The filename-only video reference still requires the worker's existing local input path. |
+| Callback dispatcher | `python -m durable_dispatcher_main` with `SUPER7_DURABLE_DISPATCHER_ENABLED=1` | One PostgreSQL pool/foundation, delivery repository, existing pinned-destination HTTP transport, and one dispatcher actor. It receives DB configuration and no Apex admission secret or model setting. |
+
+Each non-HTTP role reports successful startup through a role-specific log event and an unsuccessful actor state through a nonzero process exit and error log. Neither opens a health listener. The worker stops discovery and waits for active child/persistence work before database close; native `shutdown(wait=True)` can remain unbounded. The dispatcher finishes its current delivery before closing its database pool. Actor failure fails the role and cannot silently reuse an unsafe worker slot.
+
+The API exposes local `/health/live`, `/health/ready`, and `/health`. Readiness checks only its lifespan and database/schema probe. It does not require a worker, dispatcher, callback receiver, video mount, or aggregate fleet gate. Durable admission may remain bounded during a worker or dispatcher outage; the outage-admission choice is unresolved and needs explicit approval before production activation.
+
+**Deploy exactly one dispatcher process.** This slice does not enforce singleton ownership across hosts and adds no election, delivery lease, or retry exhaustion. Multiple independent dispatchers would risk concurrent delivery. Separated production activation still needs an approved deployment topology, object-input contract and bounded worker materialization, dispatcher ownership policy, and operational shutdown/supervision decisions. The current `videoUrl` contract remains a filename; object storage access is a later slice.

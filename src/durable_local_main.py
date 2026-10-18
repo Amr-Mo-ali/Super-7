@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import timedelta
 from os import environ
 
-import httpx
+import httpx as httpx
 from fastapi import FastAPI
-from pydantic import HttpUrl
 
 from core.config import Settings
 from core.database_config import DatabaseSettings
@@ -18,6 +16,7 @@ from main import create_app as compose_app
 from services.analysis_callback_delivery import CallbackTransport
 from services.analysis_job_coordinator import CoordinatorTiming
 from services.callback_service import CallbackService
+from services.durable_callback_transport import create_callback_transport
 from services.durable_local_runtime import DurableLocalRuntime
 
 
@@ -29,29 +28,8 @@ def _required(name: str) -> str:
 
 
 def _transport(validator: CallbackService) -> CallbackTransport:
-    async def post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> int:
-        # The app never allows loopback through this transport. An isolated
-        # receiver needs an explicitly injected test-only validator/transport.
-        try:
-            destination = validator.resolve_callback_destination(HttpUrl(url))
-        except ValueError as error:
-            raise OSError("Callback destination unavailable.") from error
-        pinned_url = httpx.URL(url).copy_with(host=str(destination.address))
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=False, trust_env=False, timeout=timeout
-            ) as client:
-                response = await client.post(
-                    pinned_url,
-                    content=body,
-                    headers={**headers, "Host": destination.host_header},
-                    extensions={"sni_hostname": destination.hostname},
-                )
-            return response.status_code
-        except httpx.TransportError as error:
-            raise OSError("Callback transport unavailable.") from error
-
-    return post
+    """Compatibility hook for the existing network-free transport controls."""
+    return create_callback_transport(validator)
 
 
 def create_app() -> FastAPI:
