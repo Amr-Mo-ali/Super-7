@@ -17,11 +17,10 @@ from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
-from services.analysis_composition import create_analysis_components
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.callback_service import CallbackService
 from services.durable_local_runtime import DurableLocalRuntime
-from services.player_tracker import AutomaticPlayerTracker
+from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.process_analysis_pool import ProcessAnalysisPool
 from services.process_contracts import ChildAnalysisRequest, ParentChildResult
 from services.selection import TargetPlayerSelector
@@ -53,24 +52,15 @@ def create_app(
 ) -> FastAPI:
     """Compose services; production CV runs in child-owned components via the process pool.
 
-    Parent component overrides remain only for router/legacy compatibility; production
-    analysis tests must inject ``process_analysis_pool`` rather than rely on them.
+    Parent analysis overrides remain accepted for existing callers; production analysis
+    runs through ``process_analysis_pool`` and builds its graph in the child.
     """
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
-    # Router composition still needs these lazy components; child processes own analysis execution.
-    components = create_analysis_components(
-        resolved_settings,
-        player_detector_logger=get_logger("football_analysis.detector"),
-        ball_detector_logger=get_logger("football_analysis.ball_detector"),
-        tracker_override=tracker,
-        selector_override=selector,
-        validator_override=validator,
-    )
     get_logger("football_analysis.startup").info(
         "detector=%s model=%s device=%s enabled=true",
-        components.tracker.__class__.__name__,
+        type(tracker).__name__ if tracker else DetectionOnlyPlayerTracker.__name__,
         resolved_settings.model_path,
         resolved_settings.model_device,
     )
@@ -176,21 +166,7 @@ def create_app(
     )
     app.include_router(
         create_router(
-            resolved_settings,
-            components.validator,
-            components.tracker,
-            components.selector,
-            components.extractor,
-            components.ball_proximity_analyzer,
-            components.movement_analyzer,
-            components.interaction_analyzer,
-            components.technical_event_analyzer,
-            components.pass_detector,
-            components.shot_detector,
-            components.physical_scorer,
             get_logger("football_analysis.api"),
-            resolved_lifecycle,
-            downloader or VideoDownloader(resolved_settings),
             resolved_path_resolver,
             resolved_callback_service,
             resolved_analysis_queue,

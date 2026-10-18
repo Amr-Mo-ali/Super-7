@@ -5,10 +5,12 @@ from pathlib import Path
 from typing import cast
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from process_pool_lifecycle_fake import FakeProcessPoolLifecycle
 from pydantic import HttpUrl
 
+import main
 from core.config import Settings
 from main import create_app
 from schemas.analysis import Diagnostics, NonCompletedResponse
@@ -74,7 +76,13 @@ def _app(
     )
 
 
-def test_process_pool_and_worker_construction_are_inert() -> None:
+def test_process_app_does_not_construct_parent_analysis_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_graph(*_: object, **__: object) -> None:
+        raise AssertionError("parent analysis graph was constructed")
+
+    monkeypatch.setattr(main, "create_analysis_components", unexpected_graph, raising=False)
     pool = FakeProcessPoolLifecycle([_response])
     queue = AnalysisQueue(1)
     app = _app(pool, queue, _Callback())

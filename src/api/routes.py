@@ -49,33 +49,18 @@ from services.scoring.protocols import PhysicalActivityScorerProtocol
 from services.selection import TargetPlayerSelector
 from services.shot_detection import ShotDetector
 from services.technical_events.analyzer import TechnicalEventAnalyzer
-from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
 
 
 def create_router(
-    settings: Settings,
-    validator: VideoValidator,
-    tracker: AutomaticPlayerTracker,
-    selector: TargetPlayerSelector,
-    extractor: FeatureExtractor,
-    ball_proximity_analyzer: BallProximityAnalyzer,
-    movement_analyzer: MovementAnalyzer,
-    interaction_analyzer: BallInteractionAnalyzerProtocol,
-    technical_event_analyzer: TechnicalEventAnalyzer,
-    pass_detector: PassDetector,
-    shot_detector: ShotDetector,
-    physical_scorer: PhysicalActivityScorerProtocol,
     logger: logging.Logger,
-    lifecycle: RequestLifecycle,
-    downloader: VideoDownloader,
     path_resolver: VideoPathResolver,
     callback_service: CallbackService,
     analysis_queue: AnalysisQueue,
     durable_admission: DurableLocalAdmission | None = None,
 ) -> APIRouter:
-    """Create the only public route with injected analysis dependencies."""
+    """Create the public admission route without constructing an analysis graph."""
     if durable_admission is not None:
         return create_durable_admission_router(durable_admission, path_resolver, callback_service)
     router = APIRouter()
