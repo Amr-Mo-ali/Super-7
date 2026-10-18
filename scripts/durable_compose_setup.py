@@ -39,6 +39,9 @@ COMPOSE_ENV = SECRET_DIR / "compose.env"
 RUNTIME_ENV = SECRET_DIR / "runtime.env"
 BOOTSTRAP_CONFIG = SECRET_DIR / "bootstrap-config.json"
 INSPECT_ENV = SECRET_DIR / "inspect.env"
+API_ENV = SECRET_DIR / "api.env"
+WORKER_ENV = SECRET_DIR / "worker.env"
+DISPATCHER_ENV = SECRET_DIR / "dispatcher.env"
 CONTAINER_CONFIG = Path("/run/secrets/bootstrap_config")
 CONTAINER_POSTGRES_PASSWORD = Path("/run/secrets/postgres_password")
 MIGRATIONS = "package:adapters:migrations/postgres"
@@ -48,6 +51,21 @@ CATALOG = (
     "sprint2_slice2_analysis_job",
     "sprint2_slice3_worker_attempt",
     REVISION,
+)
+CONFIG_KEYS = (
+    "project",
+    "volume",
+    "owner_id",
+    "database",
+    "bootstrap_user",
+    "bootstrap_password",
+    "migration_user",
+    "migration_password",
+    "runtime_user",
+    "runtime_password",
+    "apex_bearer_secret",
+    "idempotency_hmac_secret_hex",
+    "model_id",
 )
 
 
@@ -77,6 +95,9 @@ def _check_prepare_prerequisites() -> None:
         RUNTIME_ENV,
         BOOTSTRAP_CONFIG,
         INSPECT_ENV,
+        API_ENV,
+        WORKER_ENV,
+        DISPATCHER_ENV,
     ):
         ignored = subprocess.run(
             ("git", "check-ignore", "--quiet", "--", str(path)),
@@ -194,6 +215,46 @@ def _runtime_env(config: dict[str, str]) -> str:
     return "".join(f"{key}={value}\n" for key, value in values.items())
 
 
+def _role_env(config: dict[str, str], role: str) -> str:
+    """Select only the existing runtime settings consumed by this role."""
+    values = dict(line.split("=", 1) for line in _runtime_env(config).splitlines())
+    database = {key for key in values if key.startswith("POSTGRES_")}
+    role_keys = {
+        "api": {
+            "CALLBACK_TIMEOUT_SECONDS",
+            "SUPER7_APEX_BEARER_SECRET",
+            "SUPER7_IDEMPOTENCY_HMAC_SECRET_HEX",
+            "SUPER7_DURABLE_ATTEMPT_LIMIT",
+            "SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS",
+            "SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS",
+        },
+        "worker": {
+            "VIDEO_STORAGE_ROOT",
+            "MODEL_PATH",
+            "BALL_MODEL_PATH",
+            "MODEL_DEVICE",
+            "DEBUG_ARTIFACTS_ENABLED",
+            "SUPER7_DURABLE_MODEL_ID",
+            "SUPER7_DURABLE_RECOVERY_BATCH",
+            "SUPER7_DURABLE_WORKER_IDLE_SECONDS",
+            "SUPER7_DURABLE_LEASE_SECONDS",
+            "SUPER7_DURABLE_HEARTBEAT_SECONDS",
+            "SUPER7_DURABLE_WATCHDOG_SECONDS",
+            "SUPER7_DURABLE_JITTER_SECONDS",
+            "SUPER7_DURABLE_FINALIZE_SECONDS",
+            "SUPER7_DURABLE_FINALIZE_RETRY_ONE_SECONDS",
+            "SUPER7_DURABLE_FINALIZE_RETRY_TWO_SECONDS",
+            "SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS",
+            "SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS",
+        },
+        "dispatcher": set(),
+    }[role]
+    enabled = f"SUPER7_DURABLE_{role.upper()}_ENABLED"
+    return f"{enabled}=1\n" + "".join(
+        f"{key}={value}\n" for key, value in values.items() if key in database | role_keys
+    )
+
+
 def _bootstrap_config(config: dict[str, str]) -> str:
     keys = (
         "project",
@@ -221,6 +282,11 @@ def _write_service_files(config: dict[str, str]) -> None:
     _private_file(INSPECT_ENV, _inspect_env(config))
 
 
+def _write_role_files(config: dict[str, str]) -> None:
+    for role, path in (("api", API_ENV), ("worker", WORKER_ENV), ("dispatcher", DISPATCHER_ENV)):
+        _private_file(path, _role_env(config, role))
+
+
 def prepare() -> None:
     _check_prepare_prerequisites()
     config = _new_config()
@@ -233,6 +299,7 @@ def prepare() -> None:
     )
     _private_file(RUNTIME_ENV, _runtime_env(config))
     _write_service_files(config)
+    _write_role_files(config)
     print("Trial credentials prepared in the ignored trial directory; no container was started.")
 
 
@@ -246,22 +313,7 @@ def derive_service_files() -> None:
         raw: object = json.loads(CONFIG.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError
-        required = (
-            "project",
-            "volume",
-            "owner_id",
-            "database",
-            "bootstrap_user",
-            "bootstrap_password",
-            "migration_user",
-            "migration_password",
-            "runtime_user",
-            "runtime_password",
-            "apex_bearer_secret",
-            "idempotency_hmac_secret_hex",
-            "model_id",
-        )
-        if not all(isinstance(raw.get(key), str) and raw[key] for key in required):
+        if not all(isinstance(raw.get(key), str) and raw[key] for key in CONFIG_KEYS):
             raise ValueError
         config = cast(dict[str, str], raw)
         if config["project"] != PROJECT or config["volume"] != VOLUME:
@@ -291,6 +343,46 @@ def derive_service_files() -> None:
             raise TrialSetupError("Service-specific credential paths must be Git-ignored.")
     _write_service_files(config)
     print("Service-specific trial credentials derived; existing files were unchanged.")
+
+
+def derive_role_files() -> None:
+    """Bounded transition from the existing combined trial preparation."""
+    outputs = (API_ENV, WORKER_ENV, DISPATCHER_ENV)
+    if any(path.exists() or path.is_symlink() for path in outputs):
+        raise TrialSetupError("Role credential output already exists; refusing overwrite.")
+    try:
+        raw: object = json.loads(CONFIG.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError
+        config = cast(dict[str, str], raw)
+        if config.get("project") != PROJECT or config.get("volume") != VOLUME:
+            raise ValueError
+        if any(not isinstance(config.get(key), str) or not config[key] for key in CONFIG_KEYS):
+            raise ValueError
+        if (
+            POSTGRES_PASSWORD.read_text(encoding="utf-8") != config["bootstrap_password"] + "\n"
+            or COMPOSE_ENV.read_text(encoding="utf-8")
+            != f"TRIAL_BOOTSTRAP_USER={config['bootstrap_user']}\nTRIAL_OWNER_ID={config['owner_id']}\n"
+            or RUNTIME_ENV.read_text(encoding="utf-8") != _runtime_env(config)
+            or BOOTSTRAP_CONFIG.read_text(encoding="utf-8") != _bootstrap_config(config)
+            or INSPECT_ENV.read_text(encoding="utf-8") != _inspect_env(config)
+        ):
+            raise ValueError
+    except (OSError, TypeError, ValueError, KeyError) as error:
+        raise TrialSetupError(
+            "Existing trial credential files are missing or inconsistent."
+        ) from error
+    for path in outputs:
+        ignored = subprocess.run(
+            ("git", "check-ignore", "--quiet", "--", str(path)),
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if ignored.returncode:
+            raise TrialSetupError("Role credential paths must be Git-ignored.")
+    _write_role_files(config)
+    print("Role credentials derived; existing trial credentials were unchanged.")
 
 
 def verify_volume() -> None:
@@ -524,12 +616,34 @@ def inspect(job_id: UUID) -> None:
         cursor.close()
 
 
+def inspect_backlog() -> None:
+    """Report only cutover-relevant counts through the restricted runtime role."""
+    from os import environ
+
+    config = {
+        "runtime_user": environ["POSTGRES_USER"],
+        "runtime_password": environ["POSTGRES_PASSWORD"],
+        "database": environ["POSTGRES_DATABASE"],
+    }
+    with _connect(config, role="runtime", database=config["database"]) as connection:
+        queued, running, pending = connection.execute(
+            """SELECT
+                (SELECT count(*) FROM analysis_jobs WHERE state = 'QUEUED'),
+                (SELECT count(*) FROM analysis_jobs WHERE state = 'RUNNING'),
+                (SELECT count(*) FROM analysis_callback_outbox
+                 WHERE delivery_state IN ('PENDING', 'RETRYING'))"""
+        ).fetchone()
+    print(json.dumps({"queued": queued, "running": running, "pending_callbacks": pending}))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("prepare")
     commands.add_parser("derive-service-files")
+    commands.add_parser("derive-role-files")
     commands.add_parser("verify-volume")
+    commands.add_parser("inspect-backlog")
     commands.add_parser("bootstrap")
     query = commands.add_parser("inspect")
     query.add_argument("job_id", type=UUID)
@@ -539,8 +653,12 @@ def main() -> int:
             prepare()
         elif args.command == "derive-service-files":
             derive_service_files()
+        elif args.command == "derive-role-files":
+            derive_role_files()
         elif args.command == "verify-volume":
             verify_volume()
+        elif args.command == "inspect-backlog":
+            inspect_backlog()
         elif args.command == "bootstrap":
             bootstrap()
         else:
