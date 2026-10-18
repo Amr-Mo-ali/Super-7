@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from datetime import timedelta
 from os import environ
 
 from core.config import Settings
 from core.database_config import DatabaseSettings
 from core.logging import configure_logging, get_logger
-from domain.analysis_job_attempt import LeaseDuration, RecoveryBatchSize
-from services.analysis_job_coordinator import CoordinatorTiming
 from services.cleanup_exception_links import remove_primary_backlinks
+from services.durable_worker_composition import (
+    WorkerConfiguration,
+    parse_coordinator_timing,
+    parse_worker_database_timeouts,
+    parse_worker_loop_configuration,
+)
 from services.durable_worker_runtime import DurableWorkerRuntime
 
 
@@ -28,27 +31,29 @@ def create_runtime() -> DurableWorkerRuntime:
     if environ.get("SUPER7_DURABLE_WORKER_ENABLED") != "1":
         raise RuntimeError("Durable worker role is not enabled.")
     settings = Settings.from_environment()
-    timing = CoordinatorTiming(
-        LeaseDuration(timedelta(seconds=float(_required("SUPER7_DURABLE_LEASE_SECONDS")))),
-        heartbeat_seconds=float(_required("SUPER7_DURABLE_HEARTBEAT_SECONDS")),
-        operation_watchdog_seconds=float(_required("SUPER7_DURABLE_WATCHDOG_SECONDS")),
-        jitter_seconds=float(_required("SUPER7_DURABLE_JITTER_SECONDS")),
-        finalization_budget_seconds=float(_required("SUPER7_DURABLE_FINALIZE_SECONDS")),
-        retry_delays_seconds=(
-            float(_required("SUPER7_DURABLE_FINALIZE_RETRY_ONE_SECONDS")),
-            float(_required("SUPER7_DURABLE_FINALIZE_RETRY_TWO_SECONDS")),
-        ),
+    timing = parse_coordinator_timing(_required)
+    database = DatabaseSettings.from_mapping(environ)
+    recovery_batch_size, worker_idle_seconds, model_catalog = parse_worker_loop_configuration(
+        settings, _required
     )
-    raw_model = f"{settings.model_path}+{settings.ball_model_path}+bytetrack"
+    operation_timeout_ms, lock_timeout_ms = parse_worker_database_timeouts(_required)
+    worker_config = WorkerConfiguration(
+        timing,
+        recovery_batch_size,
+        worker_idle_seconds,
+        model_catalog,
+        operation_timeout_ms,
+        lock_timeout_ms,
+    )
     return DurableWorkerRuntime(
         settings=settings,
-        database_settings=DatabaseSettings.from_mapping(environ),
-        timing=timing,
-        recovery_batch_size=RecoveryBatchSize(int(_required("SUPER7_DURABLE_RECOVERY_BATCH"))),
-        worker_idle_seconds=float(_required("SUPER7_DURABLE_WORKER_IDLE_SECONDS")),
-        model_catalog={raw_model: _required("SUPER7_DURABLE_MODEL_ID")},
-        operation_timeout_ms=int(_required("SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS")),
-        lock_timeout_ms=int(_required("SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS")),
+        database_settings=database,
+        timing=worker_config.timing,
+        recovery_batch_size=worker_config.recovery_batch_size,
+        worker_idle_seconds=worker_config.idle_seconds,
+        model_catalog=worker_config.model_catalog,
+        operation_timeout_ms=worker_config.operation_timeout_ms,
+        lock_timeout_ms=worker_config.lock_timeout_ms,
     )
 
 

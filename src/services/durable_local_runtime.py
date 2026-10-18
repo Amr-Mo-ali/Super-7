@@ -5,19 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
-from uuid import uuid4
 
-from adapters.analysis_callback_presentation import failure_callback_snapshot_v1
-from adapters.analysis_result_projection import convert_child_success
 from adapters.hmac_idempotency_lookup_protector import HmacIdempotencyLookupProtector
 from adapters.psycopg_analysis_callback_delivery_repository import (
     PsycopgAnalysisCallbackDeliveryRepository,
 )
-from adapters.psycopg_analysis_job_finalization_repository import (
-    PsycopgAnalysisJobFinalizationRepository,
-)
 from adapters.psycopg_analysis_job_repository import PsycopgAnalysisJobAdmissionRepository
-from adapters.psycopg_analysis_job_worker_repository import PsycopgAnalysisJobWorkerRepository
 from adapters.psycopg_database import (
     PostgresConnectivityProbe,
     PostgresSchemaVersionProbe,
@@ -25,12 +18,12 @@ from adapters.psycopg_database import (
 )
 from core.config import Settings
 from core.database_config import DatabaseSettings
-from domain.analysis_job_attempt import RecoveryBatchSize, WorkerSlotId
+from domain.analysis_job_attempt import RecoveryBatchSize
 from services.analysis_callback_delivery import CallbackTransport
-from services.analysis_job_coordinator import AnalysisJobCoordinator, CoordinatorTiming
+from services.analysis_job_coordinator import CoordinatorTiming
 from services.durable_callback_dispatcher import DurableCallbackDispatcher
 from services.durable_local_admission import DurableLocalAdmission
-from services.durable_worker_loop import DurableWorkerLoop
+from services.durable_worker_composition import WorkerConfiguration, build_worker_graph
 from services.postgres_foundation import DatabaseReadiness, PostgresFoundation
 from services.process_analysis_pool import ProcessAnalysisPool
 
@@ -70,20 +63,6 @@ class DurableLocalRuntime:
             operation_timeout_ms=operation_timeout_ms,
             admission_lock_timeout_ms=lock_timeout_ms,
         )
-        worker_repository = PsycopgAnalysisJobWorkerRepository(
-            pool=self._pool,
-            connection_acquire_timeout_seconds=acquire,
-            operation_timeout_ms=operation_timeout_ms,
-            lock_timeout_ms=lock_timeout_ms,
-            lease_id_factory=uuid4,
-            failure_snapshot_builder=failure_callback_snapshot_v1,
-        )
-        finalizer = PsycopgAnalysisJobFinalizationRepository(
-            pool=self._pool,
-            connection_acquire_timeout_seconds=acquire,
-            operation_timeout_ms=operation_timeout_ms,
-            lock_timeout_ms=lock_timeout_ms,
-        )
         self.admission = DurableLocalAdmission(
             repository=admission,
             protector=HmacIdempotencyLookupProtector(idempotency_hmac_secret),
@@ -93,22 +72,22 @@ class DurableLocalRuntime:
             max_queue_size=settings.max_queued_analyses,
         )
         self._executor = ProcessAnalysisPool(settings)
-        self.coordinator = AnalysisJobCoordinator(
-            worker_repository=worker_repository,
-            finalization_repository=finalizer,
+        graph = build_worker_graph(
+            pool=self._pool,
+            database_settings=database_settings,
             child_executor=self._executor,
-            result_projector=convert_child_success,
-            worker_slot_id=WorkerSlotId(uuid4()),
-            model_catalog=model_catalog,
-            timing=timing,
-        )
-        self.worker = DurableWorkerLoop(
-            coordinator=self.coordinator,
-            recovery_repository=worker_repository,
-            recovery_batch_size=recovery_batch_size,
-            idle_wait_seconds=worker_idle_seconds,
+            configuration=WorkerConfiguration(
+                timing,
+                recovery_batch_size,
+                worker_idle_seconds,
+                model_catalog,
+                operation_timeout_ms,
+                lock_timeout_ms,
+            ),
             logger=logger,
         )
+        self.coordinator = graph.coordinator
+        self.worker = graph.worker
         delivery = PsycopgAnalysisCallbackDeliveryRepository(
             self._pool, connection_acquire_timeout_seconds=acquire
         )

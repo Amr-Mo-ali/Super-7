@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 from os import environ
 
 import httpx as httpx
@@ -11,13 +10,17 @@ from fastapi import FastAPI
 from core.config import Settings
 from core.database_config import DatabaseSettings
 from core.logging import get_logger
-from domain.analysis_job_attempt import LeaseDuration, RecoveryBatchSize
 from main import create_app as compose_app
 from services.analysis_callback_delivery import CallbackTransport
-from services.analysis_job_coordinator import CoordinatorTiming
 from services.callback_service import CallbackService
 from services.durable_callback_transport import create_callback_transport
 from services.durable_local_runtime import DurableLocalRuntime
+from services.durable_worker_composition import (
+    WorkerConfiguration,
+    parse_coordinator_timing,
+    parse_worker_database_timeouts,
+    parse_worker_loop_configuration,
+)
 
 
 def _required(name: str) -> str:
@@ -42,31 +45,36 @@ def create_app() -> FastAPI:
     callback = CallbackService(
         settings.callback_timeout_seconds, get_logger("football_analysis.callback")
     )
-    timing = CoordinatorTiming(
-        LeaseDuration(timedelta(seconds=float(_required("SUPER7_DURABLE_LEASE_SECONDS")))),
-        heartbeat_seconds=float(_required("SUPER7_DURABLE_HEARTBEAT_SECONDS")),
-        operation_watchdog_seconds=float(_required("SUPER7_DURABLE_WATCHDOG_SECONDS")),
-        jitter_seconds=float(_required("SUPER7_DURABLE_JITTER_SECONDS")),
-        finalization_budget_seconds=float(_required("SUPER7_DURABLE_FINALIZE_SECONDS")),
-        retry_delays_seconds=(
-            float(_required("SUPER7_DURABLE_FINALIZE_RETRY_ONE_SECONDS")),
-            float(_required("SUPER7_DURABLE_FINALIZE_RETRY_TWO_SECONDS")),
-        ),
+    timing = parse_coordinator_timing(_required)
+    bearer_secret = _required("SUPER7_APEX_BEARER_SECRET")
+    attempt_limit = int(_required("SUPER7_DURABLE_ATTEMPT_LIMIT"))
+    recovery_batch_size, worker_idle_seconds, model_catalog = parse_worker_loop_configuration(
+        settings, _required
     )
-    raw_model = f"{settings.model_path}+{settings.ball_model_path}+bytetrack"
+    transport = _transport(callback)
+    logger = get_logger("football_analysis.durable_local")
+    operation_timeout_ms, lock_timeout_ms = parse_worker_database_timeouts(_required)
+    worker_config = WorkerConfiguration(
+        timing,
+        recovery_batch_size,
+        worker_idle_seconds,
+        model_catalog,
+        operation_timeout_ms,
+        lock_timeout_ms,
+    )
     runtime = DurableLocalRuntime(
         settings=settings,
         database_settings=database,
-        bearer_secret=_required("SUPER7_APEX_BEARER_SECRET"),
+        bearer_secret=bearer_secret,
         idempotency_hmac_secret=hmac_secret,
-        attempt_limit=int(_required("SUPER7_DURABLE_ATTEMPT_LIMIT")),
-        timing=timing,
-        recovery_batch_size=RecoveryBatchSize(int(_required("SUPER7_DURABLE_RECOVERY_BATCH"))),
-        worker_idle_seconds=float(_required("SUPER7_DURABLE_WORKER_IDLE_SECONDS")),
-        model_catalog={raw_model: _required("SUPER7_DURABLE_MODEL_ID")},
-        callback_transport=_transport(callback),
-        logger=get_logger("football_analysis.durable_local"),
-        operation_timeout_ms=int(_required("SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS")),
-        lock_timeout_ms=int(_required("SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS")),
+        attempt_limit=attempt_limit,
+        timing=worker_config.timing,
+        recovery_batch_size=worker_config.recovery_batch_size,
+        worker_idle_seconds=worker_config.idle_seconds,
+        model_catalog=worker_config.model_catalog,
+        callback_transport=transport,
+        logger=logger,
+        operation_timeout_ms=worker_config.operation_timeout_ms,
+        lock_timeout_ms=worker_config.lock_timeout_ms,
     )
     return compose_app(settings, callback_service=callback, durable_runtime=runtime)
