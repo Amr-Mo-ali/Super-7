@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -26,6 +28,7 @@ from test_analysis_job_worker_repository_contract import (
 )
 from test_analysis_stage_timing_contract import _response as _available_response
 
+from adapters import psycopg_analysis_job_finalization_repository as finalization_adapter
 from adapters.analysis_callback_presentation import callback_payload
 from adapters.analysis_result_projection import convert_child_success
 from adapters.psycopg_analysis_job_finalization_repository import (
@@ -77,6 +80,15 @@ if TYPE_CHECKING:
 
 _RAW_MODEL = "/models/player.pt+/models/ball.pt+bytetrack"
 _SAFE_MODEL = "model_pair_v1"
+
+
+def test_success_repository_does_not_import_worker_repository() -> None:
+    tree = ast.parse(inspect.getsource(finalization_adapter))
+    assert all(
+        node.module != "adapters.psycopg_analysis_job_worker_repository"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    )
 
 
 def _claim() -> WorkerClaim:

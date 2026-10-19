@@ -4,24 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from adapters.psycopg_analysis_job_worker_repository import (
-    _SETTINGS,
+from adapters._analysis_job_persistence import (
     _acquisition_timeout,
-    _close,
     _Connection,
     _eligible,
-    _enter,
     _equivalent,
-    _execute,
-    _exit,
     _insert_terminal_pair,
     _invalid,
-    _io_call,
     _millisecond_timeout,
     _Pool,
     _read_attempt,
     _read_job,
     _resolve,
+    _run_transaction,
     _terminal_rows,
     _transition_job,
 )
@@ -138,28 +133,10 @@ class PsycopgAnalysisJobFinalizationRepository:
         return await self._run(operation)
 
     async def _run[T](self, operation: Callable[[_Connection], Awaitable[T]]) -> T:
-        context = _io_call(lambda: self._pool.connection(timeout_seconds=self._acquire))
-        connection = await _enter(context)
-        primary: BaseException | None = None
-        outcome: T | None = None
-        try:
-            transaction = _io_call(connection.transaction)
-            await _enter(transaction)
-            transaction_primary: BaseException | None = None
-            try:
-                for setting, value in (
-                    ("statement_timeout", self._operation_timeout_ms),
-                    ("lock_timeout", self._lock_timeout_ms),
-                ):
-                    cursor = await _execute(connection, _SETTINGS, (setting, str(value), True))
-                    await _close(cursor, None)
-                outcome = await operation(connection)
-            except BaseException as error:
-                transaction_primary = error
-            await _exit(transaction, transaction_primary)
-        except BaseException as error:
-            primary = error
-        await _exit(context, primary)
-        if outcome is None:
-            _invalid()
-        return outcome
+        return await _run_transaction(
+            self._pool,
+            self._acquire,
+            self._operation_timeout_ms,
+            self._lock_timeout_ms,
+            operation,
+        )
