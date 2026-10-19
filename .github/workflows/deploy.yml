@@ -119,6 +119,12 @@ jobs:
           fi
           test "${#VALIDATED_DEPLOY_SHA}" -eq "$full_sha_length"
 
+      - name: Stop until production runtime roles are reviewed
+        run: |
+          echo "Root Compose has no approved production API, worker, and dispatcher topology."
+          echo "This manual workflow cannot start the disabled image default."
+          exit 1
+
       - name: Pull, build, and restart production service
         uses: appleboy/ssh-action@v1.2.0
         with:

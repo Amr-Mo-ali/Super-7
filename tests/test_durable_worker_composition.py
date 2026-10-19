@@ -127,6 +127,7 @@ def _worker_runtime(
 def test_both_entry_points_pass_the_same_worker_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("SUPER7_LEGACY_IN_MEMORY_ENABLED", raising=False)
     _configure(monkeypatch)
     settings = _settings()
     database = _database()

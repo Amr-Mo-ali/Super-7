@@ -73,7 +73,8 @@ transport, and bounded repository operation/lock timeouts. None has a
 committed credential value or a default durable-enablement environment flag.
 
 The separate `durable_local_main:create_app` ASGI factory requires
-`SUPER7_DURABLE_LOCAL_ENABLED=1`; ordinary `main:app` stays legacy. In
+`SUPER7_DURABLE_LOCAL_ENABLED=1`; `main:app` retains the legacy implementation
+but now requires the explicit development/test opt-in recorded in ADR-012. In
 addition to the existing required `POSTGRES_*` settings and model/video
 settings, the local factory requires:
 

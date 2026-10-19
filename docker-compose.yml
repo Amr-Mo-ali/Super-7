@@ -3,6 +3,8 @@ services:
     build:
       context: .
     image: football-analysis:local
+    # Production roles require a reviewed deployment topology. The image CMD
+    # exits before opening a port when no role command is supplied.
     env_file:
       - .env
     ports:

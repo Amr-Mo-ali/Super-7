@@ -3,6 +3,7 @@
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from os import environ
 from pathlib import Path
 from typing import Protocol
 
@@ -50,11 +51,16 @@ def create_app(
     process_analysis_pool: ProcessPoolLifecycle | None = None,
     durable_runtime: DurableLocalRuntime | None = None,
 ) -> FastAPI:
-    """Compose services; production CV runs in child-owned components via the process pool.
+    """Compose services; legacy CV runs in child-owned components via the process pool.
 
-    Parent analysis overrides remain accepted for existing callers; production analysis
+    Parent analysis overrides remain accepted for existing callers; legacy analysis
     runs through ``process_analysis_pool`` and builds its graph in the child.
     """
+    if durable_runtime is None and environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") != "1":
+        raise RuntimeError(
+            "Legacy in-memory admission is disabled. "
+            "Set SUPER7_LEGACY_IN_MEMORY_ENABLED=1 only for development or tests."
+        )
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
@@ -177,4 +183,19 @@ def create_app(
     return app
 
 
-app = create_app()
+@asynccontextmanager
+async def _disabled_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    raise RuntimeError(
+        "main:app is disabled. Select an explicit durable role, or opt into "
+        "legacy development with SUPER7_LEGACY_IN_MEMORY_ENABLED=1."
+    )
+    yield
+
+
+# Importing main must remain safe for the combined durable factory. Without an
+# explicit legacy opt-in this ASGI object has no admission route and cannot start.
+app = (
+    create_app()
+    if environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") == "1"
+    else FastAPI(lifespan=_disabled_lifespan)
+)

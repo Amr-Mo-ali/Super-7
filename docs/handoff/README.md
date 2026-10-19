@@ -1,5 +1,11 @@
 # Super-7 canonical handoff
 
+Runtime-selection update (2026-10-19): The snapshot below describes the
+earlier in-memory composition. ADR-012 now requires an explicit development/test
+opt-in for `main:app`, and the root image/Compose deployment has no default
+runtime role. The separated durable roles remain opt-in local trial entry
+points; no production topology is approved by this change.
+
 Snapshot: 2026-08-25. Inspected commit: [`75c1682a45a638a9c4140d4314506bb6b1183c30`](../../.git) (`feat(logging): implement scoped log capture for application logging boundary`). This handoff records the checked-out repository, plus production observations explicitly supplied for this handoff. It is not a production certification.
 
 ## Purpose and reading order

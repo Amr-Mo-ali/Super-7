@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from os import environ
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
@@ -63,6 +64,11 @@ def create_router(
     """Create the public admission route without constructing an analysis graph."""
     if durable_admission is not None:
         return create_durable_admission_router(durable_admission, path_resolver, callback_service)
+    if environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") != "1":
+        raise RuntimeError(
+            "Legacy in-memory admission is disabled. "
+            "Set SUPER7_LEGACY_IN_MEMORY_ENABLED=1 only for development or tests."
+        )
     router = APIRouter()
 
     @router.post(

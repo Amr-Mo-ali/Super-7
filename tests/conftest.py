@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+# Explicitly authorize the legacy fixtures used by the existing offline suite.
+# Runtime-selection tests remove this flag in isolated processes.
+os.environ["SUPER7_LEGACY_IN_MEMORY_ENABLED"] = "1"
+
 import psycopg
 import pytest
 from psycopg import sql

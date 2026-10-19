@@ -126,6 +126,7 @@ async def _request(client: httpx.AsyncClient, *, bearer: bool = True) -> httpx.R
 
 
 def test_api_only_admission_and_local_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUPER7_LEGACY_IN_MEMORY_ENABLED", raising=False)
     monkeypatch.setenv("SUPER7_DURABLE_API_ENABLED", "1")
     runtime = _ApiRuntime()
     app = durable_api_main.create_app(

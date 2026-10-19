@@ -1,5 +1,10 @@
 # Production evidence and operations
 
+Runtime-selection update (2026-10-19): The observations and Compose commands
+below are historical evidence. ADR-012 disables the root image and Compose
+default startup pending a reviewed production role topology; these commands
+must not be treated as a current deployment procedure.
+
 ## Evidence boundary
 
 The following are supplied empirical observations, not repository-derived benchmarks. Exact observation dates and deployed commit hashes were not supplied and are therefore **unknown**. Environment: Hostinger VPS, Docker Compose, CPU analysis, 4 vCPU, approximately 15.6 GiB RAM, queue capacity observed as 10, and max active analyses observed as 1.

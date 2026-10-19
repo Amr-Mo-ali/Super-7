@@ -1,6 +1,11 @@
 ﻿# Isolated durable roles: Slice 1 review boundary
 
-This is an inactive, opt-in composition from source commit `6602f8e`. It does not activate separated production deployment or change `main:app`, the combined `durable_local_main:create_app` factory, the Windows launcher, Dockerfiles, or the Compose trial. No fleet admission policy has been approved.
+This is an opt-in composition introduced at source commit `6602f8e`. The roles
+remain available for controlled local trials. ADR-012 subsequently disabled
+default `main:app` admission and image startup; this role separation alone does
+not approve a production topology or fleet admission policy. The combined
+`durable_local_main:create_app` factory and Windows launcher remain available
+for guarded local use and rollback.
 
 | Role | Entry point and opt-in | Owned resources and configuration |
 | --- | --- | --- |

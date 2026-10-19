@@ -34,8 +34,14 @@ uv run pre-commit run --all-files
 ## Run locally
 
 ```powershell
+$env:SUPER7_LEGACY_IN_MEMORY_ENABLED = '1'
 uv run uvicorn main:app --reload
 ```
+
+The in-memory route is for explicit development and tests only. Without this
+flag, `main:app` has no `/analyze` route and fails at startup. The combined
+durable factory and the separated API, worker, and dispatcher have their own
+explicit opt-in settings; see the durable role runbooks.
 
 Send a JSON request containing backend-owned `videoId`, `playerId`, `videoUrl`, and `callbackUrl`
 fields. `videoUrl` must be a safe relative filename within `VIDEO_STORAGE_ROOT` (default:
@@ -62,14 +68,24 @@ Copy-Item .env.example .env
 models/yolo11n.pt
 ```
 
-3. Build and start the service:
+3. The root image and root Compose file have no default runtime role. Building
+   the image is supported, but starting it without an explicit reviewed role
+   command exits with an error. The root Compose file is not a complete durable
+   production deployment. The manual deploy workflow stops before SSH until
+   a production API, worker, and dispatcher topology has been reviewed.
+
+   The separate local trial is documented in
+   [the durable Compose runbook](docs/runbooks/durable-compose-local-trial.md).
+
+   For a local image build only:
 
 ```powershell
-docker compose up --build
+docker compose build
 ```
 
-The service listens on `http://localhost:8000`. The container health check verifies that the
-existing OpenAPI document responds at `/openapi.json`; this does not add a health endpoint.
+The integration Compose file explicitly enables the legacy test runtime. It is
+not a production deployment. When an API role is deliberately launched, its
+health route is `/health/ready`.
 
 ## Layout
 
