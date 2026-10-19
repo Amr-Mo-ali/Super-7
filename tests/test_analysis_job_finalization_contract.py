@@ -432,6 +432,37 @@ def test_invalid_retained_variant_fields_are_rejected_before_io(
     assert repository.calls == 0
 
 
+@pytest.mark.parametrize("kind", ("completed", "ambiguous", "noncompleted"))
+@pytest.mark.parametrize("mutation", ("extra", "missing"))
+def test_retained_top_level_field_sets_are_rejected_before_io(kind: str, mutation: str) -> None:
+    class RecordingRepository:
+        calls = 0
+
+        async def finalize_success(
+            self, *, authority: AttemptAuthority, result: FinalizableAnalysisResult
+        ) -> AnalysisJobCompleted | AnalysisJobCompletionAlreadyApplied | ClaimLost:
+            del authority, result
+            self.calls += 1
+            raise AssertionError("database interaction")
+
+    repository = RecordingRepository()
+    result = _result(kind)
+    projected = json.loads(result.result_json)
+    if mutation == "extra":
+        projected["warnings"] = []
+    else:
+        del projected["selected_player"]
+    with pytest.raises(ValueError, match="Result projection fields are invalid."):
+        asyncio.run(
+            finalize_analysis_job_success(
+                repository=repository,
+                authority=_claim().authority,
+                result=replace(result, result_json=json.dumps(projected).encode()),
+            )
+        )
+    assert repository.calls == 0
+
+
 def test_original_child_duplicate_keys_are_rejected_before_response_coercion() -> None:
     response = _response("noncompleted")
     raw = response.model_dump_json().replace('"status":', '"status":"failed","status":', 1)
@@ -784,6 +815,41 @@ def test_malformed_stored_diagnostics_precede_replay_q(field: str, value: object
     diagnostics = dict(stored_diagnostics)
     diagnostics[field] = value
     projected["diagnostics"] = diagnostics
+    malformed[6] = projected
+    pool = _Pool(
+        [
+            *_settings(),
+            _read("job", [_j(state="COMPLETED")], _JOB),
+            _read(
+                "attempt",
+                [_a(status="SUCCEEDED", lease_expires_at=None, finished_at=finished)],
+                _JOB,
+                2,
+            ),
+            _read("terminal", [tuple(malformed)], _JOB),
+            _read("outbox", [outbox], _JOB),
+        ]
+    )
+    with pytest.raises(Exception) as captured:
+        asyncio.run(_repository(pool).finalize_success(authority=_claim().authority, result=result))
+    assert type(captured.value).__name__ == "AnalysisJobWorkerPersistenceInvariantError"
+    assert "equivalent" not in [label for label, _, _ in pool.value.executions]
+    _done(pool, rollback=True)
+
+
+@pytest.mark.parametrize("mutation", ("extra", "missing"))
+def test_malformed_stored_top_level_fields_precede_replay_q(mutation: str) -> None:
+    result = _result("completed")
+    finished = _NOW + timedelta(seconds=1)
+    terminal, outbox = _terminal_rows(result, finished)
+    malformed = list(terminal)
+    stored_result = malformed[6]
+    assert isinstance(stored_result, dict)
+    projected = dict(stored_result)
+    if mutation == "extra":
+        projected["warnings"] = []
+    else:
+        del projected["selected_player"]
     malformed[6] = projected
     pool = _Pool(
         [

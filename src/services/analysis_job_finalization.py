@@ -13,6 +13,7 @@ from uuid import UUID
 
 from domain.analysis_job import _validate_datetime
 from domain.analysis_job_attempt import AttemptAuthority, _validate_authority
+from services._analysis_result_v1_fields import _result_fields, _validate_retained_result_fields
 from services.analysis_job_worker import (
     AnalysisJobWorkerPersistenceInvariantError,
     AnalysisJobWorkerPersistenceUnavailable,
@@ -34,57 +35,6 @@ AnalysisJobFinalizationPersistenceInvariantError = AnalysisJobWorkerPersistenceI
 
 _ANALYSIS_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _MODEL_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-_VIDEO_HASH = re.compile(r"[0-9a-f]{64}")
-_GIT_HASH = re.compile(r"[0-9a-f]{40}")
-_RETAINED_METADATA = frozenset(
-    {"video_hash", "configuration_profile", "pipeline_version", "git_commit"}
-)
-_RETAINED_DIAGNOSTIC_COUNTS = frozenset(
-    {
-        "frames_processed",
-        "frames_with_player_detections",
-        "total_person_detections",
-        "tracks_created",
-        "valid_candidate_tracks",
-        "ball_detections",
-    }
-)
-_RETAINED_DIAGNOSTIC_QUALITY = frozenset(
-    {
-        "ball_analysis_quality",
-        "interaction_analysis_quality",
-        "movement_analysis_quality",
-        "technical_event_analysis_quality",
-    }
-)
-_COMMON_RESULT = frozenset({"analysis_id", "status", "selected_player"})
-_COMPLETED_RESULT = frozenset(
-    {
-        "video",
-        "tracking",
-        "features",
-        "interaction_analysis",
-        "technical_event_analysis",
-        "pass_detection",
-        "shot_detection",
-        "scores",
-        "player_rating_summary",
-        "result_availability",
-        "unavailability_reason",
-        "analysis_version",
-        "model_version",
-        "processing_time_ms",
-        "pipeline_state",
-        "algorithm_versions",
-        "quality_gates",
-        "analysis_metadata",
-        "diagnostics",
-    }
-)
-_AMBIGUOUS_RESULT = frozenset({"candidate_count"})
-_NONCOMPLETED_RESULT = frozenset(
-    {"candidate_count", "pipeline_state", "quality_gates", "diagnostics"}
-)
 _CALLBACK_FIELDS = frozenset(
     {
         "request_id",
@@ -195,9 +145,7 @@ def _validate_success_input(
     status = projected.get("status")
     if type(status) is not str or projected.get("analysis_id") != str(authority.job_id):
         raise ValueError("Result identity or status is invalid.")
-    expected = _COMMON_RESULT
     if status == "completed":
-        expected |= _COMPLETED_RESULT
         if (
             projected.get("analysis_version") != result.analysis_version
             or projected.get("model_version") != result.model_version
@@ -212,17 +160,8 @@ def _validate_success_input(
         duration = projected.get("processing_time_ms")
         if type(duration) is not int or duration < 0:
             raise ValueError("Pipeline processing time is invalid.")
-    elif status == "ambiguous_target":
-        expected |= _AMBIGUOUS_RESULT
-    elif status in (
-        "invalid_video",
-        "no_players_detected",
-        "no_valid_tracks",
-        "failed",
-        "player_detection_completed_tracking_not_available",
-    ):
-        expected |= _NONCOMPLETED_RESULT
-    else:
+    expected = _result_fields(status)
+    if expected is None:
         raise ValueError("Unsupported projected status.")
     if (
         projected.keys() != expected
@@ -242,49 +181,6 @@ def _validate_success_input(
     ):
         raise ValueError("Callback snapshot identity or status is invalid.")
     return projected, callback
-
-
-def _validate_retained_result_fields(projected: dict[str, object]) -> None:
-    status = projected["status"]
-    if status != "completed" and type(projected["candidate_count"]) is not int:
-        raise ValueError("Retained candidate count is invalid.")
-    if status == "ambiguous_target":
-        return
-    if type(projected["pipeline_state"]) is not str or not isinstance(
-        projected["quality_gates"], dict
-    ):
-        raise ValueError("Retained pipeline state or quality gates are invalid.")
-    if status == "completed" and projected["pipeline_state"] != "COMPLETE":
-        raise ValueError("Retained completed pipeline state is invalid.")
-    diagnostics = projected["diagnostics"]
-    if not isinstance(diagnostics, dict) or diagnostics.keys() != (
-        _RETAINED_DIAGNOSTIC_COUNTS | _RETAINED_DIAGNOSTIC_QUALITY
-    ):
-        raise ValueError("Retained diagnostics shape is invalid.")
-    if any(type(diagnostics[key]) is not int for key in _RETAINED_DIAGNOSTIC_COUNTS):
-        raise ValueError("Retained diagnostic counts are invalid.")
-    if any(
-        diagnostics[key] is not None and type(diagnostics[key]) not in (int, Decimal, float)
-        for key in _RETAINED_DIAGNOSTIC_QUALITY
-    ):
-        raise ValueError("Retained diagnostic quality is invalid.")
-    if status != "completed":
-        return
-    metadata = projected["analysis_metadata"]
-    if not isinstance(metadata, dict) or not metadata.keys() <= _RETAINED_METADATA:
-        raise ValueError("Retained analysis metadata shape is invalid.")
-    for key, value in metadata.items():
-        if key == "video_hash":
-            valid = type(value) is str and _VIDEO_HASH.fullmatch(value) is not None
-        elif key == "git_commit":
-            valid = value is None or type(value) is str and _GIT_HASH.fullmatch(value) is not None
-        else:
-            valid = type(value) is str and _ANALYSIS_VERSION.fullmatch(value) is not None
-        if not valid:
-            raise ValueError("Retained analysis metadata value is invalid.")
-    versions = projected["algorithm_versions"]
-    if not isinstance(versions, dict) or any(type(value) is not str for value in versions.values()):
-        raise ValueError("Retained algorithm versions are invalid.")
 
 
 def _strict_json_object(data: bytes) -> dict[str, object]:

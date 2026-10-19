@@ -5,13 +5,23 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
-from typing import Final
 
 from pydantic import TypeAdapter
 
 from adapters.analysis_callback_presentation import callback_payload
 from domain.analysis_job_attempt import WorkerClaim
 from schemas.analysis import AmbiguousResponse, AnalyzeResponse, CompletedResponse
+from services._analysis_result_v1_fields import (
+    _AMBIGUOUS_FIELDS,
+    _COMMON_FIELDS,
+    _COMPLETED_FIELDS,
+    _DIAGNOSTIC_FIELDS,
+    _GIT_HASH,
+    _METADATA_FIELDS,
+    _NONCOMPLETED_FIELDS,
+    _TOKEN,
+    _VIDEO_HASH,
+)
 from services.analysis_job_finalization import (
     FinalizableAnalysisResult,
     _strict_json_object,
@@ -20,42 +30,6 @@ from services.analysis_job_finalization import (
 from services.process_contracts import ChildAnalysisSuccess
 
 _RESPONSE_ADAPTER: TypeAdapter[AnalyzeResponse] = TypeAdapter(AnalyzeResponse)
-_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-_GIT_HASH = re.compile(r"[0-9a-f]{40}")
-_VIDEO_HASH = re.compile(r"[0-9a-f]{64}")
-_COMMON: Final = ("analysis_id", "status", "selected_player")
-_COMPLETED: Final = (
-    "video",
-    "tracking",
-    "features",
-    "interaction_analysis",
-    "technical_event_analysis",
-    "pass_detection",
-    "shot_detection",
-    "scores",
-    "player_rating_summary",
-    "result_availability",
-    "unavailability_reason",
-    "analysis_version",
-    "model_version",
-    "processing_time_ms",
-    "pipeline_state",
-    "algorithm_versions",
-    "quality_gates",
-)
-_DIAGNOSTICS: Final = (
-    "frames_processed",
-    "frames_with_player_detections",
-    "total_person_detections",
-    "tracks_created",
-    "valid_candidate_tracks",
-    "ball_detections",
-    "ball_analysis_quality",
-    "interaction_analysis_quality",
-    "movement_analysis_quality",
-    "technical_event_analysis_quality",
-)
-_METADATA: Final = ("video_hash", "configuration_profile", "pipeline_version", "git_commit")
 
 
 def convert_child_success(
@@ -87,14 +61,14 @@ def convert_child_success(
     ):
         raise ValueError("Configured model identity is invalid.")
     materialized = response.model_dump(mode="json")
-    selected = {key: materialized[key] for key in _COMMON}
+    selected = {key: materialized[key] for key in _COMMON_FIELDS}
     if isinstance(response, CompletedResponse):
         if (
             response.analysis_version != child.analysis_version
             or response.model_version != child.model_version
         ):
             raise ValueError("Child and completed-result versions disagree.")
-        selected.update({key: materialized[key] for key in _COMPLETED})
+        selected.update({key: materialized[key] for key in _COMPLETED_FIELDS})
         selected["model_version"] = logical_model
         versions = materialized["algorithm_versions"]
         if not isinstance(versions, dict):
@@ -106,10 +80,9 @@ def convert_child_success(
         selected["analysis_metadata"] = _metadata_projection(metadata)
         selected["diagnostics"] = _diagnostics_projection(materialized["diagnostics"])
     elif isinstance(response, AmbiguousResponse):
-        selected["candidate_count"] = materialized["candidate_count"]
+        selected.update({key: materialized[key] for key in _AMBIGUOUS_FIELDS})
     else:
-        for key in ("candidate_count", "pipeline_state", "quality_gates"):
-            selected[key] = materialized[key]
+        selected.update({key: materialized[key] for key in _NONCOMPLETED_FIELDS})
         selected["diagnostics"] = _diagnostics_projection(materialized["diagnostics"])
     result_json = _freeze(selected)
     reconstructed = dict(_strict_json_object(result_json))
@@ -132,7 +105,7 @@ def convert_child_success(
 
 
 def _metadata_projection(metadata: dict[str, object]) -> dict[str, object]:
-    selected = {key: metadata[key] for key in _METADATA if key in metadata}
+    selected = {key: metadata[key] for key in _METADATA_FIELDS if key in metadata}
     for key, value in selected.items():
         if key == "video_hash":
             if type(value) is not str or not _VIDEO_HASH.fullmatch(value):
@@ -148,7 +121,7 @@ def _metadata_projection(metadata: dict[str, object]) -> dict[str, object]:
 def _diagnostics_projection(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("Diagnostics must be an object.")
-    return {key: value[key] for key in _DIAGNOSTICS}
+    return {key: value[key] for key in _DIAGNOSTIC_FIELDS}
 
 
 def _freeze(value: object) -> bytes:

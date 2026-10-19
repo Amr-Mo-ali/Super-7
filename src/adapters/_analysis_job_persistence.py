@@ -29,15 +29,11 @@ from domain.analysis_job_attempt import (
     WorkerSlotId,
     _instant_key,
 )
+from services._analysis_result_v1_fields import _result_fields, _validate_retained_result_fields
 from services.analysis_job_finalization import (
-    _AMBIGUOUS_RESULT,
     _CALLBACK_FIELDS,
-    _COMMON_RESULT,
-    _COMPLETED_RESULT,
-    _NONCOMPLETED_RESULT,
     _strict_json_object,
     _validate_json_value,
-    _validate_retained_result_fields,
 )
 from services.analysis_job_worker import (
     AnalysisJobWorkerPersistenceInvariantError,
@@ -586,16 +582,7 @@ def _validate_terminal_pair(job: _Job, attempt: _Attempt, pair: _TerminalPair) -
             attempt.status is not AttemptStatus.SUCCEEDED
             or result is None
             or result.get("analysis_id") != str(job.payload.job_id)
-            or result.get("status")
-            not in (
-                "completed",
-                "ambiguous_target",
-                "invalid_video",
-                "no_players_detected",
-                "no_valid_tracks",
-                "failed",
-                "player_detection_completed_tracking_not_available",
-            )
+            or _result_fields(result.get("status")) is None
             or payload.keys() != _CALLBACK_FIELDS
             or payload.get("error") is not None
             or not isinstance(payload.get("detailed"), dict)
@@ -604,15 +591,11 @@ def _validate_terminal_pair(job: _Job, attempt: _Attempt, pair: _TerminalPair) -
         ):
             _invalid()
         projected_status = result["status"]
-        expected_fields = _COMMON_RESULT | (
-            _COMPLETED_RESULT
-            if projected_status == "completed"
-            else _AMBIGUOUS_RESULT
-            if projected_status == "ambiguous_target"
-            else _NONCOMPLETED_RESULT
-        )
-        if result.keys() != expected_fields or (
-            projected_status != "completed" and result.get("selected_player") is not None
+        expected_fields = _result_fields(projected_status)
+        if (
+            expected_fields is None
+            or result.keys() != expected_fields
+            or (projected_status != "completed" and result.get("selected_player") is not None)
         ):
             _invalid()
         versions = result.get("algorithm_versions")
