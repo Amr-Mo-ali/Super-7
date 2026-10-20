@@ -49,6 +49,22 @@ def test_confidence_is_taken_from_model_output() -> None:
     assert detector.detect(np.zeros((8, 8, 3), dtype=np.uint8))[0].confidence == 0.9
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_player_adapter_passes_configured_device_without_gpu(device: str) -> None:
+    class RecordingModel(_Model):
+        received_device: object = None
+
+        def predict(self, frame: np.ndarray, **kwargs: object) -> list[object]:
+            self.received_device = kwargs["device"]
+            return super().predict(frame, **kwargs)
+
+    model = RecordingModel()
+    detector = YOLOPlayerDetector(Settings(model_device=device), logging.getLogger("test"), model)
+
+    assert detector.detect(np.zeros((8, 8, 3), dtype=np.uint8))
+    assert model.received_device == device
+
+
 def test_model_loading_is_deferred_until_first_inference(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[None] = []
 
