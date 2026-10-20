@@ -1,8 +1,9 @@
 # Isolated GPU image and compute benchmark
 
-This is an **offline compute-only** experiment based on source revision
-`533319809458a94290266839bfe556794d13e505`. It calls the production
-`initialize_analysis_child` and `run_child_analysis` functions in spawned
+This is an **offline compute-only** experiment prepared against base revision
+`533319809458a94290266839bfe556794d13e505`. Record the actual benchmark
+checkout commit as the source revision for each image and run. It calls the
+production `initialize_analysis_child` and `run_child_analysis` functions in spawned
 processes. It does not start FastAPI, make an Apex request, send a callback,
 download an object, or write a production database. Keep output on a scratch
 volume outside the production checkout. Do not deploy either benchmark image.
@@ -93,21 +94,24 @@ Give the benchmark a separate writable output directory. Avoid using the
 running CPU trial host or its mounts. Record GPU model, driver, host CPU/RAM,
 Docker version, image IDs, and any CPU/memory limits with the results.
 
-From the isolated worktree, the following Bash commands build local images
-without Compose or deployment. Replace the three example host paths first.
+From a checkout containing the benchmark, these Bash commands build local
+images without Compose or deployment. Replace the three example host paths first.
 
 ```bash
-cd /path/to/super7-gpu-benchmark
-test "$(git rev-parse HEAD^)" = 533319809458a94290266839bfe556794d13e505
+cd /path/to/benchmark-checkout
+test -f Dockerfile.gpu-benchmark && test -f scripts/benchmark_gpu_pipeline.py
+test -z "$(git status --porcelain)"
+export BENCH_REV=$(git rev-parse HEAD)
+export BENCH_TAG=$(git rev-parse --short=12 HEAD)
 export BENCH_MODELS=/absolute/path/to/approved-models
 export BENCH_VIDEOS=/absolute/path/to/approved-videos
 export BENCH_OUT=/absolute/path/to/scratch-results
 mkdir -p "$BENCH_OUT"
 test -f "$BENCH_MODELS/player.pt" && test -f "$BENCH_MODELS/ball.pt"
-docker build --pull -f Dockerfile.durable-trial -t super7-cpu-bench:5333198 .
-docker build --pull -f Dockerfile.gpu-benchmark -t super7-gpu-bench:5333198 .
-docker image inspect -f '{{.Id}}' super7-cpu-bench:5333198
-docker image inspect -f '{{.Id}}' super7-gpu-bench:5333198
+docker build --pull -f Dockerfile.durable-trial -t "super7-cpu-bench:$BENCH_TAG" .
+docker build --pull -f Dockerfile.gpu-benchmark -t "super7-gpu-bench:$BENCH_TAG" .
+docker image inspect -f '{{.Id}}' "super7-cpu-bench:$BENCH_TAG"
+docker image inspect -f '{{.Id}}' "super7-gpu-bench:$BENCH_TAG"
 ```
 
 The runner requests shutdown, gives its own worker processes a bounded grace
@@ -163,9 +167,8 @@ necessary CUDA differences may vary. Save image inspection and `nvidia-smi`
 output beside the JSON without secrets.
 
 ```bash
-export BENCH_REV=$(git rev-parse HEAD)
-export CPU_IMAGE_ID=$(docker image inspect -f '{{.Id}}' super7-cpu-bench:5333198)
-export GPU_IMAGE_ID=$(docker image inspect -f '{{.Id}}' super7-gpu-bench:5333198)
+export CPU_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "super7-cpu-bench:$BENCH_TAG")
+export GPU_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "super7-gpu-bench:$BENCH_TAG")
 bench_docker_run "super7-cpu-smoke-$$" --network none --read-only --tmpfs /tmp --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$BENCH_MODELS,dst=/models,readonly" \
   --mount "type=bind,src=$BENCH_VIDEOS,dst=/videos,readonly" \
@@ -174,7 +177,7 @@ bench_docker_run "super7-cpu-smoke-$$" --network none --read-only --tmpfs /tmp -
   -e HOME=/tmp -e YOLO_CONFIG_DIR=/tmp/ultralytics \
   -e VIDEO_STORAGE_ROOT=/videos -e MODEL_PATH=/models/player.pt \
   -e BALL_MODEL_PATH=/models/ball.pt -e DEBUG_ARTIFACTS_ENABLED=false \
-  --entrypoint python super7-cpu-bench:5333198 \
+  --entrypoint python "super7-cpu-bench:$BENCH_TAG" \
   /app/scripts/benchmark_gpu_pipeline.py --device cpu \
   --source-revision "$BENCH_REV" --image-identity "$CPU_IMAGE_ID" \
   --video video_011.mp4 --video video_014.mp4 \
@@ -191,7 +194,7 @@ bench_docker_run "super7-gpu-smoke-$$" --network none --read-only --tmpfs /tmp -
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
   -e VIDEO_STORAGE_ROOT=/videos -e MODEL_PATH=/models/player.pt \
   -e BALL_MODEL_PATH=/models/ball.pt -e DEBUG_ARTIFACTS_ENABLED=false \
-  --entrypoint python super7-gpu-bench:5333198 \
+  --entrypoint python "super7-gpu-bench:$BENCH_TAG" \
   /app/scripts/benchmark_gpu_pipeline.py --device cuda:0 \
   --source-revision "$BENCH_REV" --image-identity "$GPU_IMAGE_ID" \
   --video video_011.mp4 --video video_014.mp4 \
@@ -205,7 +208,7 @@ Run the comparison in either image with the same script and output mount:
 bench_docker_run "super7-compare-smoke-$$" --network none --read-only --tmpfs /tmp --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$BENCH_OUT,dst=/output" \
   --mount "type=bind,src=$PWD/scripts/benchmark_gpu_pipeline.py,dst=/app/scripts/benchmark_gpu_pipeline.py,readonly" \
-  --entrypoint python super7-cpu-bench:5333198 \
+  --entrypoint python "super7-cpu-bench:$BENCH_TAG" \
   /app/scripts/benchmark_gpu_pipeline.py \
   --compare /output/cpu-smoke.json /output/gpu-smoke.json \
   --output /output/smoke-comparison.json
@@ -231,7 +234,7 @@ differences; valid performance evidence does not mean outputs agree.
 ## Startup, subsequent jobs, and bounded concurrency
 
 The smoke commands each start a fresh container. Record an external elapsed
-time around each `docker run` (for example `/usr/bin/time -f '%e'`), and
+time around each `bench_docker_run` (using Bash's `time` keyword), and
 separately time a fresh `docker run ... --help` with the same image and mounts
 as a container/Python startup probe. External elapsed includes Docker,
 imports, hashing, metadata, analysis and exit, so it is **not** pure model
@@ -256,16 +259,16 @@ initialize a model. Record their elapsed seconds as a separate startup/import
 observation, not as the first analysis duration.
 
 ```bash
-/usr/bin/time -f 'cpu_startup_elapsed_seconds=%e' \
-  bench_docker_run "super7-cpu-startup-$$" --network none --read-only --tmpfs /tmp \
+TIMEFORMAT='cpu_startup_elapsed_seconds=%R'
+time bench_docker_run "super7-cpu-startup-$$" --network none --read-only --tmpfs /tmp \
   --user "$(id -u):$(id -g)" \
   --mount "type=bind,src=$PWD/scripts/benchmark_gpu_pipeline.py,dst=/app/scripts/benchmark_gpu_pipeline.py,readonly" \
-  --entrypoint python super7-cpu-bench:5333198 \
+  --entrypoint python "super7-cpu-bench:$BENCH_TAG" \
   /app/scripts/benchmark_gpu_pipeline.py --output /tmp/unused.json --help
-/usr/bin/time -f 'gpu_startup_elapsed_seconds=%e' \
-  bench_docker_run "super7-gpu-startup-$$" --network none --read-only --tmpfs /tmp --gpus all \
+TIMEFORMAT='gpu_startup_elapsed_seconds=%R'
+time bench_docker_run "super7-gpu-startup-$$" --network none --read-only --tmpfs /tmp --gpus all \
   --user "$(id -u):$(id -g)" \
-  --entrypoint python super7-gpu-bench:5333198 \
+  --entrypoint python "super7-gpu-bench:$BENCH_TAG" \
   /app/scripts/benchmark_gpu_pipeline.py --output /tmp/unused.json --help
 ```
 
@@ -302,8 +305,8 @@ bench_stage() {
   local gpu_args=() opt_in=()
   if [ "$device" = cuda:0 ]; then gpu_args=(--gpus all); fi
   if [ "$workers" -gt 1 ]; then opt_in=(--allow-concurrency); fi
-  /usr/bin/time -f "${label}_external_elapsed_seconds=%e" \
-    bench_docker_run "super7-${label}-$$" --network none --read-only --tmpfs /tmp \
+  local TIMEFORMAT="${label}_external_elapsed_seconds=%R"
+  time bench_docker_run "super7-${label}-$$" --network none --read-only --tmpfs /tmp \
     "${gpu_args[@]}" --user "$(id -u):$(id -g)" \
     --mount "type=bind,src=$BENCH_MODELS,dst=/models,readonly" \
     --mount "type=bind,src=$BENCH_VIDEOS,dst=/videos,readonly" \
@@ -319,14 +322,14 @@ bench_stage() {
     --workers "$workers" --jobs "$jobs" --max-seconds 900 "${opt_in[@]}" \
     --output "/output/${label}.json" > "$BENCH_OUT/${label}-stdout.log" 2>&1
 }
-bench_stage cpu-1 super7-cpu-bench:5333198 "$CPU_IMAGE_ID" cpu 1 2
-bench_stage gpu-1 super7-gpu-bench:5333198 "$GPU_IMAGE_ID" cuda:0 1 2
+bench_stage cpu-1 "super7-cpu-bench:$BENCH_TAG" "$CPU_IMAGE_ID" cpu 1 2
+bench_stage gpu-1 "super7-gpu-bench:$BENCH_TAG" "$GPU_IMAGE_ID" cuda:0 1 2
 # Only after stage 1 succeeds with resource headroom:
-bench_stage cpu-2 super7-cpu-bench:5333198 "$CPU_IMAGE_ID" cpu 2 4
-bench_stage gpu-2 super7-gpu-bench:5333198 "$GPU_IMAGE_ID" cuda:0 2 4
+bench_stage cpu-2 "super7-cpu-bench:$BENCH_TAG" "$CPU_IMAGE_ID" cpu 2 4
+bench_stage gpu-2 "super7-gpu-bench:$BENCH_TAG" "$GPU_IMAGE_ID" cuda:0 2 4
 # Only after stage 2 succeeds with resource headroom:
-bench_stage cpu-4 super7-cpu-bench:5333198 "$CPU_IMAGE_ID" cpu 4 8
-bench_stage gpu-4 super7-gpu-bench:5333198 "$GPU_IMAGE_ID" cuda:0 4 8
+bench_stage cpu-4 "super7-cpu-bench:$BENCH_TAG" "$CPU_IMAGE_ID" cpu 4 8
+bench_stage gpu-4 "super7-gpu-bench:$BENCH_TAG" "$GPU_IMAGE_ID" cuda:0 4 8
 ```
 
 The JSON result schema includes source/image identity, CPU/GPU device

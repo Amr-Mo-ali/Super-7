@@ -21,7 +21,7 @@ from importlib.metadata import distributions
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from time import monotonic, perf_counter
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import cv2
@@ -30,6 +30,7 @@ import psutil  # type: ignore[import-untyped]
 from core.config import Settings
 from core.logging import get_logger
 from services import process_entrypoint
+from services.player_tracker import DetectionOnlyPlayerTracker
 from services.process_contracts import (
     ChildAnalysisFailure,
     ChildAnalysisRequest,
@@ -79,7 +80,7 @@ def _observed_execution_devices(observed: dict[int, set[str]]) -> dict[str, dict
     runtime = process_entrypoint._runtime
     if runtime is None:
         raise BenchmarkDeviceError("analysis child runtime is unavailable for device verification")
-    tracker = runtime.components.tracker
+    tracker = cast(DetectionOnlyPlayerTracker, runtime.components.tracker)
     devices: dict[str, dict[str, Any]] = {}
     for name, detector in (("player", tracker._detector), ("ball", tracker._ball_detector)):
         model = getattr(detector, "_model", None)
