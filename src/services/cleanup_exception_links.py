@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 
 def remove_primary_backlinks(cleanup: BaseException, primary: BaseException) -> BaseException:
     """Keep independent cleanup links while preventing a path back to primary."""
@@ -36,3 +38,21 @@ def remove_primary_backlinks(cleanup: BaseException, primary: BaseException) -> 
         if isinstance(error, BaseExceptionGroup):
             pending.extend(error.exceptions)
     return cleanup
+
+
+def raise_after_cleanup(primary: BaseException, cleanup: BaseException) -> NoReturn:
+    """Keep the exact primary unless cleanup is fatal; retain links without cycles."""
+    if cleanup is primary:
+        raise primary
+    cleanup = remove_primary_backlinks(cleanup, primary)
+    if not isinstance(cleanup, Exception) or isinstance(cleanup, MemoryError):
+        previous_cause = cleanup.__cause__
+        if previous_cause is not None and previous_cause is not primary:
+            raise cleanup from BaseExceptionGroup(
+                "Fatal cleanup and primary causes.", [previous_cause, primary]
+            )
+        raise cleanup from primary
+    previous_cause = primary.__cause__
+    if previous_cause is not None and previous_cause is not cleanup:
+        cleanup = BaseExceptionGroup("Primary and cleanup causes.", [previous_cause, cleanup])
+    raise primary from cleanup

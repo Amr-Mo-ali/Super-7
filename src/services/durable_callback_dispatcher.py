@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import Protocol
 from uuid import UUID
 
@@ -12,10 +13,19 @@ from services.analysis_callback_delivery import (
     CallbackTransport,
     deliver_one,
 )
+from services.cleanup_exception_links import raise_after_cleanup
 
 
 class _DueEvents(CallbackDeliveryRepository, Protocol):
     async def next_due_event_id(self) -> UUID | None: ...
+
+
+class CallbackDispatchOwnershipUnavailable(RuntimeError):
+    """The singleton dispatch session is absent, lost, or uncertain."""
+
+
+class CallbackDispatchOwnership(Protocol):
+    async def verify(self) -> None: ...
 
 
 class DurableCallbackDispatcher:
@@ -26,15 +36,18 @@ class DurableCallbackDispatcher:
         *,
         repository: _DueEvents,
         transport: CallbackTransport,
+        ownership: CallbackDispatchOwnership,
         logger: logging.Logger,
     ) -> None:
         self._repository = repository
         self._transport = transport
+        self._ownership = ownership
         self._logger = logger
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._failure: BaseException | None = None
         self._last_delivery_error: Exception | None = None
+        self._ownership_uncertain = False
 
     @property
     def failure(self) -> BaseException | None:
@@ -74,6 +87,7 @@ class DurableCallbackDispatcher:
     async def _run(self) -> None:
         try:
             while not self._stop.is_set():
+                await self._ownership.verify()
                 event_id = await self._repository.next_due_event_id()
                 if event_id is None:
                     await self._wait(1)
@@ -83,12 +97,17 @@ class DurableCallbackDispatcher:
                 try:
                     await deliver_one(
                         repository=self._repository,
-                        transport=self._transport,
+                        transport=self._send_owned,
                         event_id=event_id,
                         timeout_seconds=10,
                         retry_delay_ms=30_000,
+                        on_transport_failure=lambda _: self._ownership_uncertain,
                     )
+                except CallbackDispatchOwnershipUnavailable:
+                    raise
                 except Exception as error:
+                    if self._ownership_uncertain:
+                        raise
                     # An ambiguous delivery-state write must not immediately resend.
                     self._last_delivery_error = error
                     self._logger.error(
@@ -98,6 +117,31 @@ class DurableCallbackDispatcher:
                     await self._wait(30)
         except BaseException as error:
             self._failure = error
+            raise
+
+    async def _send_owned(
+        self, url: str, body: bytes, headers: Mapping[str, str], timeout: float
+    ) -> int:
+        # Discovery and load may have waited on a pooled connection. Check the
+        # dedicated session immediately before HTTP and after its response.
+        await self._verify_owned()
+        try:
+            status = await self._transport(url, body, headers, timeout)
+        except BaseException as primary:
+            try:
+                await self._verify_owned()
+            except BaseException as cleanup:
+                raise_after_cleanup(primary, cleanup)
+            raise
+        else:
+            await self._verify_owned()
+            return status
+
+    async def _verify_owned(self) -> None:
+        try:
+            await self._ownership.verify()
+        except BaseException:
+            self._ownership_uncertain = True
             raise
 
     def _observe_completion(self, task: asyncio.Task[None]) -> None:

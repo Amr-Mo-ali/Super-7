@@ -85,6 +85,7 @@ async def deliver_one(
     event_id: UUID,
     timeout_seconds: float,
     retry_delay_ms: int,
+    on_transport_failure: Callable[[OSError | TimeoutError], bool] | None = None,
 ) -> DeliveryOutcome:
     """Make at most one HTTP attempt; never hold a repository transaction across it.
 
@@ -118,7 +119,9 @@ async def deliver_one(
             transport(event.callback_url, body, headers, float(timeout_seconds)),
             timeout=float(timeout_seconds),
         )
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError) as error:
+        if on_transport_failure is not None and on_transport_failure(error):
+            raise
         status = 0
     if type(status) is not int or not 0 <= status <= 599:
         raise ValueError("Callback transport returned an invalid status.")

@@ -20,6 +20,7 @@ import durable_api_main
 import durable_dispatcher_main
 import durable_worker_main
 from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnavailable
+from adapters.psycopg_callback_dispatch_ownership import PsycopgCallbackDispatchOwnership
 from core.config import Settings
 from services.analysis_job_coordinator import AnalysisJobCoordinator
 from services.callback_service import CallbackService
@@ -32,6 +33,7 @@ from services.durable_local_admission import (
     DurableAdmissionInvalidKey,
     DurableAdmissionUnauthorized,
 )
+from services.durable_local_runtime import DurableLocalRuntime
 from services.durable_worker_loop import DurableWorkerLoop
 from services.durable_worker_runtime import DurableWorkerRuntime
 from services.postgres_foundation import PostgresFoundation
@@ -278,6 +280,20 @@ class _Foundation:
         return _Readiness(True)
 
 
+class _DispatchOwnership:
+    def __init__(self, events: list[str], *, fail_acquire: bool = False) -> None:
+        self.events = events
+        self.fail_acquire = fail_acquire
+
+    async def acquire(self) -> None:
+        self.events.append("ownership_acquire")
+        if self.fail_acquire:
+            raise RuntimeError("dispatcher already owned")
+
+    async def close(self) -> None:
+        self.events.append("ownership_close")
+
+
 class _OwnedActor:
     def __init__(
         self, events: list[str], *, fail_start: bool = False, fail_stop: bool = False
@@ -373,13 +389,137 @@ def test_dispatcher_runtime_settles_database_after_actor_start_failure() -> None
     events: list[str] = []
     runtime = object.__new__(DurableDispatcherRuntime)
     runtime._foundation = cast("PostgresFoundation", _Foundation(events))
+    runtime._ownership = cast("PsycopgCallbackDispatchOwnership", _DispatchOwnership(events))
     runtime.dispatcher = cast("DurableCallbackDispatcher", _OwnedActor(events, fail_start=True))
     runtime.started = False
 
     async def run() -> None:
         with pytest.raises(ValueError, match="actor start failed"):
             await runtime.start()
-        assert events == ["db_start", "actor_start", "actor_stop", "db_close"]
+        assert events == [
+            "db_start",
+            "ownership_acquire",
+            "actor_start",
+            "actor_stop",
+            "ownership_close",
+            "db_close",
+        ]
+        assert not runtime.ready
+
+    asyncio.run(run())
+
+
+def test_dispatcher_runtime_releases_ownership_before_pool_on_graceful_stop() -> None:
+    events: list[str] = []
+    runtime = object.__new__(DurableDispatcherRuntime)
+    runtime._foundation = cast("PostgresFoundation", _Foundation(events))
+    runtime._ownership = cast("PsycopgCallbackDispatchOwnership", _DispatchOwnership(events))
+    runtime.dispatcher = cast("DurableCallbackDispatcher", _OwnedActor(events))
+    runtime.started = False
+
+    async def run() -> None:
+        await runtime.start()
+        await runtime.stop()
+        assert events == [
+            "db_start",
+            "ownership_acquire",
+            "actor_start",
+            "actor_stop",
+            "ownership_close",
+            "db_close",
+        ]
+
+    asyncio.run(run())
+
+
+def test_dispatcher_runtime_competing_start_cleans_up_without_starting_actor() -> None:
+    events: list[str] = []
+    runtime = object.__new__(DurableDispatcherRuntime)
+    runtime._foundation = cast("PostgresFoundation", _Foundation(events))
+    runtime._ownership = cast(
+        "PsycopgCallbackDispatchOwnership", _DispatchOwnership(events, fail_acquire=True)
+    )
+    runtime.dispatcher = cast("DurableCallbackDispatcher", _OwnedActor(events))
+    runtime.started = False
+
+    async def run() -> None:
+        with pytest.raises(RuntimeError, match="dispatcher already owned"):
+            await runtime.start()
+        assert events == [
+            "db_start",
+            "ownership_acquire",
+            "actor_stop",
+            "ownership_close",
+            "db_close",
+        ]
+        assert not runtime.ready
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failed_stage", ["ownership", "executor", "worker", "dispatcher"])
+def test_combined_runtime_acquires_before_actors_and_cleans_failed_start(
+    failed_stage: str,
+) -> None:
+    events: list[str] = []
+    failure = RuntimeError(f"{failed_stage} start failed")
+
+    class StageOwnership(_DispatchOwnership):
+        async def acquire(self) -> None:
+            events.append("ownership_acquire")
+            if failed_stage == "ownership":
+                raise failure
+
+    class StageExecutor(_Executor):
+        def start(self) -> None:
+            events.append("pool_start")
+            if failed_stage == "executor":
+                raise failure
+
+    class StageActor:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.running = False
+            self.failure: BaseException | None = None
+
+        def start(self) -> None:
+            events.append(f"{self.name}_start")
+            if failed_stage == self.name:
+                raise failure
+            self.running = True
+
+        async def stop(self) -> None:
+            events.append(f"{self.name}_stop")
+            self.running = False
+
+    runtime = object.__new__(DurableLocalRuntime)
+    runtime._foundation = cast("PostgresFoundation", _Foundation(events))
+    runtime._dispatch_ownership = cast("PsycopgCallbackDispatchOwnership", StageOwnership(events))
+    runtime._executor = cast("ProcessAnalysisPool", StageExecutor(events))
+    runtime.worker = cast("DurableWorkerLoop", StageActor("worker"))
+    runtime.dispatcher = cast("DurableCallbackDispatcher", StageActor("dispatcher"))
+    runtime.coordinator = cast("AnalysisJobCoordinator", SimpleNamespace(outstanding_tasks=set()))
+    runtime._started = False
+
+    async def run() -> None:
+        with pytest.raises(RuntimeError) as observed:
+            await runtime.start()
+        assert observed.value is failure
+        starts = ["db_start", "ownership_acquire"]
+        if failed_stage != "ownership":
+            starts.append("pool_start")
+        if failed_stage in {"worker", "dispatcher"}:
+            starts.append("worker_start")
+        if failed_stage == "dispatcher":
+            starts.append("dispatcher_start")
+        assert events == [
+            *starts,
+            "dispatcher_stop",
+            "ownership_close",
+            "worker_stop",
+            "pool_stop",
+            "db_close",
+        ]
         assert not runtime.ready
 
     asyncio.run(run())

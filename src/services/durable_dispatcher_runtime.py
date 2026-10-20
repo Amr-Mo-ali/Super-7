@@ -5,6 +5,7 @@ from __future__ import annotations
 from adapters.psycopg_analysis_callback_delivery_repository import (
     PsycopgAnalysisCallbackDeliveryRepository,
 )
+from adapters.psycopg_callback_dispatch_ownership import PsycopgCallbackDispatchOwnership
 from adapters.psycopg_database import (
     PostgresConnectivityProbe,
     PostgresSchemaVersionProbe,
@@ -13,6 +14,7 @@ from adapters.psycopg_database import (
 from core.database_config import DatabaseSettings
 from core.logging import get_logger
 from services.analysis_callback_delivery import CallbackTransport
+from services.cleanup_exception_links import raise_after_cleanup
 from services.durable_callback_dispatcher import DurableCallbackDispatcher
 from services.postgres_foundation import DatabaseReadiness, PostgresFoundation
 
@@ -36,20 +38,25 @@ class DurableDispatcherRuntime:
             pool,
             connection_acquire_timeout_seconds=database_settings.pool.acquire_timeout_seconds,
         )
+        self._ownership = PsycopgCallbackDispatchOwnership(database_settings)
         self.dispatcher = DurableCallbackDispatcher(
-            repository=delivery, transport=callback_transport, logger=logger
+            repository=delivery,
+            transport=callback_transport,
+            ownership=self._ownership,
+            logger=logger,
         )
         self.started = False
 
     async def start(self) -> None:
         await self._foundation.start()
         try:
+            await self._ownership.acquire()
             self.dispatcher.start()
         except BaseException as primary:
             try:
                 await self.stop()
             except BaseException as cleanup:
-                raise primary from cleanup
+                raise_after_cleanup(primary, cleanup)
             raise
         self.started = True
 
@@ -60,6 +67,13 @@ class DurableDispatcherRuntime:
             await self.dispatcher.stop()
         except BaseException as caught:
             error = caught
+        try:
+            await self._ownership.close()
+        except BaseException as cleanup:
+            if error is None:
+                error = cleanup
+            else:
+                error = BaseExceptionGroup("Durable dispatcher cleanup failed.", [error, cleanup])
         try:
             await self._foundation.close()
         except BaseException as cleanup:

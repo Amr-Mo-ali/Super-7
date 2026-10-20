@@ -17,4 +17,11 @@ Each non-HTTP role reports successful startup through a role-specific log event 
 
 The API exposes local `/health/live`, `/health/ready`, and `/health`. Readiness checks only its lifespan and database/schema probe. It does not require a worker, dispatcher, callback receiver, video mount, or aggregate fleet gate. Durable admission may remain bounded during a worker or dispatcher outage; the outage-admission choice is unresolved and needs explicit approval before production activation.
 
-**Deploy exactly one dispatcher process.** This slice does not enforce singleton ownership across hosts and adds no election, delivery lease, or retry exhaustion. Multiple independent dispatchers would risk concurrent delivery. Separated production activation still needs an approved deployment topology, object-input contract and bounded worker materialization, dispatcher ownership policy, and operational shutdown/supervision decisions. The current `videoUrl` contract remains a filename; object storage access is a later slice.
+The dispatcher now requires the database session ownership in ADR-013 before
+reading due events. A competing process fails startup; deployment supervision
+must treat that as an ownership conflict. This does not add event leasing,
+retry exhaustion, or exactly-once delivery. Separated production activation
+still needs an approved deployment topology, object-input contract, bounded
+worker materialization, and operational shutdown/supervision decisions. The
+current `videoUrl` contract remains a filename; object storage access is a
+later slice.

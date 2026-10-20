@@ -11,6 +11,7 @@ from adapters.psycopg_analysis_callback_delivery_repository import (
     PsycopgAnalysisCallbackDeliveryRepository,
 )
 from adapters.psycopg_analysis_job_repository import PsycopgAnalysisJobAdmissionRepository
+from adapters.psycopg_callback_dispatch_ownership import PsycopgCallbackDispatchOwnership
 from adapters.psycopg_database import (
     PostgresConnectivityProbe,
     PostgresSchemaVersionProbe,
@@ -21,6 +22,7 @@ from core.database_config import DatabaseSettings
 from domain.analysis_job_attempt import RecoveryBatchSize
 from services.analysis_callback_delivery import CallbackTransport
 from services.analysis_job_coordinator import CoordinatorTiming
+from services.cleanup_exception_links import raise_after_cleanup
 from services.durable_callback_dispatcher import DurableCallbackDispatcher
 from services.durable_local_admission import DurableLocalAdmission
 from services.durable_worker_composition import WorkerConfiguration, build_worker_graph
@@ -91,9 +93,11 @@ class DurableLocalRuntime:
         delivery = PsycopgAnalysisCallbackDeliveryRepository(
             self._pool, connection_acquire_timeout_seconds=acquire
         )
+        self._dispatch_ownership = PsycopgCallbackDispatchOwnership(database_settings)
         self.dispatcher = DurableCallbackDispatcher(
             repository=delivery,
             transport=callback_transport,
+            ownership=self._dispatch_ownership,
             logger=logger,
         )
         self._started = False
@@ -101,6 +105,7 @@ class DurableLocalRuntime:
     async def start(self) -> None:
         await self._foundation.start()
         try:
+            await self._dispatch_ownership.acquire()
             self._executor.start()
             self.worker.start()
             self.dispatcher.start()
@@ -108,11 +113,7 @@ class DurableLocalRuntime:
             try:
                 await self.stop()
             except BaseException as cleanup:
-                if isinstance(cleanup, Exception):
-                    if cleanup.__context__ is primary:
-                        cleanup.__context__ = None
-                    raise primary from cleanup
-                raise cleanup from primary
+                raise_after_cleanup(primary, cleanup)
             raise
         self._started = True
 
@@ -123,7 +124,12 @@ class DurableLocalRuntime:
         confer a production hard-stop or supervisor termination guarantee.
         """
         errors: list[BaseException] = []
-        for operation in (self.dispatcher.stop, self.worker.stop, self._executor.shutdown):
+        for operation in (
+            self.dispatcher.stop,
+            self._dispatch_ownership.close,
+            self.worker.stop,
+            self._executor.shutdown,
+        ):
             try:
                 await operation()
             except BaseException as error:
