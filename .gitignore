@@ -1,5 +1,6 @@
 .env
 .local-durable/
+.local-r2/
 .local-durable-compose/
 .venv/
 .uv-cache/

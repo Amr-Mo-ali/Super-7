@@ -9,11 +9,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
+import httpx
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+import durable_api_main
 import durable_dispatcher_main
 import main
 from api.routes import create_router
@@ -21,6 +24,7 @@ from core.config import Settings
 from core.database_config import DatabaseSettings
 from services.analysis_queue import AnalysisQueue
 from services.callback_service import CallbackService
+from services.durable_api_runtime import DurableApiRuntime
 from services.durable_local_runtime import DurableLocalRuntime
 from services.video_path_resolver import VideoPathResolver
 
@@ -145,6 +149,64 @@ def test_combined_durable_composition_starts_without_legacy_opt_in(
     asyncio.run(run())
     assert not runtime.started
     assert "/analyze" in app.openapi()["paths"]
+    assert {"/docs", "/redoc", "/openapi.json"}.isdisjoint(
+        {getattr(route, "path", None) for route in app.routes}
+    )
+
+
+def test_separated_durable_api_keeps_admission_and_health_without_docs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPER7_DURABLE_API_ENABLED", "1")
+    runtime = _DurableRuntime()
+    app = durable_api_main.create_app(runtime=cast(DurableApiRuntime, runtime))
+    paths = set(app.openapi()["paths"])
+    assert {"/analyze", "/health", "/health/live", "/health/ready"} <= paths
+    assert {"/docs", "/redoc", "/openapi.json"}.isdisjoint(
+        {getattr(route, "path", None) for route in app.routes}
+    )
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                assert (await client.get("/health/live")).status_code == 200
+                assert (await client.get("/docs")).status_code == 404
+                assert (await client.get("/redoc")).status_code == 404
+                assert (await client.get("/openapi.json")).status_code == 404
+
+    asyncio.run(scenario())
+
+
+def test_combined_r2_durable_readiness_does_not_require_local_video_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(FLAG, raising=False)
+
+    class RemoteRuntime(_DurableRuntime):
+        remote_video = True
+        worker = SimpleNamespace(running=True, failure=None)
+        dispatcher = SimpleNamespace(running=True, failure=None)
+
+        async def database_readiness(self) -> SimpleNamespace:
+            return SimpleNamespace(ready=True)
+
+    absent = tmp_path / "no-local-video-mount"
+    app = main.create_app(
+        Settings(video_storage_root=str(absent)),
+        durable_runtime=cast(DurableLocalRuntime, RemoteRuntime()),
+    )
+
+    async def scenario() -> None:
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                assert (await client.get("/health/live")).status_code == 200
+                assert (await client.get("/health/ready")).status_code == 200
+
+    asyncio.run(scenario())
 
 
 def test_dispatcher_factory_does_not_require_legacy_opt_in(
@@ -177,6 +239,7 @@ def test_image_and_compose_commands_fail_closed_or_select_test_role() -> None:
 
     root = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     assert "command" not in root["services"]["football-analysis"]
+    assert "ports" not in root["services"]["football-analysis"]
     integration = yaml.safe_load(
         (ROOT / "docker-compose.integration.yml").read_text(encoding="utf-8")
     )

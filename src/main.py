@@ -102,7 +102,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
-            resolved_path_resolver.validate_storage_root()
+            if durable_runtime is None or not getattr(durable_runtime, "remote_video", False):
+                resolved_path_resolver.validate_storage_root()
             if durable_runtime is None:
                 resolved_process_pool.start()
                 await worker.start()
@@ -149,6 +150,9 @@ def create_app(
         title="Football Analysis MVP",
         version=resolved_settings.analysis_version,
         lifespan=lifespan,
+        docs_url=None if durable_runtime is not None else "/docs",
+        redoc_url=None if durable_runtime is not None else "/redoc",
+        openapi_url=None if durable_runtime is not None else "/openapi.json",
     )
     app.state.admission_controller = resolved_lifecycle.admission
     app.state.analysis_executor = resolved_lifecycle.executor
@@ -197,5 +201,5 @@ async def _disabled_lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = (
     create_app()
     if environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") == "1"
-    else FastAPI(lifespan=_disabled_lifespan)
+    else FastAPI(lifespan=_disabled_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 )

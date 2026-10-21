@@ -8,7 +8,7 @@ missing-video evidence has a durable failure mapping.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from math import isfinite
 from time import monotonic
@@ -56,6 +56,17 @@ from services.process_contracts import (
 class _ChildExecutor(Protocol):
     async def execute_enveloped(
         self, request: ChildAnalysisRequest
+    ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled: ...
+
+
+class _GuardedChildExecutor(Protocol):
+    abort_on_lease_loss: bool
+
+    async def execute_enveloped(
+        self,
+        request: ChildAnalysisRequest,
+        *,
+        before_child: Callable[[], Awaitable[None]],
     ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled: ...
 
 
@@ -193,12 +204,20 @@ class AnalysisJobCoordinator:
                 claim.job.video_reference,
                 analysis_version=claim.job.analysis_version,
             )
-            child = self._track(self._child_executor.execute_enveloped(request))
+            if getattr(self._child_executor, "abort_on_lease_loss", False):
+                operation = cast(_GuardedChildExecutor, self._child_executor).execute_enveloped(
+                    request, before_child=lambda: self._renew(claim.authority)
+                )
+            else:
+                operation = self._child_executor.execute_enveloped(request)
+            child = self._track(operation)
             heartbeat = self._track(self._heartbeat(claim.authority, stop_heartbeat))
             finished, _ = await asyncio.wait(
                 {child, heartbeat}, return_when=asyncio.FIRST_COMPLETED
             )
             if heartbeat in finished and child not in finished:
+                if getattr(self._child_executor, "abort_on_lease_loss", False):
+                    child.cancel()
                 await heartbeat
                 raise CoordinatorUnresolved("Heartbeat stopped before child completion.")
             child_outcome = await child

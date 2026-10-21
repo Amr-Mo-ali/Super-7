@@ -105,10 +105,14 @@ class VideoPathResolver:
         if (
             path.is_absolute()
             or PureWindowsPath(filename).is_absolute()
+            or PureWindowsPath(filename).drive
             or "/" in filename
             or "\\" in filename
+            or any(ord(character) < 32 or ord(character) == 127 for character in filename)
+            or any(character in filename for character in ":?#")
             or filename in {".", ".."}
             or ".." in path.parts
+            or filename != path.name
         ):
             raise VideoPathResolutionError("Video filename must be a safe relative filename.")
         if path.suffix.lower() not in _ALLOWED_SUFFIXES:

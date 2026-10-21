@@ -67,12 +67,17 @@ async def _ready_checks(
     upload_directory = Path(gettempdir())
     storage = path_resolver.storage_root_checks()
     if durable_runtime is not None:
-        return {
+        checks = {
             "durable_worker": durable_runtime.worker.running
             and durable_runtime.worker.failure is None,
             "durable_dispatcher": durable_runtime.dispatcher.running
             and durable_runtime.dispatcher.failure is None,
             "database": (await durable_runtime.database_readiness()).ready,
+        }
+        if getattr(durable_runtime, "remote_video", False):
+            return checks
+        return {
+            **checks,
             "video_storage_exists": storage["exists"],
             "video_storage_readable": storage["readable"],
             "video_storage_accessible": storage["accessible"],

@@ -21,6 +21,7 @@ from domain.analysis_job_attempt import LeaseDuration, RecoveryBatchSize, Worker
 from services.analysis_job_coordinator import AnalysisJobCoordinator, CoordinatorTiming
 from services.durable_worker_loop import DurableWorkerLoop
 from services.process_analysis_pool import ProcessAnalysisPool
+from services.r2_video_input import R2VideoExecutor, R2VideoSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +79,7 @@ def build_worker_graph(
     child_executor: ProcessAnalysisPool,
     configuration: WorkerConfiguration,
     logger: logging.Logger,
+    r2_video: R2VideoSettings | None = None,
 ) -> WorkerGraph:
     """Wire a fresh slot against caller-owned pool and executor."""
     acquire = database_settings.pool.acquire_timeout_seconds
@@ -98,7 +100,7 @@ def build_worker_graph(
     coordinator = AnalysisJobCoordinator(
         worker_repository=worker_repository,
         finalization_repository=finalizer,
-        child_executor=child_executor,
+        child_executor=R2VideoExecutor(child_executor, r2_video) if r2_video else child_executor,
         result_projector=convert_child_success,
         worker_slot_id=WorkerSlotId(uuid4()),
         model_catalog=configuration.model_catalog,

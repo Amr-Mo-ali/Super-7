@@ -152,6 +152,36 @@ def test_child_success_failure_cancellation_and_parent_conversion(
     ) == ParentCancelled("analysis-1")
 
 
+def test_staged_child_uses_parent_owned_file_and_local_requests_still_use_storage_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    staged = tmp_path / "staged" / "safe.mp4"
+    staged.parent.mkdir()
+    staged.write_bytes(b"r2 bytes")
+    observed: list[Path] = []
+
+    def successful(*args: object) -> NonCompletedResponse:
+        observed.extend(value for value in args if isinstance(value, Path))
+        return _response("analysis-1")
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", successful)
+    staged_request = ChildAnalysisRequest(
+        "analysis-1", "video-1", "player-1", "safe.mp4", staged_video_path=str(staged)
+    )
+    assert isinstance(run_child_analysis(staged_request), ChildAnalysisSuccess)
+    assert observed == [staged.resolve()]
+    observed.clear()
+    assert isinstance(run_child_analysis(_request()), ChildAnalysisSuccess)
+    assert observed == [(Path(settings.video_storage_root) / "safe.mp4").resolve()]
+
+    with pytest.raises(ValueError, match="staged video"):
+        ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", staged_video_path="relative/safe.mp4"
+        )
+
+
 def test_only_missing_video_at_resolution_carries_typed_evidence(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     initialize_analysis_child(settings)

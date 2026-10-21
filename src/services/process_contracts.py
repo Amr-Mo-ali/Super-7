@@ -29,12 +29,17 @@ class ChildAnalysisRequest:
     video_reference: str
     schema_version: int = CHILD_ANALYSIS_SCHEMA_VERSION
     analysis_version: str | None = None
+    staged_video_path: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.analysis_id, self.video_id, self.player_id):
             if not _SAFE_ID.fullmatch(value):
                 raise ValueError("child analysis identifiers must be safe")
         _validate_reference(self.video_reference)
+        if self.staged_video_path is not None:
+            staged = Path(self.staged_video_path)
+            if not staged.is_absolute() or staged.name != self.video_reference:
+                raise ValueError("staged video must be an absolute path to the requested filename")
         _validate_version(self.schema_version)
         if self.analysis_version is not None and (
             type(self.analysis_version) is not str

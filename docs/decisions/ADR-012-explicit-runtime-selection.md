@@ -24,3 +24,13 @@ dispatcher topology, caller/rollback compatibility, role credentials, and
 exclusive actor operation. The local trial Compose file is not that topology.
 No request or callback schema, score, persistence transaction, worker fence,
 or process count changes in this decision.
+
+Follow-up local surface review: the separated and combined durable API roles
+disable FastAPI `/docs`, `/redoc`, and `/openapi.json`; required `/analyze` and
+health routes remain. The disabled module-level `main:app` also has no docs
+route. Explicit legacy development mode keeps its docs. Root Compose no longer
+publishes port 8000 while it has no approved role command. The isolated trial
+retains its loopback-only API port and the integration Compose retains its test
+ports. Image healthchecks now use `/health/live`, so closing OpenAPI does not
+turn an API role unhealthy. The deploy workflow remains manual and stops before
+SSH pending a reviewed production topology.

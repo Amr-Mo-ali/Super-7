@@ -28,6 +28,7 @@ from services.durable_local_admission import DurableLocalAdmission
 from services.durable_worker_composition import WorkerConfiguration, build_worker_graph
 from services.postgres_foundation import DatabaseReadiness, PostgresFoundation
 from services.process_analysis_pool import ProcessAnalysisPool
+from services.r2_video_input import configured_r2_video
 
 
 class DurableLocalRuntime:
@@ -74,6 +75,8 @@ class DurableLocalRuntime:
             max_queue_size=settings.max_queued_analyses,
         )
         self._executor = ProcessAnalysisPool(settings)
+        r2_video = configured_r2_video(settings)
+        self.remote_video = r2_video is not None
         graph = build_worker_graph(
             pool=self._pool,
             database_settings=database_settings,
@@ -87,6 +90,7 @@ class DurableLocalRuntime:
                 lock_timeout_ms,
             ),
             logger=logger,
+            r2_video=r2_video,
         )
         self.coordinator = graph.coordinator
         self.worker = graph.worker

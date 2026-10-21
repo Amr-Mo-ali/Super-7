@@ -18,6 +18,7 @@ from services.analysis_job_coordinator import CoordinatorTiming
 from services.durable_worker_composition import WorkerConfiguration, build_worker_graph
 from services.postgres_foundation import DatabaseReadiness, PostgresFoundation
 from services.process_analysis_pool import ProcessAnalysisPool
+from services.r2_video_input import configured_r2_video
 
 
 class DurableWorkerRuntime:
@@ -58,6 +59,7 @@ class DurableWorkerRuntime:
                 lock_timeout_ms,
             ),
             logger=logger,
+            r2_video=configured_r2_video(settings),
         )
         self.coordinator = graph.coordinator
         self.worker = graph.worker

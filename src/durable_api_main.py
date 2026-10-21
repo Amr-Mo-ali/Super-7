@@ -94,6 +94,9 @@ def create_app(
         title="Football Analysis MVP",
         version=resolved_settings.analysis_version,
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.state.durable_runtime = runtime
     app.include_router(

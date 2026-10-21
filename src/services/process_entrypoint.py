@@ -93,7 +93,11 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
     try:
         runtime.path_resolver.validate_reference(request.video_reference)
         try:
-            video_path = runtime.path_resolver.resolve(request.video_reference)
+            if request.staged_video_path is None:
+                video_path = runtime.path_resolver.resolve(request.video_reference)
+            else:
+                staged = Path(request.staged_video_path)
+                video_path = VideoPathResolver(staged.parent).resolve(request.video_reference)
         except VideoNotFoundError:
             failure_kind = ChildFailureKind.VIDEO_UNAVAILABLE
             raise

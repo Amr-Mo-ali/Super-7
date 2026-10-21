@@ -45,6 +45,6 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/openapi.json', timeout=3); assert response.status == 200" || exit 1
+    CMD python -c "from urllib.request import urlopen; response = urlopen('http://127.0.0.1:8000/health/live', timeout=3); assert response.status == 200" || exit 1
 
 CMD ["python", "-c", "raise SystemExit('Explicit runtime role required; use a reviewed role command.')"]
