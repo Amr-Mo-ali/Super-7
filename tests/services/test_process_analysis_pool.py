@@ -1,6 +1,7 @@
 """Unit coverage for the unused parent-owned process-pool adapter."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
@@ -12,13 +13,14 @@ import pytest
 
 from core.config import Settings
 from schemas.analysis import Diagnostics, NonCompletedResponse
-from services.process_analysis_pool import ProcessAnalysisPool
+from services.process_analysis_pool import ProcessAnalysisPool, ValidatedChildSuccess
 from services.process_contracts import (
     ChildAnalysisCancelled,
     ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisResult,
     ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
 )
@@ -67,6 +69,15 @@ class RecordingFactory:
     ) -> RecordingExecutor:
         self.calls.append((max_workers, mp_context.get_start_method(), initializer, initargs))
         return self.executor
+
+
+class RecordingLogHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 def _request(analysis_id: str = "analysis-1") -> ChildAnalysisRequest:
@@ -142,6 +153,220 @@ def test_execute_requires_start_and_validates_success_failure_and_cancellation()
     asyncio.run(scenario())
 
 
+def test_durable_execution_retains_success_envelope_without_changing_legacy_result() -> None:
+    async def scenario() -> None:
+        raw = _success()
+        executor = RecordingExecutor([raw, raw])
+        pool = ProcessAnalysisPool(Settings(), executor_factory=RecordingFactory(executor))
+        pool.start()
+        with pytest.raises(ValueError, match="requires an analysis version"):
+            await pool.execute_enveloped(_request())
+        durable = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="1.0.0"
+        )
+        assert await pool.execute_enveloped(durable) == ValidatedChildSuccess(
+            raw, _response("analysis-1")
+        )
+        assert await pool.execute(_request()) == _response("analysis-1")
+        assert executor.submissions == [durable, _request()]
+
+    asyncio.run(scenario())
+
+
+def test_durable_execution_preserves_typed_missing_video_failure() -> None:
+    async def scenario() -> None:
+        raw = ChildAnalysisFailure(
+            "analysis-1",
+            "VideoNotFoundError",
+            "Analysis could not be completed.",
+            0,
+            failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
+        )
+        executor = RecordingExecutor([raw])
+        pool = ProcessAnalysisPool(Settings(), executor_factory=RecordingFactory(executor))
+        pool.start()
+        request = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "missing.mp4", analysis_version="1.0.0"
+        )
+        assert await pool.execute_enveloped(request) == ParentFailure(
+            "VideoNotFoundError",
+            "Analysis could not be completed.",
+            ChildFailureKind.VIDEO_UNAVAILABLE,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_observer_does_not_hide_running_submitted_work() -> None:
+    async def scenario() -> None:
+        class HoldingExecutor(RecordingExecutor):
+            def __init__(self) -> None:
+                super().__init__([])
+                self.future: Future[ChildAnalysisResult] = Future()
+                assert self.future.set_running_or_notify_cancel()
+                self.submitted = asyncio.Event()
+
+            def submit(
+                self,
+                function: Callable[[ChildAnalysisRequest], ChildAnalysisResult],
+                request: ChildAnalysisRequest,
+            ) -> Future[ChildAnalysisResult]:
+                assert function.__name__ == "run_child_analysis"
+                self.submissions.append(request)
+                self.submitted.set()
+                return self.future
+
+        executor = HoldingExecutor()
+        pool = ProcessAnalysisPool(Settings(), executor_factory=RecordingFactory(executor))
+        pool.start()
+        request = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="1.0.0"
+        )
+        observer = asyncio.create_task(pool.execute_enveloped(request))
+        await asyncio.wait_for(executor.submitted.wait(), 1)
+        assert pool.outstanding_submissions == (executor.future,)
+        observer.cancel()
+        assert isinstance(
+            (await asyncio.gather(observer, return_exceptions=True))[0], asyncio.CancelledError
+        )
+        assert observer.done() and executor.future.running() and not executor.future.done()
+        assert pool.outstanding_submissions == (executor.future,)
+        executor.future.set_result(_success())
+        assert not pool.outstanding_submissions
+        await pool.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("complete_before_cancel_settles", [False, True])
+def test_late_failed_submission_is_observed_and_safely_reported(
+    complete_before_cancel_settles: bool,
+) -> None:
+    async def scenario() -> None:
+        class TrackedFuture(Future[ChildAnalysisResult]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.exception_calls = 0
+                assert self.set_running_or_notify_cancel()
+
+            def exception(self, timeout: float | None = None) -> BaseException | None:
+                self.exception_calls += 1
+                return super().exception(timeout)
+
+        class HoldingExecutor(RecordingExecutor):
+            def __init__(self) -> None:
+                super().__init__([])
+                self.future = TrackedFuture()
+                self.submitted = asyncio.Event()
+
+            def submit(
+                self,
+                function: Callable[[ChildAnalysisRequest], ChildAnalysisResult],
+                request: ChildAnalysisRequest,
+            ) -> Future[ChildAnalysisResult]:
+                self.submissions.append(request)
+                self.submitted.set()
+                return self.future
+
+        executor = HoldingExecutor()
+        handler = RecordingLogHandler()
+        logger = logging.Logger("test.process_pool.late_failure", level=logging.ERROR)
+        logger.addHandler(handler)
+        pool = ProcessAnalysisPool(
+            Settings(), executor_factory=RecordingFactory(executor), logger=logger
+        )
+        pool.start()
+        request = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="1.0.0"
+        )
+        observer = asyncio.create_task(pool.execute_enveloped(request))
+        await asyncio.wait_for(executor.submitted.wait(), 1)
+        observer.cancel()
+        if not complete_before_cancel_settles:
+            assert isinstance(
+                (await asyncio.gather(observer, return_exceptions=True))[0], asyncio.CancelledError
+            )
+            assert pool.outstanding_submissions == (executor.future,)
+        executor.future.set_exception(RuntimeError("private child exception detail"))
+        assert isinstance(
+            (await asyncio.gather(observer, return_exceptions=True))[0], asyncio.CancelledError
+        )
+        await asyncio.sleep(0)
+        assert executor.future.exception_calls >= 1
+        assert not pool.outstanding_submissions
+        failures = [
+            record
+            for record in handler.records
+            if record.getMessage().startswith("analysis_process_pool_execution_failed")
+        ]
+        assert len(failures) == 1
+        assert failures[0].getMessage() == (
+            "analysis_process_pool_execution_failed analysis_id=analysis-1 error_type=RuntimeError"
+        )
+        assert failures[0].exc_info is None
+        assert all(
+            "private child exception detail" not in record.getMessage()
+            for record in handler.records
+        )
+        await pool.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_queued_submission_releases_tracking_without_failure_report() -> None:
+    async def scenario() -> None:
+        class PendingExecutor(RecordingExecutor):
+            def __init__(self) -> None:
+                super().__init__([])
+                self.future: Future[ChildAnalysisResult] = Future()
+                self.submitted = asyncio.Event()
+
+            def submit(
+                self,
+                function: Callable[[ChildAnalysisRequest], ChildAnalysisResult],
+                request: ChildAnalysisRequest,
+            ) -> Future[ChildAnalysisResult]:
+                self.submissions.append(request)
+                self.submitted.set()
+                return self.future
+
+        executor = PendingExecutor()
+        handler = RecordingLogHandler()
+        logger = logging.Logger("test.process_pool.cancelled", level=logging.ERROR)
+        logger.addHandler(handler)
+        pool = ProcessAnalysisPool(
+            Settings(), executor_factory=RecordingFactory(executor), logger=logger
+        )
+        pool.start()
+        request = ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="1.0.0"
+        )
+        observer = asyncio.create_task(pool.execute_enveloped(request))
+        await asyncio.wait_for(executor.submitted.wait(), 1)
+        observer.cancel()
+        assert isinstance(
+            (await asyncio.gather(observer, return_exceptions=True))[0], asyncio.CancelledError
+        )
+        await asyncio.sleep(0)
+        assert executor.future.cancelled()
+        assert not pool.outstanding_submissions
+        assert not any("execution_failed" in record.getMessage() for record in handler.records)
+        await pool.shutdown()
+
+        success_pool = ProcessAnalysisPool(
+            Settings(),
+            executor_factory=RecordingFactory(RecordingExecutor([_success()])),
+            logger=logger,
+        )
+        success_pool.start()
+        assert await success_pool.execute(_request()) == _response("analysis-1")
+        assert not success_pool.outstanding_submissions
+        assert not any("execution_failed" in record.getMessage() for record in handler.records)
+        await success_pool.shutdown()
+
+    asyncio.run(scenario())
+
+
 def test_execute_rejects_child_identity_schema_or_response_mismatch() -> None:
     async def scenario() -> None:
         executor = RecordingExecutor(
@@ -164,11 +389,24 @@ def test_executor_failures_are_sanitized_in_the_parent() -> None:
         executor = RecordingExecutor(
             [BrokenProcessPool("secret process detail"), RuntimeError("secret")]
         )
-        pool = ProcessAnalysisPool(Settings(), executor_factory=RecordingFactory(executor))
+        handler = RecordingLogHandler()
+        logger = logging.Logger("test.process_pool.ordinary_failure", level=logging.ERROR)
+        logger.addHandler(handler)
+        pool = ProcessAnalysisPool(
+            Settings(), executor_factory=RecordingFactory(executor), logger=logger
+        )
         pool.start()
         expected = ParentFailure("ProcessPoolError", "Analysis could not be completed.")
         assert await pool.execute(_request()) == expected
         assert await pool.execute(_request()) == expected
+        failures = [
+            record
+            for record in handler.records
+            if record.getMessage().startswith("analysis_process_pool_execution_failed")
+        ]
+        assert len(failures) == 2
+        assert not any("secret" in record.getMessage() for record in failures)
+        assert not pool.outstanding_submissions
 
     asyncio.run(scenario())
 

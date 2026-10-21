@@ -1,5 +1,12 @@
 # System and runtime
 
+Runtime-selection update (2026-10-19): The in-memory graph below describes
+the legacy implementation when `SUPER7_LEGACY_IN_MEMORY_ENABLED=1`. Without
+that explicit development/test opt-in, `main:app` has no `/analyze` route and
+fails at startup. The image default and root Compose deployment also fail
+closed. The separated durable API, worker, and dispatcher retain their opt-in
+entry points; see ADR-012. Production role deployment is not configured here.
+
 ## Implemented architecture
 
 The composition root is [`src/main.py`](../../src/main.py). It starts validation of the shared video root, the parent-owned process pool, and one queue worker during FastAPI lifespan. `src/api` owns HTTP admission, health and public mapping; `src/services` owns queueing, callback, path resolution, CV/scoring and child composition; `src/adapters` owns YOLO adapters; `src/domain` contains value models; `src/diagnostics` owns artifacts/performance/job events; `src/config` and `src/core` own settings/logging; `src/schemas` owns public contracts. Tests cover unit, API, integration, lifecycle and process boundaries.

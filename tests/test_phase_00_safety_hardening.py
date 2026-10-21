@@ -7,12 +7,12 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from api.request_lifecycle import RequestLifecycle
-from api.routes import _public_debug_artifact_references
 from concurrency.admission import AdmissionController
 from concurrency.executor import AnalysisExecutor
 from config.debug import DebugSettings
 from core.config import Settings
 from diagnostics.artifacts import ArtifactManager
+from services.analysis_pipeline import _public_debug_artifact_references
 
 
 def test_debug_artifacts_are_disabled_by_default() -> None:

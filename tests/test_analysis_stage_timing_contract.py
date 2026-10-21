@@ -16,6 +16,7 @@ from application_log_capture import capture_application_logs
 from pydantic import HttpUrl
 
 import api.routes as routes
+import services.analysis_pipeline as pipeline
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from config.debug import DebugSettings
@@ -449,7 +450,7 @@ def _install_child_runtime(
     )
     monkeypatch.setattr(process_entrypoint, "_runtime", runtime)
     selected = target or _established_target()
-    monkeypatch.setattr(routes, "resolve_dominant_target", lambda *args, **kwargs: selected)
+    monkeypatch.setattr(pipeline, "resolve_dominant_target", lambda *args, **kwargs: selected)
 
     if patch_completed:
 
@@ -457,7 +458,7 @@ def _install_child_runtime(
             del kwargs
             return _response(str(args[15]))
 
-        monkeypatch.setattr(routes, "_completed", completed)
+        monkeypatch.setattr(pipeline, "_completed", completed)
     return runtime, resolved_validator, tracker
 
 
@@ -472,7 +473,7 @@ def _direct_child_call(
 ) -> AnalyzeResponse:
     components = runtime.components
     started = 0.0
-    return routes._analyze_uploaded(
+    return pipeline._analyze_uploaded(
         runtime.settings,
         components.validator,
         components.tracker,
@@ -555,7 +556,7 @@ def test_established_target_records_child_coarse_stages_and_preserves_result(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     child_clock = _StepClock(10_000.0, 0.125)
-    monkeypatch.setattr(routes, "perf_counter", child_clock)
+    monkeypatch.setattr(pipeline, "perf_counter", child_clock)
     monkeypatch.setattr(process_entrypoint, "perf_counter", child_clock)
     _install_child_runtime(tmp_path, monkeypatch)
     caplog.set_level(logging.INFO, logger="football_analysis")
@@ -593,7 +594,7 @@ def test_unavailable_target_records_only_truthful_work_and_preserves_result(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     clock = _StepClock(20_000.0, 0.125)
-    monkeypatch.setattr(routes, "perf_counter", clock)
+    monkeypatch.setattr(pipeline, "perf_counter", clock)
     monkeypatch.setattr(process_entrypoint, "perf_counter", clock)
     _install_child_runtime(tmp_path, monkeypatch, target=_unavailable_target())
     caplog.set_level(logging.INFO, logger="football_analysis")
@@ -784,9 +785,9 @@ def test_debug_disabled_records_skipped_without_starting_debug_work(
         del args, kwargs
         raise AssertionError("debug work must not start when disabled")
 
-    monkeypatch.setattr(routes, "copyfile", forbidden)
-    monkeypatch.setattr(routes, "render_debug_video", forbidden)
-    monkeypatch.setattr(routes, "CameraMotionEstimator", forbidden)
+    monkeypatch.setattr(pipeline, "copyfile", forbidden)
+    monkeypatch.setattr(pipeline, "render_debug_video", forbidden)
+    monkeypatch.setattr(pipeline, "CameraMotionEstimator", forbidden)
     caplog.set_level(logging.INFO, logger="football_analysis")
     with capture_application_logs(caplog):
         result = process_entrypoint.run_child_analysis(_request("debug-disabled"))
@@ -829,11 +830,11 @@ def test_debug_enabled_aggregates_only_copy_camera_and_published_render(
         clock.advance(0.5)
         return {"debug_video": str(video)}
 
-    monkeypatch.setattr(routes, "perf_counter", clock)
+    monkeypatch.setattr(pipeline, "perf_counter", clock)
     monkeypatch.setattr(process_entrypoint, "perf_counter", clock)
-    monkeypatch.setattr(routes, "copyfile", copy_debug_source)
-    monkeypatch.setattr(routes, "CameraMotionEstimator", CameraEstimator)
-    monkeypatch.setattr(routes, "render_debug_video", render_debug)
+    monkeypatch.setattr(pipeline, "copyfile", copy_debug_source)
+    monkeypatch.setattr(pipeline, "CameraMotionEstimator", CameraEstimator)
+    monkeypatch.setattr(pipeline, "render_debug_video", render_debug)
     non_debug_scorer = _PhysicalScorer(clock)
     _install_child_runtime(
         tmp_path,
@@ -873,7 +874,7 @@ def test_parent_and_child_clocks_are_independent_and_parent_duration_is_nested(
 ) -> None:
     first_child_clock = _StepClock(16.0, 0.125)
     parent_clock = _StepClock(1_048_576.0, 0.25)
-    monkeypatch.setattr(routes, "perf_counter", first_child_clock)
+    monkeypatch.setattr(pipeline, "perf_counter", first_child_clock)
     monkeypatch.setattr(process_entrypoint, "perf_counter", first_child_clock)
     monkeypatch.setattr(process_analysis_pool, "perf_counter", parent_clock, raising=False)
     _install_child_runtime(tmp_path, monkeypatch)
@@ -890,7 +891,7 @@ def test_parent_and_child_clocks_are_independent_and_parent_duration_is_nested(
         try:
             first = await pool.execute(_request("clock-origin-a"))
             second_child_clock = _StepClock(8192.0, 0.125)
-            monkeypatch.setattr(routes, "perf_counter", second_child_clock)
+            monkeypatch.setattr(pipeline, "perf_counter", second_child_clock)
             monkeypatch.setattr(process_entrypoint, "perf_counter", second_child_clock)
             second = await pool.execute(_request("clock-origin-b"))
             return first, second
@@ -927,7 +928,7 @@ def test_parent_mapping_and_timing_logs_are_bounded_safe_and_non_public(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     clock = _StepClock(100.0, 0.125)
-    monkeypatch.setattr(routes, "perf_counter", clock)
+    monkeypatch.setattr(pipeline, "perf_counter", clock)
     response = _response("parent-mapping")
     callback = _Callback(clock)
     job = AnalysisJob.create(

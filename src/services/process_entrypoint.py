@@ -8,20 +8,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
-from api.routes import _analyze_uploaded
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
+from core.exceptions import VideoNotFoundError
 from core.logging import configure_logging, get_logger
 from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_composition import AnalysisComponents, create_analysis_components
+from services.analysis_pipeline import _analyze_uploaded
 from services.process_contracts import (
     ChildAnalysisCancelled,
     ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisResult,
     ChildAnalysisSuccess,
+    ChildFailureKind,
 )
 from services.video_path_resolver import VideoPathResolver
 
@@ -79,12 +81,26 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
     runtime = _runtime
     if runtime is None:
         raise RuntimeError("analysis child is not initialized")
+    if (
+        request.analysis_version is not None
+        and request.analysis_version != runtime.settings.analysis_version
+    ):
+        raise RuntimeError("analysis child does not support the requested version")
     started = perf_counter()
     artifacts = None
     outcome: ChildAnalysisResult | None = None
+    failure_kind: ChildFailureKind | None = None
     try:
         runtime.path_resolver.validate_reference(request.video_reference)
-        video_path = runtime.path_resolver.resolve(request.video_reference)
+        try:
+            if request.staged_video_path is None:
+                video_path = runtime.path_resolver.resolve(request.video_reference)
+            else:
+                staged = Path(request.staged_video_path)
+                video_path = VideoPathResolver(staged.parent).resolve(request.video_reference)
+        except VideoNotFoundError:
+            failure_kind = ChildFailureKind.VIDEO_UNAVAILABLE
+            raise
         artifacts = runtime.artifact_manager.create_session(request.analysis_id)
         cancellation = CancellationManager(request.analysis_id)
         components = runtime.components
@@ -156,6 +172,7 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
             type(error).__name__,
             "Analysis could not be completed.",
             _milliseconds(started),
+            failure_kind=failure_kind,
         )
     finally:
         if artifacts is not None:

@@ -194,6 +194,16 @@ def test_validation_precedes_production_ssh_mutation() -> None:
     assert _ssh_step(deploy)["with"]["script"].index("docker compose up -d") > 0
 
 
+def test_runtime_selection_blocks_deployment_before_ssh() -> None:
+    deploy = _jobs(_workflow())["deploy"]
+    assert isinstance(deploy, dict)
+    steps = deploy["steps"]
+    ssh_index = next(index for index, step in enumerate(steps) if step.get("uses") == SSH_ACTION)
+    blockers = [step for step in steps[:ssh_index] if "run" in step and "exit 1" in step["run"]]
+    assert blockers
+    assert "production runtime roles" in blockers[-1]["name"]
+
+
 def test_critical_contract_markers_are_parsed_not_comment_matches() -> None:
     workflow = _workflow()
     assert set(_trigger(workflow)) == {"workflow_dispatch"}

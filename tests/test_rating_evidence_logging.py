@@ -6,14 +6,14 @@ from _pytest.logging import LogCaptureFixture
 from application_log_capture import capture_application_logs
 from pytest import MonkeyPatch
 
-from api.routes import (
+from core.config import Settings
+from core.logging import configure_logging
+from services.analysis_pipeline import (
     _log_interaction_evidence,
     _log_rating_evidence,
     _log_target_track_candidates,
     _log_target_track_evidence,
 )
-from core.config import Settings
-from core.logging import configure_logging
 from services.interactions.models import InteractionAnalysisResult, InteractionDiagnostics
 from services.pass_detection import PassDetectionResult
 from services.player_detector import BoundingBox

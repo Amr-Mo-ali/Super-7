@@ -1,0 +1,48 @@
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.2@sha256:c4f5de312ee66d46810635ffc5df34a1973ba753e7241ce3a08ef979ddd7bea5 /uv /uvx /usr/local/bin/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
+    YOLO_CONFIG_DIR=/tmp/ultralytics
+
+WORKDIR /app
+
+RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app app
+
+COPY pyproject.toml uv.lock README.md ./
+
+# Keep the reviewed lock and headless OpenCV policy from Dockerfile.durable-trial.
+# The PyPI torch 2.13.0 lock selects CUDA 13 on Linux, so exclude that branch.
+# Ultralytics declares opencv-python; only the locked headless distribution is installed.
+# httpx/httpcore are required by the durable composition path but belong to the dev group.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv export --quiet --frozen --no-dev --no-emit-project \
+        --prune torch --prune torchvision --prune opencv-python \
+        --output-file /tmp/gpu-benchmark-requirements.txt \
+    && UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 UV_LINK_MODE=copy \
+        uv pip install --system --require-hashes --no-deps \
+        --requirement /tmp/gpu-benchmark-requirements.txt \
+    && UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 UV_LINK_MODE=copy \
+        uv pip install --system --no-deps "httpcore==1.0.9" "httpx==0.28.1"
+
+# Official PyTorch 2.13.0 CUDA 12.6 pair for CPython 3.12 Linux x86_64.
+# These wheels and their CUDA dependencies are pinned by version/metadata, but
+# are installed without a separately reviewed hash manifest; see the runbook.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=300 UV_HTTP_RETRIES=5 UV_LINK_MODE=copy \
+        uv pip install --system \
+        --index https://download.pytorch.org/whl/cu126 \
+        "torch==2.13.0+cu126" "torchvision==0.28.0+cu126" \
+    && python -c "import torch, torchvision; assert torch.__version__ == '2.13.0+cu126'; assert torchvision.__version__ == '0.28.0+cu126'; assert torch.version.cuda == '12.6'" \
+    && mkdir --parents /app/debug /models /videos /output \
+    && chown --recursive app:app /app /models /videos /output
+
+COPY --chown=app:app src ./src
+COPY --chown=app:app scripts/benchmark_gpu_pipeline.py ./scripts/benchmark_gpu_pipeline.py
+
+USER app
+
+# Inputs are supplied as read-only mounts. /output is a separate writable mount.
+CMD ["python", "/app/scripts/benchmark_gpu_pipeline.py", "--help"]

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from importlib import import_module
 from importlib.util import find_spec
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast, get_args, get_type_hints
 from uuid import UUID
 
@@ -92,6 +92,9 @@ _ROW_COLUMNS = (
     "callback_url",
     "state",
     "accepted_at",
+    "analysis_version",
+    "attempt_limit",
+    "attempt_count",
 )
 _UNAVAILABLE_MESSAGE = "PostgreSQL AnalysisJob persistence is unavailable."
 _INVARIANT_MESSAGE = "PostgreSQL AnalysisJob persistence invariant failed."
@@ -295,6 +298,8 @@ def _candidate(**overrides: object) -> NewAnalysisJob:
         "player_id": _PLAYER_ID,
         "video_reference": _VIDEO_REFERENCE,
         "callback_url": _CALLBACK_URL,
+        "analysis_version": "1.0.0",
+        "attempt_limit": 3,
     }
     values.update(overrides)
     return NewAnalysisJob(**cast(Any, values))
@@ -311,6 +316,9 @@ def _row(**overrides: object) -> tuple[object, ...]:
         "callback_url": _CALLBACK_URL,
         "state": "QUEUED",
         "accepted_at": _ACCEPTED_AT,
+        "analysis_version": "1.0.0",
+        "attempt_limit": 3,
+        "attempt_count": 0,
     }
     values.update(overrides)
     return tuple(values[column] for column in _ROW_COLUMNS)
@@ -325,6 +333,8 @@ def _expected_job(**overrides: object) -> AnalysisJob:
         "callback_url": _CALLBACK_URL,
         "state": AnalysisJobState.QUEUED,
         "accepted_at": _ACCEPTED_AT,
+        "analysis_version": "1.0.0",
+        "attempt_limit": 3,
     }
     values.update(overrides)
     return AnalysisJob(
@@ -370,7 +380,8 @@ def _normalized_sql(sql: str) -> str:
 
 _TIMEOUT_SQL = "SELECT set_config(%s, %s, %s)"
 _LOOKUP_SQL = """SELECT job_id, idempotency_lookup, request_fingerprint, video_id,
-    player_id, video_reference, callback_url, state, accepted_at
+    player_id, video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count
 FROM analysis_jobs
 WHERE idempotency_lookup = %s"""
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s, %s)"
@@ -392,12 +403,14 @@ _COUNT_SQL_SHAPE = _normalized_sql(_COUNT_SQL)
 _INSERT_PREFIX = _normalized_sql(
     """INSERT INTO analysis_jobs (
         job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
-        video_reference, callback_url, state, accepted_at
+        video_reference, callback_url, state, accepted_at,
+        analysis_version, attempt_limit, attempt_count
     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, """
 )
 _RETURNING_SQL_SHAPE = _normalized_sql(
-    """) RETURNING job_id, idempotency_lookup, request_fingerprint, video_id,
-        player_id, video_reference, callback_url, state, accepted_at"""
+    """, %s, %s, %s) RETURNING job_id, idempotency_lookup, request_fingerprint, video_id,
+        player_id, video_reference, callback_url, state, accepted_at,
+        analysis_version, attempt_limit, attempt_count"""
 )
 _INSERT_SQL_SHAPES = frozenset(
     f"{_INSERT_PREFIX} {database_time}{_RETURNING_SQL_SHAPE}"
@@ -405,10 +418,12 @@ _INSERT_SQL_SHAPES = frozenset(
 )
 _VALID_INSERT_SQL = """INSERT INTO analysis_jobs (
     job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
-    video_reference, callback_url, state, accepted_at
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+    video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
 RETURNING job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
-    video_reference, callback_url, state, accepted_at"""
+    video_reference, callback_url, state, accepted_at,
+    analysis_version, attempt_limit, attempt_count"""
 
 
 def _expect_sql(
@@ -434,14 +449,47 @@ def _expect_insert(candidate: NewAnalysisJob) -> Callable[[str, object], None]:
         candidate.video_reference,
         candidate.callback_url,
         "QUEUED",
+        candidate.analysis_version,
+        candidate.attempt_limit,
+        0,
     )
 
     def validate(sql: str, params: object) -> None:
         assert _normalized_sql(sql) in _INSERT_SQL_SHAPES
         assert _parameter_values(params) == expected
+        count = _parameter_values(params)[-1]
+        assert type(count) is int and count == 0
         assert _ACCEPTED_AT not in expected
 
     return validate
+
+
+@pytest.mark.parametrize("count", (0, False, 0.0), ids=("integer-zero", "bool", "float"))
+def test_helper_insert_count_requires_builtin_integer_zero(count: object) -> None:
+    # Assertion input only: the current domain does not yet expose snapshots.
+    candidate = cast(
+        NewAnalysisJob, SimpleNamespace(**dict(zip(_ROW_COLUMNS, _row(), strict=True)))
+    )
+    parameters = (
+        _JOB_ID,
+        _LOOKUP,
+        _FINGERPRINT,
+        _VIDEO_ID,
+        _PLAYER_ID,
+        _VIDEO_REFERENCE,
+        _CALLBACK_URL,
+        "QUEUED",
+        "1.0.0",
+        3,
+        count,
+    )
+    validate = _expect_insert(candidate)
+    sql = next(iter(_INSERT_SQL_SHAPES))
+    if type(count) is int:
+        validate(sql, parameters)
+    else:
+        with pytest.raises(AssertionError):
+            validate(sql, parameters)
 
 
 class _ScriptedCursor:
@@ -951,6 +999,7 @@ def _assert_no_sensitive_sql(connection: _ScriptedConnection) -> None:
         _VIDEO_REFERENCE,
         _CALLBACK_URL,
         "QUEUED",
+        "1.0.0",
         str(_MAX_QUEUE_SIZE),
         str(_OPERATION_TIMEOUT_MS),
         str(_LOCK_TIMEOUT_MS),
@@ -1010,6 +1059,7 @@ def test_guard_runtime_composition_remains_repository_free() -> None:
         "callback_service",
         "analysis_queue",
         "process_analysis_pool",
+        "durable_runtime",
     )
     assert all(
         parameter.default is not inspect.Parameter.empty
@@ -1106,6 +1156,9 @@ def test_guard_sql_expectations_reject_pre_correction_false_positives() -> None:
         _VIDEO_REFERENCE,
         _CALLBACK_URL,
         "QUEUED",
+        "1.0.0",
+        3,
+        0,
     )
 
     statement.validate(
@@ -1152,7 +1205,8 @@ def test_guard_sql_expectations_reject_pre_correction_false_positives() -> None:
         (
             lookup,
             "SELECT job_id, idempotency_lookup, request_fingerprint, video_id, "
-            "player_id, video_reference, callback_url, state, accepted_at "
+            "player_id, video_reference, callback_url, state, accepted_at, "
+            "analysis_version, attempt_limit, attempt_count "
             "FROManalysis_jobs WHERE idempotency_lookup = %s",
             (_LOOKUP,),
         ),
@@ -1190,15 +1244,20 @@ def test_guard_sql_expectations_reject_pre_correction_false_positives() -> None:
                 _VIDEO_REFERENCE,
                 _CALLBACK_URL,
                 "QUEUED",
+                "1.0.0",
+                3,
+                0,
             ),
         )
     with pytest.raises(AssertionError):
         insert.validate(
             """INSERT INTO analysis_jobs (
                 job_id, idempotency_lookup, request_fingerprint, video_id,
-                player_id, video_reference, callback_url, state, accepted_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            RETURNING accepted_at, state, callback_url, video_reference,
+                player_id, video_reference, callback_url, state, accepted_at,
+                analysis_version, attempt_limit, attempt_count
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
+            RETURNING attempt_count, attempt_limit, analysis_version,
+                accepted_at, state, callback_url, video_reference,
                 player_id, video_id, request_fingerprint, idempotency_lookup, job_id
             """,
             insert_parameters,
@@ -1527,6 +1586,8 @@ def test_initial_identical_retry_returns_existing_before_lock_or_capacity() -> N
         "video_reference": "stored-reference-red-c-marker.mp4",
         "callback_url": "https://stored.invalid/red-c-marker",
         "accepted_at": _OTHER_ACCEPTED_AT,
+        "analysis_version": "Stored_2.0",
+        "attempt_limit": 7,
     }
     pool = _ScriptedPool([_statement_timeout(), _lookup(_row(**stored_fields))])
     repository = _repository(pool)
@@ -1571,6 +1632,8 @@ def test_post_lock_recheck_resolves_without_count_or_insert(conflicting: bool) -
             "video_reference": "stored-reference-red-c-marker.mp4",
             "callback_url": "https://stored.invalid/red-c-marker",
             "accepted_at": _OTHER_ACCEPTED_AT,
+            "analysis_version": "Stored_2.0",
+            "attempt_limit": 7,
         }
     stored_fields = {
         "request_fingerprint": fingerprint,
@@ -2142,6 +2205,14 @@ def test_programming_exception_with_55p03_attribute_propagates_by_identity() -> 
 
 
 _MALFORMED_ROWS = (
+    (_row(analysis_version="invalid+version"), "policy-version-syntax", "invalid+version"),
+    (_row(analysis_version=_TextSubclass("v1")), "policy-version-subclass", "v1"),
+    (_row(attempt_limit=True), "policy-limit-bool", "limit-bool"),
+    (_row(attempt_limit=0), "policy-limit-zero", "limit-zero"),
+    (_row(attempt_count=True), "private-count-bool", "count-bool"),
+    (_row(attempt_count=_IntSubclass(0)), "private-count-subclass", "count-subclass"),
+    (_row(attempt_count=-1), "private-count-negative", "count-negative"),
+    (_row(attempt_count=4), "private-count-above-limit", "count-above-limit"),
     (_row()[:-1], "missing-column", "missing-column"),
     (
         _row() + ("extra-row-red-c-marker",),
@@ -2331,6 +2402,9 @@ def test_lookup_preserves_non_utc_aware_accepted_at() -> None:
 
 
 _INCONSISTENT_INSERT_ROWS = (
+    (_row(analysis_version="Other_2.0"), "mismatch-policy-version", "Other_2.0"),
+    (_row(attempt_limit=7), "mismatch-policy-limit", "policy-limit-marker"),
+    (_row(attempt_count=1), "mismatch-initial-count", "initial-count-marker"),
     (None, "missing-row", "missing-insert-row"),
     (_row(job_id=_OTHER_JOB_ID), "mismatch-job-id", str(_OTHER_JOB_ID)),
     (_row(idempotency_lookup=_OTHER_LOOKUP), "mismatch-lookup", _OTHER_LOOKUP),
@@ -2483,3 +2557,98 @@ def test_programming_cancellation_and_fatal_errors_propagate_by_identity(
     assert captured is error
     _assert_rollback_lifecycle(pool)
     assert all(record.category != "insert" for record in pool.connection_value.executions)
+
+
+class _DecoderUuidSubclass(UUID):
+    pass
+
+
+_DOMAIN_INVALID_ROWS = (
+    (_row(job_id=UUID(int=0)), "nil-uuid", str(UUID(int=0))),
+    (_row(job_id=_DecoderUuidSubclass(str(_JOB_ID))), "uuid-subclass", str(_JOB_ID)),
+    (_row(video_id="video/decoder-marker"), "unsafe-video-id", "video/decoder-marker"),
+    (_row(player_id="player/decoder-marker"), "unsafe-player-id", "player/decoder-marker"),
+    (_row(video_reference="dir/decoder-marker.mp4"), "unsafe-filename", "dir/decoder-marker.mp4"),
+    (
+        _row(callback_url="HTTPS://EXAMPLE.COM/decoder-marker"),
+        "noncanonical-callback",
+        "HTTPS://EXAMPLE.COM/decoder-marker",
+    ),
+    (
+        _row(callback_url="https://example.com/callback#decoder-marker"),
+        "fragment-callback",
+        "https://example.com/callback#decoder-marker",
+    ),
+)
+
+
+@pytest.mark.parametrize("insert_returning", (False, True), ids=("lookup", "insert-returning"))
+@pytest.mark.parametrize(
+    ("returned_row", "rejected_marker"),
+    tuple((row, marker) for row, _, marker in _DOMAIN_INVALID_ROWS),
+    ids=tuple(identifier for _, identifier, _ in _DOMAIN_INVALID_ROWS),
+)
+def test_domain_invalid_rows_are_sanitized_and_rolled_back(
+    returned_row: tuple[object, ...],
+    rejected_marker: str,
+    insert_returning: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceInvariantError
+
+    operations = [_statement_timeout(), _lookup(returned_row)]
+    if insert_returning:
+        operations = [
+            _statement_timeout(),
+            _lookup(),
+            _lock_timeout(),
+            _advisory_lock(),
+            _lookup(),
+            _count_queued(0),
+            _insert(returned_row),
+        ]
+    pool = _ScriptedPool(operations)
+    captured = _capture(_repository(pool), _candidate())
+
+    _assert_exception_safe(
+        captured,
+        AnalysisJobPersistenceInvariantError,
+        _INVARIANT_MESSAGE,
+        markers=(rejected_marker, *_CANDIDATE_MARKERS),
+    )
+    assert captured.__cause__ is None
+    assert captured.__context__ is None
+    assert pool.connection_value.operations == []
+    _assert_rollback_lifecycle(pool)
+    _assert_logs_safe(caplog.records, (rejected_marker, *_CANDIDATE_MARKERS))
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        RuntimeError("constructor-runtime-marker"),
+        AttributeError("constructor-attribute-marker"),
+        AssertionError("constructor-assertion-marker"),
+        asyncio.CancelledError("constructor-cancellation-marker"),
+        KeyboardInterrupt("constructor-keyboard-marker"),
+        SystemExit("constructor-system-exit-marker"),
+        MemoryError("constructor-memory-marker"),
+    ),
+    ids=("runtime", "attribute", "assertion", "cancellation", "keyboard", "system", "memory"),
+)
+def test_nonvalidation_constructor_errors_propagate_by_identity(
+    error: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from adapters import psycopg_analysis_job_repository as repository_module
+
+    def fail_construction(**kwargs: object) -> AnalysisJob:
+        raise error
+
+    # Inject only the adapter's construction boundary, not the domain class itself.
+    monkeypatch.setattr(repository_module, "AnalysisJob", fail_construction)
+    pool = _ScriptedPool([_statement_timeout(), _lookup(_row())])
+    captured = _capture(_repository(pool), _candidate())
+
+    assert captured is error
+    assert pool.connection_value.operations == []
+    _assert_rollback_lifecycle(pool)

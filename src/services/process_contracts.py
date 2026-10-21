@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path, PureWindowsPath
 
 from pydantic import TypeAdapter
@@ -16,6 +17,10 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _RESPONSE_ADAPTER: TypeAdapter[AnalyzeResponse] = TypeAdapter(AnalyzeResponse)
 
 
+class ChildFailureKind(StrEnum):
+    VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
+
+
 @dataclass(frozen=True, slots=True)
 class ChildAnalysisRequest:
     analysis_id: str
@@ -23,13 +28,24 @@ class ChildAnalysisRequest:
     player_id: str
     video_reference: str
     schema_version: int = CHILD_ANALYSIS_SCHEMA_VERSION
+    analysis_version: str | None = None
+    staged_video_path: str | None = None
 
     def __post_init__(self) -> None:
         for value in (self.analysis_id, self.video_id, self.player_id):
             if not _SAFE_ID.fullmatch(value):
                 raise ValueError("child analysis identifiers must be safe")
         _validate_reference(self.video_reference)
+        if self.staged_video_path is not None:
+            staged = Path(self.staged_video_path)
+            if not staged.is_absolute() or staged.name != self.video_reference:
+                raise ValueError("staged video must be an absolute path to the requested filename")
         _validate_version(self.schema_version)
+        if self.analysis_version is not None and (
+            type(self.analysis_version) is not str
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.analysis_version)
+        ):
+            raise ValueError("analysis_version must have bounded safe syntax")
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +78,7 @@ class ChildAnalysisFailure:
     public_message: str
     processing_duration_ms: int
     schema_version: int = CHILD_ANALYSIS_SCHEMA_VERSION
+    failure_kind: ChildFailureKind | None = None
 
     def __post_init__(self) -> None:
         _validate_result(self.analysis_id, self.processing_duration_ms, self.schema_version)
@@ -69,6 +86,8 @@ class ChildAnalysisFailure:
             raise ValueError("child failure code must be a safe exception class name")
         if self.public_message != "Analysis could not be completed.":
             raise ValueError("child failures must use the fixed sanitized message")
+        if self.failure_kind is not None and type(self.failure_kind) is not ChildFailureKind:
+            raise TypeError("child failure kind must be typed evidence")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +107,7 @@ type ChildAnalysisResult = ChildAnalysisSuccess | ChildAnalysisFailure | ChildAn
 class ParentFailure:
     error_code: str
     public_message: str
+    failure_kind: ChildFailureKind | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +133,16 @@ def validate_child_result(
             raise ValueError("child response analysis ID does not match its envelope")
         return response
     if isinstance(result, ChildAnalysisFailure):
-        return ParentFailure(result.error_code, result.public_message)
+        # A received/pickled envelope may bypass dataclass construction.
+        ChildAnalysisFailure(
+            result.analysis_id,
+            result.error_code,
+            result.public_message,
+            result.processing_duration_ms,
+            result.schema_version,
+            result.failure_kind,
+        )
+        return ParentFailure(result.error_code, result.public_message, result.failure_kind)
     if isinstance(result, ChildAnalysisCancelled):
         return ParentCancelled(result.analysis_id)
     raise ValueError("child result has an unknown shape")

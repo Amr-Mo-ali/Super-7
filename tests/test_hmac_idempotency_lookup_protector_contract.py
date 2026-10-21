@@ -550,7 +550,7 @@ def test_guard_existing_port_and_create_app_surface_are_unchanged() -> None:
     assert port_signature.parameters["raw_idempotency_key"].kind is inspect.Parameter.KEYWORD_ONLY
     assert tuple(inspect.signature(main.create_app).parameters) == tuple(
         "settings tracker selector validator lifecycle downloader path_resolver "
-        "callback_service analysis_queue process_analysis_pool".split()
+        "callback_service analysis_queue process_analysis_pool durable_runtime".split()
     )
 
 

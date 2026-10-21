@@ -27,6 +27,7 @@ Verify the checked-out configuration still contains `DEFAULT_MAX_ACTIVE_ANALYSES
 For a local non-production check:
 
 ```powershell
+$env:SUPER7_LEGACY_IN_MEMORY_ENABLED = '1'
 uv run uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 

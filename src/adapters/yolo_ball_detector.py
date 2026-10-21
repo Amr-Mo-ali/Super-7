@@ -24,14 +24,16 @@ class YOLOBallDetector(BallDetector):
         self._model = model
 
     def _load_model(self) -> Any:
+        started = perf_counter()
         try:
             from ultralytics import YOLO  # type: ignore[attr-defined]
 
             model = YOLO(self._settings.ball_model_path)
             self._logger.info(
-                "ball_model_loaded path=%s device=%s",
+                "ball_model_loaded path=%s device=%s elapsed_ms=%d",
                 self._settings.ball_model_path,
                 self._settings.model_device,
+                round((perf_counter() - started) * 1000),
             )
             return model
         except Exception as error:

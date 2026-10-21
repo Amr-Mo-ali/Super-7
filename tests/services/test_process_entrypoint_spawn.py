@@ -14,8 +14,11 @@ from core.config import Settings
 from schemas.analysis import NonCompletedResponse
 from services.process_contracts import (
     CHILD_ANALYSIS_SCHEMA_VERSION,
+    ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
+    ChildFailureKind,
+    ParentFailure,
     validate_child_result,
 )
 
@@ -59,6 +62,40 @@ def test_spawned_child_reuses_one_process_and_cleans_artifacts(tmp_path: Path) -
         assert validated_second.analysis_id == "spawn-two"
         assert not (debug_root / "spawn-one").exists()
         assert not (debug_root / "spawn-two").exists()
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+    assert child_pid is not None
+    assert not any(
+        child.pid == child_pid and child.is_alive() for child in multiprocessing.active_children()
+    )
+
+
+def test_spawned_missing_video_retains_typed_failure_in_parent(tmp_path: Path) -> None:
+    video_root = tmp_path / "videos"
+    video_root.mkdir()
+    settings = Settings(
+        video_storage_root=str(video_root), debug_output_dir=str(tmp_path / "debug")
+    )
+    request = ChildAnalysisRequest("spawn-missing", "video-1", "player-1", "missing.mp4")
+    executor = ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=initialize_fake_analysis_child,
+        initargs=(settings,),
+    )
+    child_pid: int | None = None
+    try:
+        child_pid, result = executor.submit(run_fake_child_analysis, request).result(timeout=10)
+        assert child_pid != os.getpid()
+        assert isinstance(result, ChildAnalysisFailure)
+        assert result.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
+        assert validate_child_result(
+            request.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, result
+        ) == ParentFailure(
+            "VideoNotFoundError",
+            "Analysis could not be completed.",
+            ChildFailureKind.VIDEO_UNAVAILABLE,
+        )
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
     assert child_pid is not None

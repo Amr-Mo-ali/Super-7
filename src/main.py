@@ -1,9 +1,13 @@
 """Application entry point."""
 
+from __future__ import annotations
+
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from os import environ
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from fastapi import FastAPI
 
@@ -16,16 +20,18 @@ from config.analysis import DEFAULT_MAX_ACTIVE_ANALYSES
 from core.config import Settings
 from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
-from services.analysis_composition import create_analysis_components
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.callback_service import CallbackService
-from services.player_tracker import AutomaticPlayerTracker
+from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.process_analysis_pool import ProcessAnalysisPool
 from services.process_contracts import ChildAnalysisRequest, ParentChildResult
 from services.selection import TargetPlayerSelector
 from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
+
+if TYPE_CHECKING:
+    from services.durable_local_runtime import DurableLocalRuntime
 
 
 class ProcessPoolLifecycle(Protocol):
@@ -47,27 +53,24 @@ def create_app(
     callback_service: CallbackService | None = None,
     analysis_queue: AnalysisQueue | None = None,
     process_analysis_pool: ProcessPoolLifecycle | None = None,
+    durable_runtime: DurableLocalRuntime | None = None,
 ) -> FastAPI:
-    """Compose services; production CV runs in child-owned components via the process pool.
+    """Compose services; legacy CV runs in child-owned components via the process pool.
 
-    Parent component overrides remain only for router/legacy compatibility; production
-    analysis tests must inject ``process_analysis_pool`` rather than rely on them.
+    Parent analysis overrides remain accepted for existing callers; legacy analysis
+    runs through ``process_analysis_pool`` and builds its graph in the child.
     """
+    if durable_runtime is None and environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") != "1":
+        raise RuntimeError(
+            "Legacy in-memory admission is disabled. "
+            "Set SUPER7_LEGACY_IN_MEMORY_ENABLED=1 only for development or tests."
+        )
     configure_logging()
     resolved_settings = settings or Settings.from_environment()
 
-    # Router composition still needs these lazy components; child processes own analysis execution.
-    components = create_analysis_components(
-        resolved_settings,
-        player_detector_logger=get_logger("football_analysis.detector"),
-        ball_detector_logger=get_logger("football_analysis.ball_detector"),
-        tracker_override=tracker,
-        selector_override=selector,
-        validator_override=validator,
-    )
     get_logger("football_analysis.startup").info(
         "detector=%s model=%s device=%s enabled=true",
-        components.tracker.__class__.__name__,
+        type(tracker).__name__ if tracker else DetectionOnlyPlayerTracker.__name__,
         resolved_settings.model_path,
         resolved_settings.model_device,
     )
@@ -103,24 +106,57 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
-            resolved_path_resolver.validate_storage_root()
-            resolved_process_pool.start()
-            await worker.start()
+            if durable_runtime is None or not getattr(durable_runtime, "remote_video", False):
+                resolved_path_resolver.validate_storage_root()
+            if durable_runtime is None:
+                resolved_process_pool.start()
+                await worker.start()
+            else:
+                await durable_runtime.start()
             yield
         finally:
-            worker.begin_shutdown()
-            try:
-                await resolved_lifecycle.shutdown()
-            finally:
+            if durable_runtime is None:
+                worker.begin_shutdown()
                 try:
-                    await worker.shutdown()
+                    await resolved_lifecycle.shutdown()
                 finally:
-                    await resolved_process_pool.shutdown()
+                    try:
+                        await worker.shutdown()
+                    finally:
+                        await resolved_process_pool.shutdown()
+            else:
+                primary = sys.exception()
+                cleanup_errors: list[BaseException] = []
+                try:
+                    await resolved_lifecycle.shutdown()
+                except BaseException as error:
+                    cleanup_errors.append(error)
+                try:
+                    await durable_runtime.stop()
+                except BaseException as error:
+                    cleanup_errors.append(error)
+                if cleanup_errors:
+                    cleanup = (
+                        cleanup_errors[0]
+                        if len(cleanup_errors) == 1
+                        else BaseExceptionGroup("Durable app shutdown failed.", cleanup_errors)
+                    )
+                    if primary is not None and isinstance(cleanup, Exception):
+                        for observed_error in cleanup_errors:
+                            if observed_error.__context__ is primary:
+                                observed_error.__context__ = None
+                        raise primary from cleanup
+                    if primary is not None:
+                        raise cleanup from primary
+                    raise cleanup
 
     app = FastAPI(
         title="Football Analysis MVP",
         version=resolved_settings.analysis_version,
         lifespan=lifespan,
+        docs_url=None if durable_runtime is not None else "/docs",
+        redoc_url=None if durable_runtime is not None else "/redoc",
+        openapi_url=None if durable_runtime is not None else "/openapi.json",
     )
     app.state.admission_controller = resolved_lifecycle.admission
     app.state.analysis_executor = resolved_lifecycle.executor
@@ -129,37 +165,45 @@ def create_app(
     app.state.analysis_queue = resolved_analysis_queue
     app.state.analysis_worker = worker
     app.state.process_analysis_pool = resolved_process_pool
+    app.state.durable_runtime = durable_runtime
     app.state.startup_completed = True
     app.state.detectors_initialized = True
     app.state.configuration_loaded = True
     app.state.models_initialized = True
     app.include_router(
-        create_health_router(resolved_lifecycle, resolved_path_resolver, resolved_analysis_queue)
+        create_health_router(
+            resolved_lifecycle,
+            resolved_path_resolver,
+            resolved_analysis_queue,
+            durable_runtime,
+        )
     )
     app.include_router(
         create_router(
-            resolved_settings,
-            components.validator,
-            components.tracker,
-            components.selector,
-            components.extractor,
-            components.ball_proximity_analyzer,
-            components.movement_analyzer,
-            components.interaction_analyzer,
-            components.technical_event_analyzer,
-            components.pass_detector,
-            components.shot_detector,
-            components.physical_scorer,
             get_logger("football_analysis.api"),
-            resolved_lifecycle,
-            downloader or VideoDownloader(resolved_settings),
             resolved_path_resolver,
             resolved_callback_service,
             resolved_analysis_queue,
+            durable_runtime.admission if durable_runtime is not None else None,
         )
     )
 
     return app
 
 
-app = create_app()
+@asynccontextmanager
+async def _disabled_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    raise RuntimeError(
+        "main:app is disabled. Select an explicit durable role, or opt into "
+        "legacy development with SUPER7_LEGACY_IN_MEMORY_ENABLED=1."
+    )
+    yield
+
+
+# Importing main must remain safe for the combined durable factory. Without an
+# explicit legacy opt-in this ASGI object has no admission route and cannot start.
+app = (
+    create_app()
+    if environ.get("SUPER7_LEGACY_IN_MEMORY_ENABLED") == "1"
+    else FastAPI(lifespan=_disabled_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+)

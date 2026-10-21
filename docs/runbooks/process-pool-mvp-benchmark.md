@@ -19,6 +19,7 @@ $env:VIDEO_STORAGE_ROOT = 'E:\staging-videos'
 $env:MODEL_PATH = 'E:\super7\yolo11n.pt'
 $env:DEBUG_OUTPUT_DIR = 'E:\super7\debug'
 $env:MAX_QUEUED_ANALYSES = '5'
+$env:SUPER7_LEGACY_IN_MEMORY_ENABLED = '1'
 uv run uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -29,7 +30,9 @@ Invoke-WebRequest http://127.0.0.1:8000/health/live
 Invoke-WebRequest http://127.0.0.1:8000/health/ready
 ```
 
-This command requires `uv sync` and the editable project installation first. For Docker/VPS startup, use the repository's existing Docker Compose/start command rather than a second deployment method.
+This command requires `uv sync` and the editable project installation first.
+The root Docker Compose deployment is intentionally disabled pending a reviewed
+production role topology; this benchmark procedure authorizes no VPS startup.
 
 Submit only safe video references (filenames, not paths) and record each `analysisId` from HTTP 202. Replace the placeholder callback URL with the approved staging endpoint:
 

@@ -20,11 +20,13 @@ from services.process_contracts import (
     ChildAnalysisFailure,
     ChildAnalysisRequest,
     ChildAnalysisSuccess,
+    ChildFailureKind,
     ParentCancelled,
     ParentFailure,
     validate_child_result,
 )
 from services.process_entrypoint import initialize_analysis_child, run_child_analysis
+from services.video_path_resolver import VideoPathResolver
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +92,18 @@ def test_contracts_pickle_and_reject_unsafe_values() -> None:
         ChildAnalysisSuccess("id", "[]", "v", "m", 0)
     with pytest.raises(ValueError):
         ChildAnalysisFailure("id", "bad code", "Analysis could not be completed.", 0)
+    with pytest.raises(ValueError, match="analysis_version"):
+        ChildAnalysisRequest("id", "video", "player", "safe.mp4", analysis_version="bad version")
+
+
+def test_durable_request_rejects_unsupported_version_before_analysis(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    request = ChildAnalysisRequest(
+        "analysis-1", "video-1", "player-1", "safe.mp4", analysis_version="other_version"
+    )
+    with pytest.raises(RuntimeError, match="does not support the requested version"):
+        run_child_analysis(request)
 
 
 def test_child_success_failure_cancellation_and_parent_conversion(
@@ -136,6 +150,91 @@ def test_child_success_failure_cancellation_and_parent_conversion(
     assert validate_child_result(
         "analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, cancellation
     ) == ParentCancelled("analysis-1")
+
+
+def test_staged_child_uses_parent_owned_file_and_local_requests_still_use_storage_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    staged = tmp_path / "staged" / "safe.mp4"
+    staged.parent.mkdir()
+    staged.write_bytes(b"r2 bytes")
+    observed: list[Path] = []
+
+    def successful(*args: object) -> NonCompletedResponse:
+        observed.extend(value for value in args if isinstance(value, Path))
+        return _response("analysis-1")
+
+    monkeypatch.setattr(process_entrypoint, "_analyze_uploaded", successful)
+    staged_request = ChildAnalysisRequest(
+        "analysis-1", "video-1", "player-1", "safe.mp4", staged_video_path=str(staged)
+    )
+    assert isinstance(run_child_analysis(staged_request), ChildAnalysisSuccess)
+    assert observed == [staged.resolve()]
+    observed.clear()
+    assert isinstance(run_child_analysis(_request()), ChildAnalysisSuccess)
+    assert observed == [(Path(settings.video_storage_root) / "safe.mp4").resolve()]
+
+    with pytest.raises(ValueError, match="staged video"):
+        ChildAnalysisRequest(
+            "analysis-1", "video-1", "player-1", "safe.mp4", staged_video_path="relative/safe.mp4"
+        )
+
+
+def test_only_missing_video_at_resolution_carries_typed_evidence(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    initialize_analysis_child(settings)
+    missing = run_child_analysis(
+        ChildAnalysisRequest("missing", "video-1", "player-1", "missing.mp4")
+    )
+    assert isinstance(missing, ChildAnalysisFailure)
+    assert missing.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
+    assert validate_child_result(
+        "missing", CHILD_ANALYSIS_SCHEMA_VERSION, missing
+    ) == ParentFailure(
+        "VideoNotFoundError", "Analysis could not be completed.", ChildFailureKind.VIDEO_UNAVAILABLE
+    )
+
+    runtime = process_entrypoint._runtime
+    assert runtime is not None
+    runtime.path_resolver = VideoPathResolver(
+        settings.video_storage_root, lambda path, _: path.is_dir()
+    )
+    inaccessible = run_child_analysis(_request("inaccessible"))
+    assert isinstance(inaccessible, ChildAnalysisFailure)
+    assert inaccessible.failure_kind is None
+    assert inaccessible.error_code == "VideoAccessError"
+
+    process_entrypoint._reset_child_runtime_for_test()
+    initialize_analysis_child(
+        Settings(
+            video_storage_root=str(tmp_path / "missing-root"),
+            debug_output_dir=str(tmp_path / "debug"),
+        )
+    )
+    root_failure = run_child_analysis(_request("root-failure"))
+    assert isinstance(root_failure, ChildAnalysisFailure)
+    assert root_failure.failure_kind is None
+    assert root_failure.error_code == "VideoStorageRootError"
+
+
+def test_parent_rejects_malformed_received_failure_evidence() -> None:
+    failure = ChildAnalysisFailure(
+        "analysis-1",
+        "VideoNotFoundError",
+        "Analysis could not be completed.",
+        0,
+        failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
+    )
+    object.__setattr__(failure, "failure_kind", "VIDEO_UNAVAILABLE")
+    with pytest.raises(TypeError, match="typed evidence"):
+        validate_child_result("analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, failure)
+
+    object.__setattr__(failure, "failure_kind", ChildFailureKind.VIDEO_UNAVAILABLE)
+    object.__setattr__(failure, "public_message", "untrusted detail")
+    with pytest.raises(ValueError, match="fixed sanitized message"):
+        validate_child_result("analysis-1", CHILD_ANALYSIS_SCHEMA_VERSION, failure)
 
 
 def test_runtime_initialization_and_parent_validation(tmp_path: Path) -> None:

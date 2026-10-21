@@ -11,7 +11,7 @@ from typing import Any, Never, cast
 
 import pytest
 
-import api.routes as routes
+import services.analysis_pipeline as pipeline
 from concurrency.cancellation import CancellationManager
 from config.debug import DebugSettings
 from core.config import Settings
@@ -121,7 +121,7 @@ def _run_no_player_analysis(
     tracker: _NoPlayerTracker,
 ) -> object:
     unexpected = cast(Any, _UnexpectedDependency())
-    return routes._analyze_uploaded(
+    return pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, validator),
         tracker,
@@ -289,7 +289,7 @@ def test_downstream_validation_tracking_and_hashing_use_only_private_snapshot(
         hashed_paths.append(path)
         return {}
 
-    monkeypatch.setattr(routes, "reproducibility_metadata", record_metadata)
+    monkeypatch.setattr(pipeline, "reproducibility_metadata", record_metadata)
 
     _run_no_player_analysis(Settings(max_upload_bytes=10), source_path, session, validator, tracker)
 
@@ -359,8 +359,8 @@ def test_snapshot_is_quota_independent_and_cleanup_removes_unpublished_debug_sou
         copied_sources.append(Path(source))
         return copy_file(source, destination)
 
-    monkeypatch.setattr(routes, "copyfile", record_copy)
-    monkeypatch.setattr(routes, "reproducibility_metadata", lambda *_: {})
+    monkeypatch.setattr(pipeline, "copyfile", record_copy)
+    monkeypatch.setattr(pipeline, "reproducibility_metadata", lambda *_: {})
     settings = Settings(
         max_upload_bytes=10,
         debug=DebugSettings(enabled=True, save_video=True, retained_sessions=1),

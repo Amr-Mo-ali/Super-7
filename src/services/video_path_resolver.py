@@ -34,7 +34,20 @@ class VideoPathResolver:
         try:
             resolved = candidate.resolve(strict=True)
         except FileNotFoundError as error:
-            raise VideoNotFoundError("Requested video file does not exist.") from error
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                # Recheck the root: its disappearance is not evidence that the
+                # requested file was missing from an available storage root.
+                self._resolve_root()
+                raise VideoNotFoundError("Requested video file does not exist.") from error
+            except OSError as inspection_error:
+                raise VideoPathResolutionError(
+                    "Requested video path could not be resolved."
+                ) from inspection_error
+            # An existing entry (for example a dangling symlink) failed to
+            # resolve; that does not prove the requested filename is absent.
+            raise VideoPathResolutionError("Requested video path could not be resolved.") from error
         except OSError as error:
             raise VideoPathResolutionError("Requested video path could not be resolved.") from error
         if not resolved.is_relative_to(root):
@@ -92,10 +105,14 @@ class VideoPathResolver:
         if (
             path.is_absolute()
             or PureWindowsPath(filename).is_absolute()
+            or PureWindowsPath(filename).drive
             or "/" in filename
             or "\\" in filename
+            or any(ord(character) < 32 or ord(character) == 127 for character in filename)
+            or any(character in filename for character in ":?#")
             or filename in {".", ".."}
             or ".." in path.parts
+            or filename != path.name
         ):
             raise VideoPathResolutionError("Video filename must be a safe relative filename.")
         if path.suffix.lower() not in _ALLOWED_SUFFIXES:

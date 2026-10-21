@@ -1,8 +1,11 @@
 """Small operational health endpoints independent of analysis payload contracts."""
 
+from __future__ import annotations
+
 from os import W_OK, access
 from pathlib import Path
 from tempfile import gettempdir
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
@@ -10,6 +13,9 @@ from fastapi.responses import JSONResponse
 from api.request_lifecycle import RequestLifecycle
 from services.analysis_queue import AnalysisQueue
 from services.video_path_resolver import VideoPathResolver
+
+if TYPE_CHECKING:
+    from services.durable_local_runtime import DurableLocalRuntime
 
 type HealthChecks = dict[str, bool]
 type CombinedHealthChecks = dict[str, HealthChecks]
@@ -19,6 +25,7 @@ def create_health_router(
     lifecycle: RequestLifecycle,
     path_resolver: VideoPathResolver,
     analysis_queue: AnalysisQueue,
+    durable_runtime: DurableLocalRuntime | None = None,
 ) -> APIRouter:
     """Create non-inference health endpoints for one application ownership graph."""
     router = APIRouter()
@@ -30,13 +37,17 @@ def create_health_router(
 
     @router.get("/health/ready", response_model=None)
     async def ready(request: Request) -> JSONResponse:
-        checks = await _ready_checks(request, lifecycle, path_resolver, analysis_queue)
+        checks = await _ready_checks(
+            request, lifecycle, path_resolver, analysis_queue, durable_runtime
+        )
         return _response("ready", checks)
 
     @router.get("/health", response_model=None)
     async def health(request: Request) -> JSONResponse:
         live_checks = _live_checks(request)
-        ready_checks = await _ready_checks(request, lifecycle, path_resolver, analysis_queue)
+        ready_checks = await _ready_checks(
+            request, lifecycle, path_resolver, analysis_queue, durable_runtime
+        )
         checks: CombinedHealthChecks = {"live": live_checks, "ready": ready_checks}
         return _response("health", checks, all(live_checks.values()) and all(ready_checks.values()))
 
@@ -56,9 +67,27 @@ async def _ready_checks(
     lifecycle: RequestLifecycle,
     path_resolver: VideoPathResolver,
     analysis_queue: AnalysisQueue,
+    durable_runtime: DurableLocalRuntime | None = None,
 ) -> HealthChecks:
     upload_directory = Path(gettempdir())
     storage = path_resolver.storage_root_checks()
+    if durable_runtime is not None:
+        checks = {
+            "durable_worker": durable_runtime.worker.running
+            and durable_runtime.worker.failure is None,
+            "durable_dispatcher": durable_runtime.dispatcher.running
+            and durable_runtime.dispatcher.failure is None,
+            "database": (await durable_runtime.database_readiness()).ready,
+        }
+        if getattr(durable_runtime, "remote_video", False):
+            return checks
+        return {
+            **checks,
+            "video_storage_exists": storage["exists"],
+            "video_storage_readable": storage["readable"],
+            "video_storage_accessible": storage["accessible"],
+            "video_storage_read_only": storage["read_only"],
+        }
     queue = analysis_queue.metrics()
     return {
         "admission_controller": lifecycle.admission.accepting,

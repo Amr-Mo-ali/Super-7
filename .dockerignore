@@ -11,3 +11,6 @@ tests
 models
 yolo11n.pt
 .env
+
+.local-durable/
+.local-durable-compose/

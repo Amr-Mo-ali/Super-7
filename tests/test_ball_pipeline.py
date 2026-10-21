@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from adapters.yolo_ball_detector import YOLOBallDetector
-from api.routes import _ball_quality, _validate_completed_diagnostics
 from core.config import Settings
 from core.exceptions import BallDetectionError, InternalDiagnosticsError
 from schemas.analysis import (
@@ -20,6 +19,7 @@ from schemas.analysis import (
     UnsupportedMetric,
     VideoResponse,
 )
+from services.analysis_pipeline import _ball_quality, _validate_completed_diagnostics
 from services.ball_detector import BallDetection
 from services.ball_proximity import NormalizedBallProximityAnalyzer
 from services.ball_tracker import BallTrackPoint, NearestNeighborBallTracker
@@ -59,6 +59,22 @@ def test_ball_adapter_maps_valid_detection_and_filters_invalid_box() -> None:
     )
     output = detector.detect(np.zeros((8, 8, 3), dtype=np.uint8), 4, 0.4)
     assert len(output) == 1 and output[0].center_point == (3.0, 4.0)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_ball_adapter_passes_configured_device_without_gpu(device: str) -> None:
+    class RecordingModel(_Model):
+        received_device: object = None
+
+        def predict(self, frame: np.ndarray, **kwargs: object) -> list[object]:
+            self.received_device = kwargs["device"]
+            return super().predict(frame, **kwargs)
+
+    model = RecordingModel([], [])
+    detector = YOLOBallDetector(Settings(model_device=device), logging.getLogger("test"), model)
+
+    assert detector.detect(np.zeros((8, 8, 3), dtype=np.uint8), 0, 0.0) == ()
+    assert model.received_device == device
 
 
 def test_ball_model_loading_is_deferred_until_first_inference(

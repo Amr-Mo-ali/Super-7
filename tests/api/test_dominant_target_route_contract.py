@@ -6,7 +6,7 @@ from typing import Never, cast
 
 import pytest
 
-import api.routes as routes
+import services.analysis_pipeline as pipeline
 from concurrency.cancellation import CancellationManager
 from core.config import Settings
 from diagnostics.artifacts import ArtifactSession
@@ -86,11 +86,11 @@ def _analyze(
     completed: CompletedResponse | None = None,
 ) -> object:
     if completed is not None:
-        monkeypatch.setattr(routes, "_completed", lambda *_args, **_kwargs: completed)
+        monkeypatch.setattr(pipeline, "_completed", lambda *_args, **_kwargs: completed)
     settings = Settings()
     snapshot_session = _SnapshotSession()
     source_path = Path(__file__)
-    result = routes._analyze_uploaded(
+    result = pipeline._analyze_uploaded(
         settings,
         cast(VideoValidator, _Validator()),
         tracker,
@@ -138,13 +138,13 @@ def test_established_target_uses_the_single_tracking_run_and_selected_segment(
             selected,
         )
 
-    monkeypatch.setattr(routes, "resolve_dominant_target", resolve_dominant_target, raising=False)
+    monkeypatch.setattr(pipeline, "resolve_dominant_target", resolve_dominant_target, raising=False)
 
     def complete(*args: object, **_kwargs: object) -> CompletedResponse:
         completed_selections.append(cast(Selection, args[3]))
         return completed
 
-    monkeypatch.setattr(routes, "_completed", complete)
+    monkeypatch.setattr(pipeline, "_completed", complete)
     result = _analyze(tracker, monkeypatch)
 
     assert result is completed
@@ -181,8 +181,8 @@ def test_not_established_target_returns_completed_unavailable_without_rating_com
         calls += 1
         raise AssertionError("target-unavailable analysis must not enter rating completion")
 
-    monkeypatch.setattr(routes, "resolve_dominant_target", resolve_dominant_target, raising=False)
-    monkeypatch.setattr(routes, "_completed", must_not_complete)
+    monkeypatch.setattr(pipeline, "resolve_dominant_target", resolve_dominant_target, raising=False)
+    monkeypatch.setattr(pipeline, "_completed", must_not_complete)
     result = _analyze(tracker, monkeypatch)
 
     assert isinstance(result, CompletedResponse)
