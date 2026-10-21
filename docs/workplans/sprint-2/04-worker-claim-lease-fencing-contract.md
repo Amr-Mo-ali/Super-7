@@ -387,12 +387,7 @@ class AnalysisJobWorkerRepository(Protocol):
         *,
         authority: AttemptAuthority,
         failure_code: AttemptFailureCode,
-    ) -> (
-        AttemptRequeued
-        | AttemptExhausted
-        | AttemptResolutionAlreadyApplied
-        | ClaimLost
-    ): ...
+    ) -> AttemptRequeued | AttemptExhausted | AttemptResolutionAlreadyApplied | ClaimLost: ...
 
     async def finalize_terminal_failure(
         self,
@@ -432,12 +427,7 @@ async def finalize_retryable_failure(
     repository: AnalysisJobWorkerRepository,
     authority: AttemptAuthority,
     failure_code: AttemptFailureCode,
-) -> (
-    AttemptRequeued
-    | AttemptExhausted
-    | AttemptResolutionAlreadyApplied
-    | ClaimLost
-): ...
+) -> AttemptRequeued | AttemptExhausted | AttemptResolutionAlreadyApplied | ClaimLost: ...
 
 
 async def finalize_terminal_failure(

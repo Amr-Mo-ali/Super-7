@@ -26,12 +26,13 @@ Approved declarations for `src/services/analysis_job_finalization.py` (exact fut
 @dataclass(frozen=True, slots=True)
 class FinalizableAnalysisResult:
     result_schema_version: Literal["analysis_result_v1"]
-    result_json: bytes                 # frozen, strict UTF-8 projected JSON object
+    result_json: bytes  # frozen, strict UTF-8 projected JSON object
     callback_schema_version: Literal["analysis_callback_snapshot_v1"]
-    callback_json: bytes               # frozen current body projection, without transport additions
-    analysis_version: str              # child-resolved version
-    model_version: str                 # approved path-free model identity
-    processing_duration_ms: int       # exact nonnegative int, BIGINT range
+    callback_json: bytes  # frozen current body projection, without transport additions
+    analysis_version: str  # child-resolved version
+    model_version: str  # approved path-free model identity
+    processing_duration_ms: int  # exact nonnegative int, BIGINT range
+
 
 @dataclass(frozen=True, slots=True)
 class AnalysisJobCompleted:
@@ -39,21 +40,27 @@ class AnalysisJobCompleted:
     finished_at: datetime
     callback_event_id: UUID
 
+
 @dataclass(frozen=True, slots=True)
 class AnalysisJobCompletionAlreadyApplied:
     authority: AttemptAuthority
     finished_at: datetime
     callback_event_id: UUID
 
+
 class AnalysisJobSuccessFinalizationRepository(Protocol):
     async def finalize_success(
         self, *, authority: AttemptAuthority, result: FinalizableAnalysisResult
     ) -> AnalysisJobCompleted | AnalysisJobCompletionAlreadyApplied | ClaimLost: ...
 
+
 async def finalize_analysis_job_success(
-    *, repository: AnalysisJobSuccessFinalizationRepository,
-    authority: AttemptAuthority, result: FinalizableAnalysisResult
+    *,
+    repository: AnalysisJobSuccessFinalizationRepository,
+    authority: AttemptAuthority,
+    result: FinalizableAnalysisResult,
 ) -> AnalysisJobCompleted | AnalysisJobCompletionAlreadyApplied | ClaimLost: ...
+
 
 AnalysisJobFinalizationPersistenceUnavailable = AnalysisJobWorkerPersistenceUnavailable
 AnalysisJobFinalizationPersistenceInvariantError = AnalysisJobWorkerPersistenceInvariantError

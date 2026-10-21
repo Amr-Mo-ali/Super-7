@@ -79,23 +79,23 @@ async def claim_next(
     self, *, worker_slot_id: WorkerSlotId, lease_duration: LeaseDuration
 ) -> WorkerClaim | NoJobAvailable | WorkerSlotUnavailable: ...
 
+
 async def renew_lease(
     self, *, authority: AttemptAuthority, lease_duration: LeaseDuration
 ) -> LeaseRenewed | ClaimLost: ...
 
+
 async def finalize_retryable_failure(
     self, *, authority: AttemptAuthority, failure_code: AttemptFailureCode
-) -> (
-    AttemptRequeued | AttemptExhausted | AttemptResolutionAlreadyApplied | ClaimLost
-): ...
+) -> AttemptRequeued | AttemptExhausted | AttemptResolutionAlreadyApplied | ClaimLost: ...
+
 
 async def finalize_terminal_failure(
     self, *, authority: AttemptAuthority, failure_code: AttemptFailureCode
 ) -> AttemptFailed | AttemptResolutionAlreadyApplied | ClaimLost: ...
 
-async def recover_expired(
-    self, *, batch_size: RecoveryBatchSize
-) -> RecoverySummary: ...
+
+async def recover_expired(self, *, batch_size: RecoveryBatchSize) -> RecoverySummary: ...
 ```
 
 The error exports are aliases to the existing service classes, to be verified by identity—not subclasses or duplicate definitions. No Worker-specific lock-timeout exception is introduced. Structural protocols, SQL, decoders and factory helpers remain private.
