@@ -1781,6 +1781,7 @@ def test_guard_application_configuration_and_routes_remain_inactive() -> None:
         "callback_service",
         "analysis_queue",
         "process_analysis_pool",
+        "durable_runtime",
     }
     assert isinstance(main.app.state.analysis_queue, AnalysisQueue)
     assert isinstance(main.app.state.analysis_worker, AnalysisWorker)

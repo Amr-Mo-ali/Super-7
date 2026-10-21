@@ -1,16 +1,21 @@
 """Small operational health endpoints independent of analysis payload contracts."""
 
+from __future__ import annotations
+
 from os import W_OK, access
 from pathlib import Path
 from tempfile import gettempdir
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from api.request_lifecycle import RequestLifecycle
 from services.analysis_queue import AnalysisQueue
-from services.durable_local_runtime import DurableLocalRuntime
 from services.video_path_resolver import VideoPathResolver
+
+if TYPE_CHECKING:
+    from services.durable_local_runtime import DurableLocalRuntime
 
 type HealthChecks = dict[str, bool]
 type CombinedHealthChecks = dict[str, HealthChecks]

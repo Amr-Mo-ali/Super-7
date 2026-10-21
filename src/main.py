@@ -1,11 +1,13 @@
 """Application entry point."""
 
+from __future__ import annotations
+
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from os import environ
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from fastapi import FastAPI
 
@@ -20,7 +22,6 @@ from core.logging import configure_logging, get_logger
 from diagnostics.artifacts import ArtifactManager
 from services.analysis_queue import AnalysisQueue, AnalysisWorker
 from services.callback_service import CallbackService
-from services.durable_local_runtime import DurableLocalRuntime
 from services.player_tracker import AutomaticPlayerTracker, DetectionOnlyPlayerTracker
 from services.process_analysis_pool import ProcessAnalysisPool
 from services.process_contracts import ChildAnalysisRequest, ParentChildResult
@@ -28,6 +29,9 @@ from services.selection import TargetPlayerSelector
 from services.video_downloader import VideoDownloader
 from services.video_path_resolver import VideoPathResolver
 from services.video_validator import VideoValidator
+
+if TYPE_CHECKING:
+    from services.durable_local_runtime import DurableLocalRuntime
 
 
 class ProcessPoolLifecycle(Protocol):

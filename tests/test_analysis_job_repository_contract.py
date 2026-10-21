@@ -1059,6 +1059,7 @@ def test_guard_runtime_composition_remains_repository_free() -> None:
         "callback_service",
         "analysis_queue",
         "process_analysis_pool",
+        "durable_runtime",
     )
     assert all(
         parameter.default is not inspect.Parameter.empty
