@@ -196,6 +196,12 @@ class AnalysisJobCoordinator:
             if isinstance(claim, WorkerSlotUnavailable):
                 self._stopped = True
                 return claim
+            if claim.job.video_integrity is not None and not getattr(
+                self._child_executor, "verifies_video_integrity", False
+            ):
+                raise CoordinatorUnclassifiedFailure(
+                    "Verified video requires an integrity-checking source."
+                )
             await self._renew(claim.authority)
             request = ChildAnalysisRequest(
                 str(claim.authority.job_id),
@@ -203,6 +209,7 @@ class AnalysisJobCoordinator:
                 claim.job.player_id,
                 claim.job.video_reference,
                 analysis_version=claim.job.analysis_version,
+                video_integrity=claim.job.video_integrity,
             )
             if getattr(self._child_executor, "abort_on_lease_loss", False):
                 operation = cast(_GuardedChildExecutor, self._child_executor).execute_enveloped(

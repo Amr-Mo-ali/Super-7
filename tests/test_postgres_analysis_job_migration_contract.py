@@ -24,6 +24,7 @@ _EXPECTED_CATALOG = (
     _ANALYSIS_JOB_REVISION,
     _WORKER_ATTEMPT_REVISION,
     _RESULT_OUTBOX_REVISION,
+    "sprint2_slice5_video_integrity",
 )
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _MIGRATION_DIRECTORY = _REPOSITORY_ROOT / "src" / "adapters" / "migrations" / "postgres"

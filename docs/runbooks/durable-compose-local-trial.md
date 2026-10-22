@@ -4,7 +4,10 @@ This isolated local trial is separate from production `docker-compose.yml`,
 `main:app`, the Windows-local `.local-durable/` setup, and VPS deployment.
 It uses one API, one worker slot with one spawned child, one dispatcher, and
 the existing PostgreSQL volume `super7-durable-compose-pgdata-20261015`.
-The request body remains four fields and `videoUrl` remains a filename.
+The legacy request body remains four fields and `videoUrl` remains a filename.
+Verified R2 requests may add `videoKey`, `videoSizeBytes`, `videoSha256`, and
+`hashAlgorithm` together. `videoKey` must equal `videos/<videoUrl>` and
+`hashAlgorithm` must be `sha256`.
 Compose does not enforce a cross-host singleton: the operator must ensure no
 second dispatcher or combined runtime uses this database.
 
@@ -91,7 +94,7 @@ curl.exe --silent --show-error --output NUL --write-out '%{http_code}' --header 
 The final request must return `401`, not acceptance. PostgreSQL has no host
 port; API publishes only `127.0.0.1:18080` while Uvicorn listens on its
 container interface. Bootstrap creates distinct bootstrap, migration-owner,
-and runtime roles, applies only committed Slice 1-4 migrations, and checks
+and runtime roles, applies the Slice 1-5 migrations, and checks
 restricted grants. It refuses existing roles/database. On failure, preserve
 volume and credentials. API `200` readiness proves only its lifespan and
 database/schema probe, not worker, dispatcher, video, CV, or callback delivery.
@@ -507,7 +510,8 @@ dispatcher, and API. Native worker child shutdown can remain unbounded.
 ## Request and state after staging callback approval
 
 Use an owner-approved reachable public-IP-resolving callback URL. The body
-remains `videoId`, `playerId`, filename-only `videoUrl`, and `callbackUrl`;
+retains `videoId`, `playerId`, filename-only `videoUrl`, and `callbackUrl`.
+Verified R2 requests add the four integrity fields described above;
 headers remain Bearer authorization and `Idempotency-Key`. Reuse the key
 only for an exact retry. No callback signing is supplied in this local trial.
 The public API has no job-status endpoint. Set `$analysisId` to an accepted

@@ -40,8 +40,8 @@ from test_postgres_analysis_job_worker_integration import (
     _release_writer_and_join_actor,
     _repositories,
     _run_database,
-    _runner,
     _schema_signature,
+    _slice4_runner,
 )
 
 from adapters import psycopg_analysis_job_worker_repository as worker_adapter
@@ -422,6 +422,10 @@ def test_terminal_failure_creates_one_event_and_slice4_downgrade_refuses_rows(
                 assert type(event) is UUID
 
         _run_database(verify())
+        # First remove empty Slice 5 metadata, then exercise the original
+        # Slice 4 refusal against the retained terminal row.
+        runner.rollback_last()
+        assert runner.current_version() == "sprint2_slice4_result_outbox"
         signature = _schema_signature(database.migration_settings)
         with pytest.raises(DatabaseMigrationError):
             runner.rollback_last()
@@ -957,7 +961,7 @@ def test_slice4_upgrade_waits_for_ordered_writer_lock_then_preserves_valid_rows(
 
         def upgrade_actor() -> None:
             try:
-                _runner(database.migration_settings).apply_pending()
+                _slice4_runner(database.migration_settings).apply_pending()
             except BaseException as error:
                 actor_errors.append(error)
             else:
@@ -1080,13 +1084,15 @@ def test_slice4_downgrade_waits_for_writer_then_refuses_preserving_terminal_data
                 return candidate.job_id, await _job_evidence(pool, candidate.job_id)
 
         terminal_id, terminal_rows = _run_database(establish())
+        runner.rollback_last()
+        assert runner.current_version() == "sprint2_slice4_result_outbox"
         signature = _slice4_schema_signature(database.migration_settings)
         writer = _connect(database.migration_settings, autocommit=False)
         actor_errors: list[BaseException | None] = []
 
         def downgrade_actor() -> None:
             try:
-                _runner(database.migration_settings).rollback_last()
+                _slice4_runner(database.migration_settings).rollback_last()
             except BaseException as error:
                 actor_errors.append(error)
             else:

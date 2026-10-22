@@ -2,8 +2,9 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, StrictInt, StrictStr, model_validator
 
+from domain.video_integrity import VideoIntegrity
 from services.player_rating.models import PlayerRatingSummary
 
 type ResultAvailability = Literal["AVAILABLE", "UNAVAILABLE"]
@@ -23,6 +24,35 @@ class AnalyzeRequest(BaseModel):
     player_id: str = Field(alias="playerId")
     video_url: str = Field(alias="videoUrl")
     callback_url: HttpUrl = Field(alias="callbackUrl")
+
+
+class DurableAnalyzeRequest(AnalyzeRequest):
+    """The four legacy fields, or a complete verified R2 reference."""
+
+    video_key: StrictStr | None = Field(default=None, alias="videoKey")
+    video_size_bytes: StrictInt | None = Field(default=None, alias="videoSizeBytes")
+    video_sha256: StrictStr | None = Field(default=None, alias="videoSha256")
+    hash_algorithm: StrictStr | None = Field(default=None, alias="hashAlgorithm")
+
+    @model_validator(mode="after")
+    def validate_integrity(self) -> "DurableAnalyzeRequest":
+        supplied = self.model_fields_set.intersection(
+            {"video_key", "video_size_bytes", "video_sha256", "hash_algorithm"}
+        )
+        if not supplied:
+            return self
+        values = (self.video_key, self.video_size_bytes, self.video_sha256, self.hash_algorithm)
+        if len(supplied) != 4 or any(value is None for value in values):
+            raise ValueError("Verified video fields must be supplied together.")
+        if self.video_key != f"videos/{self.video_url}" or self.hash_algorithm != "sha256":
+            raise ValueError("Verified video key or hash algorithm is invalid.")
+        VideoIntegrity(self.video_size_bytes, self.video_sha256)  # type: ignore[arg-type]
+        return self
+
+    def expected_integrity(self) -> VideoIntegrity | None:
+        if self.video_size_bytes is None or self.video_sha256 is None:
+            return None
+        return VideoIntegrity(self.video_size_bytes, self.video_sha256)
 
 
 class AnalyzeAcceptedResponse(BaseModel):

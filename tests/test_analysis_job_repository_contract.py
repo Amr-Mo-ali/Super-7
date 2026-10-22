@@ -95,6 +95,8 @@ _ROW_COLUMNS = (
     "analysis_version",
     "attempt_limit",
     "attempt_count",
+    "video_size_bytes",
+    "video_sha256",
 )
 _UNAVAILABLE_MESSAGE = "PostgreSQL AnalysisJob persistence is unavailable."
 _INVARIANT_MESSAGE = "PostgreSQL AnalysisJob persistence invariant failed."
@@ -319,6 +321,8 @@ def _row(**overrides: object) -> tuple[object, ...]:
         "analysis_version": "1.0.0",
         "attempt_limit": 3,
         "attempt_count": 0,
+        "video_size_bytes": None,
+        "video_sha256": None,
     }
     values.update(overrides)
     return tuple(values[column] for column in _ROW_COLUMNS)
@@ -381,7 +385,7 @@ def _normalized_sql(sql: str) -> str:
 _TIMEOUT_SQL = "SELECT set_config(%s, %s, %s)"
 _LOOKUP_SQL = """SELECT job_id, idempotency_lookup, request_fingerprint, video_id,
     player_id, video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256
 FROM analysis_jobs
 WHERE idempotency_lookup = %s"""
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s, %s)"
@@ -404,13 +408,13 @@ _INSERT_PREFIX = _normalized_sql(
     """INSERT INTO analysis_jobs (
         job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
         video_reference, callback_url, state, accepted_at,
-        analysis_version, attempt_limit, attempt_count
+        analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256
     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, """
 )
 _RETURNING_SQL_SHAPE = _normalized_sql(
-    """, %s, %s, %s) RETURNING job_id, idempotency_lookup, request_fingerprint, video_id,
+    """, %s, %s, %s, %s, %s) RETURNING job_id, idempotency_lookup, request_fingerprint, video_id,
         player_id, video_reference, callback_url, state, accepted_at,
-        analysis_version, attempt_limit, attempt_count"""
+        analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256"""
 )
 _INSERT_SQL_SHAPES = frozenset(
     f"{_INSERT_PREFIX} {database_time}{_RETURNING_SQL_SHAPE}"
@@ -419,11 +423,11 @@ _INSERT_SQL_SHAPES = frozenset(
 _VALID_INSERT_SQL = """INSERT INTO analysis_jobs (
     job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
     video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
 RETURNING job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
     video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count"""
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256"""
 
 
 def _expect_sql(
@@ -452,12 +456,14 @@ def _expect_insert(candidate: NewAnalysisJob) -> Callable[[str, object], None]:
         candidate.analysis_version,
         candidate.attempt_limit,
         0,
+        candidate.video_integrity.size_bytes if candidate.video_integrity else None,
+        bytes.fromhex(candidate.video_integrity.sha256) if candidate.video_integrity else None,
     )
 
     def validate(sql: str, params: object) -> None:
         assert _normalized_sql(sql) in _INSERT_SQL_SHAPES
         assert _parameter_values(params) == expected
-        count = _parameter_values(params)[-1]
+        count = _parameter_values(params)[-3]
         assert type(count) is int and count == 0
         assert _ACCEPTED_AT not in expected
 
@@ -468,7 +474,8 @@ def _expect_insert(candidate: NewAnalysisJob) -> Callable[[str, object], None]:
 def test_helper_insert_count_requires_builtin_integer_zero(count: object) -> None:
     # Assertion input only: the current domain does not yet expose snapshots.
     candidate = cast(
-        NewAnalysisJob, SimpleNamespace(**dict(zip(_ROW_COLUMNS, _row(), strict=True)))
+        NewAnalysisJob,
+        SimpleNamespace(**dict(zip(_ROW_COLUMNS, _row(), strict=True)), video_integrity=None),
     )
     parameters = (
         _JOB_ID,
@@ -482,6 +489,8 @@ def test_helper_insert_count_requires_builtin_integer_zero(count: object) -> Non
         "1.0.0",
         3,
         count,
+        None,
+        None,
     )
     validate = _expect_insert(candidate)
     sql = next(iter(_INSERT_SQL_SHAPES))
@@ -1159,6 +1168,8 @@ def test_guard_sql_expectations_reject_pre_correction_false_positives() -> None:
         "1.0.0",
         3,
         0,
+        None,
+        None,
     )
 
     statement.validate(

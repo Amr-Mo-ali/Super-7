@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 from core.config import Settings
 from core.exceptions import VideoPathResolutionError
+from domain.video_integrity import VideoIntegrity
 from services.process_contracts import ChildAnalysisRequest, ChildFailureKind, ParentFailure
 from services.r2_video_input import (
     R2DownloadError,
@@ -52,7 +55,7 @@ class _Client:
 
 def _settings(root: Path, *, max_bytes: int = 100, timeout: float = 3) -> R2VideoSettings:
     return R2VideoSettings(
-        "https://account.r2.cloudflarestorage.com",
+        "https://00000000000000000000000000000000.r2.cloudflarestorage.com",
         "read-only-id",
         "read-only-secret",
         root,
@@ -63,6 +66,55 @@ def _settings(root: Path, *, max_bytes: int = 100, timeout: float = 3) -> R2Vide
 
 def _request(filename: str = "clip.mp4") -> ChildAnalysisRequest:
     return ChildAnalysisRequest("job_1", "video_1", "player_1", filename, analysis_version="1.0.0")
+
+
+def _verified_request(data: bytes, *, digest: str | None = None) -> ChildAnalysisRequest:
+    return ChildAnalysisRequest(
+        "job_1",
+        "video_1",
+        "player_1",
+        "clip.mp4",
+        analysis_version="1.0.0",
+        video_integrity=VideoIntegrity(len(data), digest or hashlib.sha256(data).hexdigest()),
+    )
+
+
+@pytest.mark.parametrize("corruption", ("digest", "size", "truncated"))
+def test_verified_r2_rejects_corrupt_bytes_before_child_and_cleans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    data = b"expected video"
+    body = b"wrong bytes!!!" if corruption == "digest" else data
+    declared = len(data) + 1 if corruption == "size" else len(data)
+    if corruption == "truncated":
+        body = data[:-1]
+    monkeypatch.setattr(
+        "services.r2_video_input.boto3.client",
+        lambda *a, **k: _Client(io.BytesIO(body), declared),
+    )
+    child = _Child()
+    with pytest.raises(R2DownloadError):
+        asyncio.run(
+            R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_verified_request(data))
+        )
+    assert child.bytes_seen == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_verified_r2_accepts_matching_digest_before_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = b"expected video"
+    monkeypatch.setattr(
+        "services.r2_video_input.boto3.client",
+        lambda *a, **k: _Client(io.BytesIO(data), len(data)),
+    )
+    child = _Child()
+    asyncio.run(
+        R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_verified_request(data))
+    )
+    assert child.bytes_seen == [data]
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_source_selection_defaults_local_and_requires_explicit_credentials(
@@ -97,7 +149,12 @@ def test_r2_download_uses_fixed_bucket_prefix_and_cleans_after_child(
     assert not child.paths[0].exists()
     assert client.calls == [{"Bucket": "4goats-media-dev", "Key": "videos/clip.mp4"}]
     assert seen["region_name"] == "auto"
-    assert seen["endpoint_url"] == "https://account.r2.cloudflarestorage.com"
+    assert (
+        seen["endpoint_url"] == "https://00000000000000000000000000000000.r2.cloudflarestorage.com"
+    )
+    config = seen["config"]
+    assert isinstance(config, Config)
+    assert config.s3["addressing_style"] == "virtual"
 
 
 @pytest.mark.parametrize(
@@ -210,6 +267,9 @@ def test_cancelled_download_waits_for_blocked_io_then_cleans_without_child(
         )
         assert await asyncio.to_thread(entered.wait, 1)
         task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        task.cancel()  # A second lease/shutdown cancellation must still wait for I/O.
         await asyncio.sleep(0)
         assert not task.done()
         release.set()

@@ -13,6 +13,7 @@ from domain.analysis_job import (
     AnalysisJobExisting,
     AnalysisJobIdempotencyConflict,
 )
+from domain.video_integrity import VideoIntegrity
 from services.analysis_job_admission import (
     AnalysisJobAdmissionRepository,
     IdempotencyLookupProtector,
@@ -86,6 +87,7 @@ class DurableLocalAdmission:
         player_id: str,
         video_reference: str,
         callback_url: HttpUrl,
+        video_integrity: VideoIntegrity | None = None,
     ) -> AnalysisJobAccepted | AnalysisJobExisting:
         outcome = await admit_analysis_job(
             repository=self._repository,
@@ -97,6 +99,7 @@ class DurableLocalAdmission:
             player_id=player_id,
             video_reference=video_reference,
             callback_url=callback_url,
+            video_integrity=video_integrity,
             analysis_version=self._version,
             attempt_limit=self._attempt_limit,
             max_queue_size=self._capacity,

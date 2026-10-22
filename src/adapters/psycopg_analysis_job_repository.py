@@ -23,6 +23,7 @@ from domain.analysis_job import (
     AnalysisJobState,
     NewAnalysisJob,
 )
+from domain.video_integrity import VideoIntegrity
 
 __all__ = [
     "PsycopgAnalysisJobAdmissionRepository",
@@ -41,7 +42,7 @@ _LOCK_TIMEOUT_MESSAGE = "PostgreSQL AnalysisJob admission lock timed out."
 _TIMEOUT_SQL = "SELECT set_config(%s, %s, %s)"
 _LOOKUP_SQL = """SELECT job_id, idempotency_lookup, request_fingerprint, video_id,
     player_id, video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256
 FROM analysis_jobs
 WHERE idempotency_lookup = %s"""
 _ADVISORY_LOCK_SQL = "SELECT pg_advisory_xact_lock(%s, %s)"
@@ -49,11 +50,11 @@ _COUNT_QUEUED_SQL = "SELECT count(*) FROM analysis_jobs WHERE state = %s"
 _INSERT_SQL = """INSERT INTO analysis_jobs (
     job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
     video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
 RETURNING job_id, idempotency_lookup, request_fingerprint, video_id, player_id,
     video_reference, callback_url, state, accepted_at,
-    analysis_version, attempt_limit, attempt_count"""
+    analysis_version, attempt_limit, attempt_count, video_size_bytes, video_sha256"""
 
 _Outcome = (
     AnalysisJobAccepted
@@ -414,6 +415,8 @@ async def _insert(
             candidate.analysis_version,
             candidate.attempt_limit,
             0,
+            candidate.video_integrity.size_bytes if candidate.video_integrity else None,
+            bytes.fromhex(candidate.video_integrity.sha256) if candidate.video_integrity else None,
         ),
     )
     if row is None:
@@ -425,13 +428,16 @@ def _existing_or_conflict(
     stored: _StoredAnalysisJob,
     candidate: NewAnalysisJob,
 ) -> AnalysisJobExisting | AnalysisJobIdempotencyConflict:
-    if stored.request_fingerprint == candidate.request_fingerprint:
+    if (
+        stored.request_fingerprint == candidate.request_fingerprint
+        and stored.job.video_integrity == candidate.video_integrity
+    ):
         return AnalysisJobExisting(stored.job)
     return AnalysisJobIdempotencyConflict(stored.job.job_id)
 
 
 def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
-    if type(row) is not tuple or len(row) != 12:
+    if type(row) is not tuple or len(row) != 14:
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     (
         job_id,
@@ -446,6 +452,8 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
         analysis_version,
         attempt_limit,
         attempt_count,
+        video_size_bytes,
+        video_sha256,
     ) = row
     if not isinstance(job_id, UUID):
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
@@ -462,6 +470,16 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     if type(attempt_count) is not int or not 0 <= attempt_count <= attempt_limit:
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
+    integrity: VideoIntegrity | None = None
+    if video_size_bytes is not None or video_sha256 is not None:
+        if (
+            type(video_size_bytes) is not int
+            or video_size_bytes <= 0
+            or type(video_sha256) is not bytes
+            or len(video_sha256) != 32
+        ):
+            raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
+        integrity = VideoIntegrity(video_size_bytes, video_sha256.hex())
     if type(state_value) is not str or state_value not in {
         state.value for state in AnalysisJobState
     }:
@@ -490,6 +508,7 @@ def _decode_row(row: tuple[object, ...]) -> _StoredAnalysisJob:
             state=state,
             attempt_limit=attempt_limit,
             accepted_at=accepted_at,
+            video_integrity=integrity,
         )
     except (TypeError, ValueError):
         pass
@@ -524,6 +543,7 @@ def _validate_insert_consistency(
         or job.callback_url != candidate.callback_url
         or job.analysis_version != candidate.analysis_version
         or job.attempt_limit != candidate.attempt_limit
+        or job.video_integrity != candidate.video_integrity
         or stored.attempt_count != 0
         or job.state is not AnalysisJobState.QUEUED
     ):

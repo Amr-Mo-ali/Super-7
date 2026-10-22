@@ -23,6 +23,7 @@ from domain.analysis_job_attempt import (
     WorkerClaim,
     WorkerSlotId,
 )
+from domain.video_integrity import VideoIntegrity
 from services.analysis_job_coordinator import (
     AnalysisJobCoordinator,
     CoordinatorOwnershipLost,
@@ -176,6 +177,33 @@ def _success(claim: WorkerClaim, kind: str = "noncompleted") -> ValidatedChildSu
         17,
     )
     return ValidatedChildSuccess(child, response)
+
+
+def test_verified_claim_cannot_reach_an_executor_without_integrity_checks() -> None:
+    async def scenario() -> None:
+        ordinary = _claim()
+        claim = replace(
+            ordinary,
+            job=replace(ordinary.job, video_integrity=VideoIntegrity(5, "0" * 64)),
+        )
+        worker = _Worker(claim)
+        child = _Child()
+        coordinator = AnalysisJobCoordinator(
+            worker_repository=worker,
+            finalization_repository=_Finalizer(worker),
+            child_executor=child,
+            result_projector=convert_child_success,
+            worker_slot_id=claim.authority.worker_slot_id,
+            model_catalog={_RAW_MODEL: _SAFE_MODEL},
+            timing=_timing(),
+        )
+        with pytest.raises(CoordinatorUnclassifiedFailure):
+            await coordinator.run_one()
+        assert child.requests == []
+        assert worker.renewals == 0
+        assert coordinator.stopped
+
+    asyncio.run(scenario())
 
 
 def test_success_renews_during_child_and_settles_before_finalization() -> None:

@@ -9,7 +9,13 @@ from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
-from domain.analysis_job import _validate_datetime, _validate_request_text, _validate_uuid
+from domain.analysis_job import (
+    _validate_datetime,
+    _validate_request_text,
+    _validate_uuid,
+    _validate_video_integrity,
+)
+from domain.video_integrity import VideoIntegrity
 
 __all__ = [
     "AttemptAuthority",
@@ -118,6 +124,7 @@ class ClaimableAnalysisJob:
     analysis_version: str
     attempt_limit: int
     accepted_at: datetime
+    video_integrity: VideoIntegrity | None = None
 
     def __post_init__(self) -> None:
         _validate_uuid(self.job_id)
@@ -130,6 +137,7 @@ class ClaimableAnalysisJob:
             raise ValueError("Analysis version must have bounded safe syntax.")
         _validate_positive_int(self.attempt_limit)
         _validate_datetime(self.accepted_at)
+        _validate_video_integrity(self.video_integrity)
 
 
 @dataclass(frozen=True, slots=True)

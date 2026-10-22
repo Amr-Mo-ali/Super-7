@@ -10,6 +10,7 @@ from pathlib import Path, PureWindowsPath
 
 from pydantic import TypeAdapter
 
+from domain.video_integrity import VideoIntegrity
 from schemas.analysis import AnalyzeResponse
 
 CHILD_ANALYSIS_SCHEMA_VERSION = 1
@@ -30,6 +31,7 @@ class ChildAnalysisRequest:
     schema_version: int = CHILD_ANALYSIS_SCHEMA_VERSION
     analysis_version: str | None = None
     staged_video_path: str | None = None
+    video_integrity: VideoIntegrity | None = None
 
     def __post_init__(self) -> None:
         for value in (self.analysis_id, self.video_id, self.player_id):
@@ -41,6 +43,8 @@ class ChildAnalysisRequest:
             if not staged.is_absolute() or staged.name != self.video_reference:
                 raise ValueError("staged video must be an absolute path to the requested filename")
         _validate_version(self.schema_version)
+        if self.video_integrity is not None and type(self.video_integrity) is not VideoIntegrity:
+            raise TypeError("Video integrity must be a validated value.")
         if self.analysis_version is not None and (
             type(self.analysis_version) is not str
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", self.analysis_version)
