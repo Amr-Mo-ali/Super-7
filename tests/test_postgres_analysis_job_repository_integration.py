@@ -516,6 +516,7 @@ def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
 def _prepare_slice2_database(database: _DisposablePostgresSession) -> MigrationRunner:
     runner = _slice4_runner(database.migration_settings)
     assert runner.current_version() is None
+    assert database.application_relations() == frozenset()
     runner.apply_pending()
     assert runner.current_version() == _RESULT_OUTBOX_REVISION
     assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
