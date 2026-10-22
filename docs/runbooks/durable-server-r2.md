@@ -63,6 +63,18 @@ into tickets or logs. Model weights must be readable by container UID 10001
 and present at `/models/yolo11n.pt`; both actual model settings point there.
 `MODEL_DEVICE=cuda:0` is set in Compose for the worker only.
 
+After populating the password file, make it readable by the non-root
+`db-admin` image (UID 10001). Compose file-backed secrets retain host file
+ownership and permissions on Linux; the initial operator-owned `0600` file
+cannot be read by that role. Keep the other private files operator-owned.
+
+```bash
+sudo chown 10001:10001 "$SUPER7_SERVER_SECRETS_DIR/postgres-password"
+sudo chmod 0400 "$SUPER7_SERVER_SECRETS_DIR/postgres-password"
+test "$(sudo stat -c '%u:%g:%a' \
+  "$SUPER7_SERVER_SECRETS_DIR/postgres-password")" = '10001:10001:400'
+```
+
 The R2 bucket `4goats-media-dev` and `videos/` prefix are fixed in the
 current code; they are not environment settings. Confirm that namespace and
 the backend integrity policy before admitting requests. The worker stages at
@@ -101,6 +113,9 @@ test -n "$SUPER7_WORKER_MEMORY_LIMIT"
 ```bash
 docker compose -f docker-compose.server.yml config --quiet
 docker compose -f docker-compose.server.yml --profile maintenance build api db-admin
+docker compose -f docker-compose.server.yml --profile maintenance run --rm \
+  --no-deps db-admin python -c \
+  'from pathlib import Path; assert Path("/run/secrets/postgres_password").read_bytes().strip()'
 docker compose -f docker-compose.server.yml build worker
 docker run --rm --gpus all --network none --entrypoint python \
   "super7-server-gpu-worker:$SUPER7_IMAGE_TAG" \
@@ -198,7 +213,10 @@ The target is `sprint2_slice5_video_integrity`. The tool grants API only
 admission table read/insert, worker the job/attempt mutations and terminal
 outbox insertion, and dispatcher outbox delivery-column updates. Each role
 gets Yoyo version read access and no schema create privilege. The tool
-checks permitted and forbidden table/column rights using each actual login.
+removes `PUBLIC` and direct table/sequence grants before granting
+the reviewed matrix, then checks permitted and forbidden table/column rights
+using each actual login. An adopted database with unrelated consumers needs a
+separate privilege review before this operation.
 On failure, keep writers stopped, preserve the volume, inspect the schema
 and migration log, and restore from the verified backup if required.
 Application code rollback does **not** reverse a database migration.
@@ -225,7 +243,11 @@ therefore does not fake their readiness with a process-exists healthcheck.
 Do not submit a request that can produce an Apex callback until Apex
 `invalid_video` compatibility, the backend integrity policy, the deferred
 generic R2 404/NotFound classification, and live R2/GPU/receiver behavior
-have been reviewed. When callback delivery is explicitly authorized, activate
+have been reviewed. Admission currently permits HTTP callback URLs, and the
+dispatcher can deliver to them in plaintext. Keep dispatch disabled until the
+receiver's HTTPS URL and the accepted callback transport policy have been
+verified; changing admission policy requires a separately approved contract
+change. When callback delivery is explicitly authorized, activate
 the dispatcher as a separate step:
 
 ```bash

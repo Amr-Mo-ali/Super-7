@@ -17,6 +17,9 @@ from yoyo import default_migration_table, read_migrations  # type: ignore[import
 from adapters.yoyo_migration_backend import DatabaseMigrationError, YoyoMigrationBackend
 from core.database_config import DatabaseSettings
 
+# Administrative DDL cannot bind identifiers. Keep SQL templates constant and
+# compose every variable identifier/value with psycopg Identifier/Literal.
+
 MIGRATIONS = "package:adapters:migrations/postgres"
 REVISION = "sprint2_slice5_video_integrity"
 CATALOG = (
@@ -240,7 +243,29 @@ def grant_runtime(values: dict[str, str]) -> None:
     dispatcher = sql.Identifier(values["SUPER7_DISPATCHER_DB_USER"])
     with connect(values, role="admin") as connection:
         with connection.transaction():
+            # An adopted database may carry earlier grants. Remove both direct
+            # and PUBLIC rights before applying the reviewed runtime matrix.
+            connection.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC").close()
+            connection.execute(
+                "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC"
+            ).close()
+            connection.execute(
+                "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC"
+            ).close()
             for role in (api, worker, dispatcher):
+                connection.execute(
+                    sql.SQL("REVOKE ALL ON SCHEMA public FROM {}").format(role)
+                ).close()
+                connection.execute(
+                    sql.SQL("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {}").format(
+                        role
+                    )
+                ).close()
+                connection.execute(
+                    sql.SQL(
+                        "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM {}"
+                    ).format(role)
+                ).close()
                 connection.execute(
                     sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(role)
                 ).close()
@@ -325,30 +350,56 @@ def verify_grants(values: dict[str, str]) -> None:
     }
     for role, role_permissions in expected.items():
         with connect(values, role=role) as connection:
+            relations = {
+                str(row[0]): str(row[1])
+                for row in connection.execute(
+                    "SELECT c.relname, c.relkind FROM pg_class AS c "
+                    "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')"
+                ).fetchall()
+            }
+            if set(relations) - set(TABLES) - set(METADATA_TABLES):
+                raise ServerDatabaseError("Unknown public relation; grants cannot be verified.")
+            if not set(TABLES).union({default_migration_table}).issubset(relations):
+                raise ServerDatabaseError("Required public relations are missing.")
             schema = connection.execute(
                 "SELECT has_schema_privilege(current_user, 'public', 'USAGE'), "
                 "has_schema_privilege(current_user, 'public', 'CREATE')"
             ).fetchone()
             if schema != (True, False):
                 raise ServerDatabaseError(f"{role} schema grants differ from policy.")
-            for table in (*TABLES, default_migration_table):
+            for table in (name for name, kind in relations.items() if kind != "S"):
                 result = connection.execute(
                     "SELECT has_table_privilege(current_user, %s, 'SELECT'), "
                     "has_table_privilege(current_user, %s, 'INSERT'), "
                     "has_table_privilege(current_user, %s, 'UPDATE'), "
-                    "has_table_privilege(current_user, %s, 'DELETE')",
-                    (table, table, table, table),
+                    "has_table_privilege(current_user, %s, 'DELETE'), "
+                    "has_table_privilege(current_user, %s, 'TRUNCATE'), "
+                    "has_table_privilege(current_user, %s, 'REFERENCES'), "
+                    "has_table_privilege(current_user, %s, 'TRIGGER')",
+                    (table,) * 7,
                 ).fetchone()
                 permitted = role_permissions.get(
                     table, "r" if table == default_migration_table else ""
                 )
-                wanted = tuple(letter in permitted for letter in "riud")
+                wanted = (*tuple(letter in permitted for letter in "riud"), False, False, False)
                 if result != wanted:
                     raise ServerDatabaseError(f"{role} {table} grants differ from policy.")
                 if "r" in permitted:
                     connection.execute(
                         sql.SQL("SELECT 1 FROM {} LIMIT 0").format(sql.Identifier(table))
                     ).close()
+            for sequence, kind in relations.items():
+                if kind != "S":
+                    continue
+                rights = connection.execute(
+                    "SELECT has_sequence_privilege(current_user, %s, 'USAGE'), "
+                    "has_sequence_privilege(current_user, %s, 'SELECT'), "
+                    "has_sequence_privilege(current_user, %s, 'UPDATE')",
+                    (sequence, sequence, sequence),
+                ).fetchone()
+                if rights != (False, False, False):
+                    raise ServerDatabaseError(f"{role} {sequence} grants differ from policy.")
             columns = connection.execute(
                 "SELECT has_column_privilege(current_user, 'analysis_callback_outbox', "
                 "'delivery_state', 'UPDATE'), "
@@ -386,7 +437,7 @@ def verify_grants(values: dict[str, str]) -> None:
                 else:
                     if not allowed:
                         raise ServerDatabaseError(f"{role} forbidden SQL statement was allowed.")
-    print("Role SELECT, INSERT, UPDATE, DELETE and schema permission matrix verified.")
+    print("Role table, column and schema permission matrix verified.")
 
 
 def main() -> int:
