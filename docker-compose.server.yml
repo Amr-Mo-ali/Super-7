@@ -1,0 +1,145 @@
+name: super7-durable-server
+
+x-log: &bounded-log
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-db-dependency: &database-ready
+  postgres:
+    condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16.15-bookworm@sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
+    environment:
+      POSTGRES_USER: super7_admin
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [database]
+    restart: "on-failure:3"
+    stop_grace_period: 2m
+    logging: *bounded-log
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U super7_admin -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  db-admin:
+    profiles: [maintenance]
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      target: database-admin
+    image: super7-server-db-admin:${SUPER7_IMAGE_TAG:?Set exact revision tag}
+    env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/db-admin.env
+    secrets: [postgres_password]
+    networks: [database]
+    depends_on: *database-ready
+    restart: "no"
+    logging: *bounded-log
+    read_only: true
+    tmpfs: [/tmp]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      target: runtime
+    image: super7-server-runtime:${SUPER7_IMAGE_TAG:?Set exact revision tag}
+    command: ["uvicorn", "durable_api_main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/api.env
+    ports: ["127.0.0.1:18080:8000"]
+    networks: [database, admission]
+    depends_on: *database-ready
+    init: true
+    restart: "on-failure:3"
+    stop_grace_period: 30s
+    logging: *bounded-log
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; assert urlopen('http://127.0.0.1:8000/health/ready', timeout=5).status == 200"]
+      interval: 15s
+      timeout: 8s
+      start_period: 20s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+      target: gpu-worker
+    image: super7-server-gpu-worker:${SUPER7_IMAGE_TAG:?Set exact revision tag}
+    command: ["python", "-m", "durable_worker_main"]
+    env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/worker.env
+    environment:
+      SUPER7_DURABLE_WORKER_ENABLED: "1"
+      SUPER7_VIDEO_SOURCE: r2
+      SUPER7_R2_TEMP_ROOT: /staging
+      MODEL_PATH: /models/yolo11n.pt
+      BALL_MODEL_PATH: /models/yolo11n.pt
+      MODEL_DEVICE: cuda:0
+      YOLO_CONFIG_DIR: /scratch/ultralytics
+      HOME: /scratch
+    working_dir: /scratch
+    volumes:
+      - type: bind
+        source: ${SUPER7_SERVER_MODELS_DIR:?Set external model directory}
+        target: /models
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /staging:size=1073741824,mode=0700,uid=10001,gid=10001
+      - /scratch:size=536870912,mode=0700,uid=10001,gid=10001
+      - /tmp:size=268435456,mode=1777
+    gpus: all
+    mem_limit: ${SUPER7_WORKER_MEMORY_LIMIT:?Set worker memory after target-host capacity review}
+    memswap_limit: ${SUPER7_WORKER_MEMORY_LIMIT:?Set worker memory after target-host capacity review}
+    networks: [database, object-storage]
+    depends_on: *database-ready
+    init: true
+    restart: "on-failure:3"
+    stop_grace_period: 30m
+    logging: *bounded-log
+    read_only: true
+    # No process-only health probe: the worker has no external readiness API.
+    healthcheck: {disable: true}
+
+  dispatcher:
+    profiles: [dispatch]
+    image: super7-server-runtime:${SUPER7_IMAGE_TAG:?Set exact revision tag}
+    command: ["python", "-m", "durable_dispatcher_main"]
+    env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/dispatcher.env
+    networks: [database, callbacks]
+    depends_on: *database-ready
+    init: true
+    restart: "on-failure:3"
+    stop_grace_period: 2m
+    logging: *bounded-log
+    read_only: true
+    tmpfs: [/tmp]
+    # Readiness is the dispatcher_ready event plus DB advisory ownership.
+    healthcheck: {disable: true}
+
+secrets:
+  postgres_password:
+    file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/postgres-password
+
+volumes:
+  pgdata:
+    external: true
+    name: ${SUPER7_POSTGRES_VOLUME:?Set explicitly reviewed PostgreSQL volume}
+
+networks:
+  database:
+    internal: true
+  admission: {}
+  object-storage: {}
+  callbacks: {}

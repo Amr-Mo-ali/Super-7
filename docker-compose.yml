@@ -1,3 +1,5 @@
+# LEGACY DISABLED: this file retains the Apex local-video mount only for
+# historical reference. Server rollout uses docker-compose.server.yml.
 services:
   football-analysis:
     build:

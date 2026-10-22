@@ -2,6 +2,7 @@
 .local-durable/
 .local-r2/
 .local-durable-compose/
+.local-server/
 .venv/
 .uv-cache/
 .pytest_cache/
