@@ -11,7 +11,6 @@ from core.database_config import DatabaseSettings
 from core.logging import configure_logging, get_logger
 from services.callback_service import CallbackService
 from services.cleanup_exception_links import remove_primary_backlinks
-from services.durable_callback_https_policy import https_only_from_mapping
 from services.durable_callback_transport import create_callback_transport
 from services.durable_dispatcher_runtime import DurableDispatcherRuntime
 
@@ -19,14 +18,11 @@ from services.durable_dispatcher_runtime import DurableDispatcherRuntime
 def create_runtime() -> DurableDispatcherRuntime:
     if environ.get("SUPER7_DURABLE_DISPATCHER_ENABLED") != "1":
         raise RuntimeError("Durable dispatcher role is not enabled.")
-    https_only_callbacks = https_only_from_mapping(environ)
     logger = get_logger("football_analysis.durable_dispatcher")
     validator = CallbackService(10, logger)
     return DurableDispatcherRuntime(
         database_settings=DatabaseSettings.from_mapping(environ),
-        callback_transport=create_callback_transport(
-            validator, https_only_callbacks=https_only_callbacks
-        ),
+        callback_transport=create_callback_transport(validator),
     )
 
 

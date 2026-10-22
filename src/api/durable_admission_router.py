@@ -10,7 +10,6 @@ from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnava
 from core.exceptions import AnalysisError
 from schemas.analysis import AnalyzeQueuedResponse, DurableAnalyzeRequest
 from services.callback_service import CallbackService
-from services.durable_callback_https_policy import require_https_callback
 from services.durable_local_admission import (
     DurableAdmissionConflict,
     DurableAdmissionFull,
@@ -25,8 +24,6 @@ def create_durable_admission_router(
     admission: DurableLocalAdmission,
     path_resolver: VideoPathResolver,
     callback_service: CallbackService,
-    *,
-    https_only_callbacks: bool = False,
 ) -> APIRouter:
     """Keep authentication ahead of body parsing and all existing admission mappings."""
 
@@ -56,8 +53,6 @@ def create_durable_admission_router(
         except DurableAdmissionInvalidKey as error:
             raise HTTPException(status_code=422, detail={"error": str(error)}) from None
         try:
-            if https_only_callbacks:
-                require_https_callback(payload.callback_url)
             path_resolver.validate_reference(payload.video_url)
             callback_service.validate_callback_url(payload.callback_url)
         except (OSError, ValueError, AnalysisError) as error:

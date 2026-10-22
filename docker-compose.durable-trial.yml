@@ -1,4 +1,3 @@
-# LOCAL CPU/VIDEO TRIAL ONLY. Server rollout uses docker-compose.server.yml.
 name: super7-durable-compose-trial-20261015
 
 services:

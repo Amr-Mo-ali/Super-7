@@ -17,7 +17,6 @@ from core.logging import configure_logging, get_logger
 from services.callback_service import CallbackService
 from services.cleanup_exception_links import remove_primary_backlinks
 from services.durable_api_runtime import DurableApiRuntime
-from services.durable_callback_https_policy import https_only_from_mapping
 from services.video_path_resolver import VideoPathResolver
 
 
@@ -38,7 +37,6 @@ def create_app(
     """Construct the API role only after explicit opt-in."""
     if environ.get("SUPER7_DURABLE_API_ENABLED") != "1":
         raise RuntimeError("Durable API role is not enabled.")
-    https_only_callbacks = https_only_from_mapping(environ)
     configure_logging()
     resolved_settings = settings or Settings(
         callback_timeout_seconds=float(environ.get("CALLBACK_TIMEOUT_SECONDS", 10.0)),
@@ -102,12 +100,7 @@ def create_app(
     )
     app.state.durable_runtime = runtime
     app.include_router(
-        create_durable_admission_router(
-            runtime.admission,
-            resolved_path,
-            resolved_callback,
-            https_only_callbacks=https_only_callbacks,
-        )
+        create_durable_admission_router(runtime.admission, resolved_path, resolved_callback)
     )
     health = APIRouter()
 
