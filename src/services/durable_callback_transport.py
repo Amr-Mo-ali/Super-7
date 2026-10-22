@@ -7,14 +7,20 @@ from pydantic import HttpUrl
 
 from services.analysis_callback_delivery import CallbackTransport
 from services.callback_service import CallbackService
+from services.durable_callback_https_policy import require_https_callback
 
 
-def create_callback_transport(validator: CallbackService) -> CallbackTransport:
+def create_callback_transport(
+    validator: CallbackService, *, https_only_callbacks: bool = False
+) -> CallbackTransport:
     async def post(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> int:
         try:
-            destination = validator.resolve_callback_destination(HttpUrl(url))
-        except ValueError as error:
-            raise OSError("Callback destination unavailable.") from error
+            parsed_url = HttpUrl(url)
+            if https_only_callbacks:
+                require_https_callback(parsed_url)
+            destination = validator.resolve_callback_destination(parsed_url)
+        except ValueError:
+            raise OSError("Callback destination unavailable.") from None
         pinned_url = httpx.URL(url).copy_with(host=str(destination.address))
         try:
             async with httpx.AsyncClient(

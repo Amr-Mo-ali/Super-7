@@ -54,6 +54,8 @@ services:
     image: super7-server-runtime:${SUPER7_IMAGE_TAG:?Set exact revision tag}
     command: ["uvicorn", "durable_api_main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
     env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/api.env
+    environment:
+      SUPER7_DURABLE_CALLBACK_HTTPS_ONLY: "1"
     ports: ["127.0.0.1:18080:8000"]
     networks: [database, admission]
     depends_on: *database-ready
@@ -117,6 +119,8 @@ services:
     image: super7-server-runtime:${SUPER7_IMAGE_TAG:?Set exact revision tag}
     command: ["python", "-m", "durable_dispatcher_main"]
     env_file: ${SUPER7_SERVER_SECRETS_DIR:?Set external secret directory}/dispatcher.env
+    environment:
+      SUPER7_DURABLE_CALLBACK_HTTPS_ONLY: "1"
     networks: [database, callbacks]
     depends_on: *database-ready
     init: true

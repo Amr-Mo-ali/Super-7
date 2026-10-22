@@ -243,11 +243,31 @@ therefore does not fake their readiness with a process-exists healthcheck.
 Do not submit a request that can produce an Apex callback until Apex
 `invalid_video` compatibility, the backend integrity policy, the deferred
 generic R2 404/NotFound classification, and live R2/GPU/receiver behavior
-have been reviewed. Admission currently permits HTTP callback URLs, and the
-dispatcher can deliver to them in plaintext. Keep dispatch disabled until the
-receiver's HTTPS URL and the accepted callback transport policy have been
-verified; changing admission policy requires a separately approved contract
-change. When callback delivery is explicitly authorized, activate
+have been reviewed. This Compose file forces
+`SUPER7_DURABLE_CALLBACK_HTTPS_ONLY=1` in both API and dispatcher. The API
+returns 422 for an HTTP callback URL before admission. The dispatcher rejects
+an older HTTP outbox destination before any network connection and records
+the existing `RETRYING` state with a 30-second due delay; it never marks that
+event delivered. Other development configurations retain their prior policy.
+
+Before dispatcher activation, identify older HTTP records without printing
+their signed URLs. Run this only in the approved maintenance window:
+
+```bash
+docker compose -f docker-compose.server.yml exec -T postgres \
+  psql -U super7_admin -d super7 -v ON_ERROR_STOP=1 \
+  -c "SELECT o.callback_event_id, o.job_id, o.delivery_state, o.next_attempt_at
+      FROM analysis_callback_outbox AS o
+      JOIN analysis_jobs AS j ON j.job_id = o.job_id
+      WHERE j.callback_url ~* '^http://' AND o.delivery_state <> 'DELIVERED'
+      ORDER BY o.created_at;"
+```
+
+Review any returned IDs with the callback owner under an approved remediation
+plan. Do not edit the immutable URL, substitute HTTPS, mark a record delivered,
+or send it manually as a shortcut. Keep dispatch disabled until the HTTPS
+receiver and handling of older HTTP records are agreed. When callback delivery
+is explicitly authorized, activate
 the dispatcher as a separate step:
 
 ```bash
