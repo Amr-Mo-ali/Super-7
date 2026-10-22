@@ -44,11 +44,12 @@ CONFIG = SECRET_DIR / "config.json"
 BOOTSTRAP_PASSWORD = SECRET_DIR / "postgres-bootstrap-password.secret"
 PASSWORD_TARGET = "/run/secrets/super7_local_postgres_password"
 MIGRATIONS = "package:adapters:migrations/postgres"
-REVISION = "sprint2_slice4_result_outbox"
+REVISION = "sprint2_slice5_video_integrity"
 CATALOG = (
     "sprint2_slice1_foundation",
     "sprint2_slice2_analysis_job",
     "sprint2_slice3_worker_attempt",
+    "sprint2_slice4_result_outbox",
     REVISION,
 )
 
@@ -291,7 +292,7 @@ def _migrate(config: dict[str, Any]) -> None:
     runner = YoyoMigrationBackend(_settings(config, migration=True), (MIGRATIONS,))
     runner.apply_pending()
     if runner.current_version() != REVISION:
-        raise SetupError("Local PostgreSQL did not reach the required Slice 4 revision.")
+        raise SetupError("Local PostgreSQL did not reach the required Slice 5 revision.")
 
 
 def _grant_runtime(config: dict[str, Any]) -> None:
@@ -426,7 +427,7 @@ def init() -> None:
     _grant_runtime(config)
     _verify_runtime(config)
     print(
-        "Persistent local PostgreSQL is ready at 127.0.0.1:55432; schema Slice 4; restricted runtime role verified."
+        "Persistent local PostgreSQL is ready at 127.0.0.1:55432; schema Slice 5; restricted runtime role verified."
     )
     print(f"Owned container: {CONTAINER}; persistent volume: {VOLUME}.")
 

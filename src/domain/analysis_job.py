@@ -12,6 +12,8 @@ from uuid import UUID
 
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 
+from domain.video_integrity import VideoIntegrity
+
 __all__ = [
     "AnalysisJob",
     "AnalysisJobAccepted",
@@ -71,6 +73,7 @@ class AnalysisJob:
     state: AnalysisJobState
     attempt_limit: int
     accepted_at: datetime
+    video_integrity: VideoIntegrity | None = None
 
     def __post_init__(self) -> None:
         _validate_uuid(self.job_id)
@@ -79,6 +82,7 @@ class AnalysisJob:
         )
         _validate_policy(self.analysis_version, self.attempt_limit)
         _validate_datetime(self.accepted_at)
+        _validate_video_integrity(self.video_integrity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +98,7 @@ class NewAnalysisJob:
     callback_url: str
     analysis_version: str
     attempt_limit: int
+    video_integrity: VideoIntegrity | None = None
 
     def __post_init__(self) -> None:
         _validate_uuid(self.job_id)
@@ -109,6 +114,12 @@ class NewAnalysisJob:
             raise TypeError("Request fingerprint must be binary.")
         if len(self.request_fingerprint) != 32:
             raise ValueError("Request fingerprint must contain exactly 32 bytes.")
+        _validate_video_integrity(self.video_integrity)
+
+
+def _validate_video_integrity(value: VideoIntegrity | None) -> None:
+    if value is not None and type(value) is not VideoIntegrity:
+        raise TypeError("Video integrity must be a validated value.")
 
 
 @dataclass(frozen=True, slots=True)

@@ -29,6 +29,7 @@ _CATALOG = (
     _DEPENDENCY,
     _REVISION,
     "sprint2_slice4_result_outbox",
+    "sprint2_slice5_video_integrity",
 )
 _PATH = _DIRECTORY / f"{_REVISION}.py"
 _RED = "Slice 3 RED-G: canonical worker-attempt migration is absent; GREEN-G must add it."

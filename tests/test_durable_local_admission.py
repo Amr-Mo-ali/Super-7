@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from domain.analysis_job import (
     AnalysisJobState,
     NewAnalysisJob,
 )
+from domain.video_integrity import VideoIntegrity
 from main import create_app
 from services.callback_service import CallbackService
 from services.durable_local_admission import (
@@ -68,7 +70,10 @@ class _Repository:
             return AnalysisJobAccepted(_job(candidate))
         if candidate.idempotency_lookup != self.stored.idempotency_lookup:
             return AnalysisJobCapacityRejected()
-        if candidate.request_fingerprint != self.stored.request_fingerprint:
+        if (
+            candidate.request_fingerprint != self.stored.request_fingerprint
+            or candidate.video_integrity != self.stored.video_integrity
+        ):
             return AnalysisJobIdempotencyConflict(self.stored.job_id)
         return AnalysisJobExisting(_job(self.stored))
 
@@ -84,6 +89,7 @@ def _job(candidate: NewAnalysisJob) -> AnalysisJob:
         AnalysisJobState.QUEUED,
         candidate.attempt_limit,
         datetime.now(UTC),
+        candidate.video_integrity,
     )
 
 
@@ -161,6 +167,72 @@ class _LocalCallbackValidator(CallbackService):
 
     def validate_callback_url(self, callback_url: HttpUrl) -> None:
         assert str(callback_url) == "http://127.0.0.1:8765/callback"
+
+
+def test_verified_route_validates_fields_preserves_signed_query_and_binds_idempotency() -> None:
+    class SignedCallbackValidator(_LocalCallbackValidator):
+        def validate_callback_url(self, callback_url: HttpUrl) -> None:
+            assert str(callback_url) == "http://127.0.0.1:8765/callback?sig=opaque%2Fvalue"
+
+    async def scenario() -> None:
+        repository = _Repository()
+        runtime = cast(DurableLocalRuntime, SimpleNamespace(admission=_admission(repository)))
+        app = create_app(
+            Settings(video_storage_root="E:/super7/dataset/raw/social_media"),
+            callback_service=SignedCallbackValidator(),
+            durable_runtime=runtime,
+        )
+        payload: dict[str, object] = {
+            "videoId": "video",
+            "playerId": "player",
+            "videoUrl": "video.mp4",
+            "callbackUrl": "http://127.0.0.1:8765/callback?sig=opaque%2Fvalue",
+        }
+        verified = {
+            **payload,
+            "videoKey": "videos/video.mp4",
+            "videoSizeBytes": 5,
+            "videoSha256": hashlib.sha256(b"video").hexdigest(),
+            "hashAlgorithm": "sha256",
+        }
+        headers = {"Authorization": "Bearer ephemeral-test-secret", "Idempotency-Key": "key"}
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                assert (await client.post("/analyze", json=verified)).status_code == 401
+                for bad in (
+                    {**verified, "videoKey": "videos/../video.mp4"},
+                    {**verified, "videoSizeBytes": True},
+                    {**verified, "videoSha256": "A" * 64},
+                    {**verified, "hashAlgorithm": "SHA256"},
+                    {**payload, "videoKey": "videos/video.mp4"},
+                ):
+                    assert (
+                        await client.post("/analyze", json=bad, headers=headers)
+                    ).status_code == 422
+                assert repository.calls == 0
+                first = await client.post("/analyze", json=verified, headers=headers)
+                assert first.status_code == 202
+                assert repository.stored is not None
+                assert repository.stored.callback_url == verified["callbackUrl"]
+                assert repository.stored.video_integrity == VideoIntegrity(
+                    5, cast(str, verified["videoSha256"])
+                )
+                assert (
+                    await client.post("/analyze", json=verified, headers=headers)
+                ).json() == first.json()
+                assert (
+                    await client.post("/analyze", json=payload, headers=headers)
+                ).status_code == 409
+                changed = {**verified, "videoSha256": "0" * 64}
+                assert (
+                    await client.post("/analyze", json=changed, headers=headers)
+                ).status_code == 409
+        finally:
+            await app.state.request_lifecycle.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_existing_route_uses_durable_headers_only_when_explicitly_enabled() -> None:

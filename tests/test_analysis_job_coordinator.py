@@ -23,6 +23,7 @@ from domain.analysis_job_attempt import (
     WorkerClaim,
     WorkerSlotId,
 )
+from domain.video_integrity import VideoIntegrity
 from services.analysis_job_coordinator import (
     AnalysisJobCoordinator,
     CoordinatorOwnershipLost,
@@ -56,6 +57,7 @@ from services.process_contracts import (
     ParentCancelled,
     ParentFailure,
 )
+from services.r2_video_input import R2DownloadError
 
 
 class _Worker:
@@ -178,6 +180,33 @@ def _success(claim: WorkerClaim, kind: str = "noncompleted") -> ValidatedChildSu
     return ValidatedChildSuccess(child, response)
 
 
+def test_verified_claim_cannot_reach_an_executor_without_integrity_checks() -> None:
+    async def scenario() -> None:
+        ordinary = _claim()
+        claim = replace(
+            ordinary,
+            job=replace(ordinary.job, video_integrity=VideoIntegrity(5, "0" * 64)),
+        )
+        worker = _Worker(claim)
+        child = _Child()
+        coordinator = AnalysisJobCoordinator(
+            worker_repository=worker,
+            finalization_repository=_Finalizer(worker),
+            child_executor=child,
+            result_projector=convert_child_success,
+            worker_slot_id=claim.authority.worker_slot_id,
+            model_catalog={_RAW_MODEL: _SAFE_MODEL},
+            timing=_timing(),
+        )
+        with pytest.raises(CoordinatorUnclassifiedFailure):
+            await coordinator.run_one()
+        assert child.requests == []
+        assert worker.renewals == 0
+        assert coordinator.stopped
+
+    asyncio.run(scenario())
+
+
 def test_success_renews_during_child_and_settles_before_finalization() -> None:
     async def scenario() -> None:
         claim = _claim()
@@ -295,6 +324,33 @@ def test_unclassified_child_failure_does_not_finalize() -> None:
     asyncio.run(scenario())
 
 
+def test_operational_r2_download_failure_stops_without_terminal_code() -> None:
+    async def scenario() -> None:
+        claim = _claim()
+        worker = _Worker(claim)
+        child = _Child()
+        finalizer = _Finalizer(worker)
+        child.future.set_exception(R2DownloadError("R2 video download failed."))
+        coordinator = AnalysisJobCoordinator(
+            worker_repository=worker,
+            finalization_repository=finalizer,
+            child_executor=child,
+            result_projector=convert_child_success,
+            worker_slot_id=claim.authority.worker_slot_id,
+            model_catalog={_RAW_MODEL: _SAFE_MODEL},
+            timing=_timing(),
+        )
+        with pytest.raises(R2DownloadError):
+            await coordinator.run_one()
+        assert worker.failure_calls == []
+        assert finalizer.calls == []
+        assert coordinator.stopped
+        await asyncio.gather(*coordinator.outstanding_tasks)
+        assert not coordinator.outstanding_tasks
+
+    asyncio.run(scenario())
+
+
 def test_missing_video_terminalizes_then_worker_discovers_a_valid_job() -> None:
     class SequencedChild:
         def __init__(self, second: WorkerClaim) -> None:
@@ -369,19 +425,100 @@ def test_missing_video_terminalizes_then_worker_discovers_a_valid_job() -> None:
     asyncio.run(scenario())
 
 
-def test_exact_terminal_replay_permits_continuation() -> None:
+def test_invalid_video_terminalizes_then_worker_discovers_a_valid_job() -> None:
+    class SequencedChild:
+        def __init__(self, second: WorkerClaim) -> None:
+            self.second = second
+            self.requests: list[ChildAnalysisRequest] = []
+
+        async def execute_enveloped(
+            self, request: ChildAnalysisRequest
+        ) -> ValidatedChildSuccess | ParentFailure:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ParentFailure(
+                    "UntrustedChildException",
+                    "Analysis could not be completed.",
+                    ChildFailureKind.VIDEO_INVALID,
+                )
+            assert request.analysis_id == str(self.second.authority.job_id)
+            return _success(self.second)
+
+    async def scenario() -> None:
+        first = _claim()
+        second_id = UUID(int=35)
+        second = replace(
+            first,
+            authority=replace(first.authority, job_id=second_id, lease_id=LeaseId(UUID(int=36))),
+            job=replace(
+                first.job,
+                job_id=second_id,
+                accepted_at=first.job.accepted_at + timedelta(seconds=1),
+            ),
+        )
+        worker = _Worker(first)
+        worker.claim_queue = [first, second]
+        worker.terminal_outcome = AttemptFailed(
+            first.authority, AttemptFailureCode("invalid_video")
+        )
+        worker.recovery_enabled = True
+        finalizer = _Finalizer(worker)
+        child = SequencedChild(second)
+        coordinator = AnalysisJobCoordinator(
+            worker_repository=worker,
+            finalization_repository=finalizer,
+            child_executor=child,
+            result_projector=convert_child_success,
+            worker_slot_id=first.authority.worker_slot_id,
+            model_catalog={_RAW_MODEL: _SAFE_MODEL},
+            timing=_timing(),
+        )
+        loop = DurableWorkerLoop(
+            coordinator=coordinator,
+            recovery_repository=worker,
+            recovery_batch_size=RecoveryBatchSize(1),
+            idle_wait_seconds=0.01,
+            logger=logging.getLogger("football_analysis.tests.invalid_video_terminal"),
+        )
+        loop.start()
+        try:
+            await asyncio.wait_for(finalizer.completed.wait(), 1)
+        finally:
+            await asyncio.wait_for(loop.stop(), 1)
+        assert loop.failure is None
+        assert worker.failure_calls == [(first.authority, AttemptFailureCode("invalid_video"))]
+        assert len(finalizer.calls) == 1
+        assert finalizer.calls[0][0] == second.authority
+        assert [request.analysis_id for request in child.requests] == [
+            str(first.authority.job_id),
+            str(second.authority.job_id),
+        ]
+        assert not coordinator.stopped
+        assert not coordinator.outstanding_tasks
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("kind", "code"),
+    (
+        (ChildFailureKind.VIDEO_UNAVAILABLE, "video_unavailable"),
+        (ChildFailureKind.VIDEO_INVALID, "invalid_video"),
+    ),
+)
+def test_exact_terminal_replay_permits_continuation(kind: ChildFailureKind, code: str) -> None:
     async def scenario() -> None:
         claim = _claim()
         worker = _Worker(claim)
         worker.terminal_outcome = AttemptResolutionAlreadyApplied(
-            claim.authority, AttemptStatus.TERMINAL_FAILURE, AttemptFailureCode("video_unavailable")
+            claim.authority, AttemptStatus.TERMINAL_FAILURE, AttemptFailureCode(code)
         )
         child = _Child()
         child.future.set_result(
             ParentFailure(
                 "VideoNotFoundError",
                 "Analysis could not be completed.",
-                ChildFailureKind.VIDEO_UNAVAILABLE,
+                kind,
             )
         )
         coordinator = AnalysisJobCoordinator(
@@ -395,7 +532,7 @@ def test_exact_terminal_replay_permits_continuation() -> None:
         )
         assert await coordinator.run_one() == worker.terminal_outcome
         assert not coordinator.stopped
-        assert worker.failure_calls == [(claim.authority, AttemptFailureCode("video_unavailable"))]
+        assert worker.failure_calls == [(claim.authority, AttemptFailureCode(code))]
 
     asyncio.run(scenario())
 
@@ -434,7 +571,16 @@ def test_nonterminal_replay_of_missing_video_stops_discovery() -> None:
     asyncio.run(scenario())
 
 
-def test_stale_authority_rejects_missing_video_finalization_and_stops() -> None:
+@pytest.mark.parametrize(
+    ("kind", "code"),
+    (
+        (ChildFailureKind.VIDEO_UNAVAILABLE, "video_unavailable"),
+        (ChildFailureKind.VIDEO_INVALID, "invalid_video"),
+    ),
+)
+def test_stale_authority_rejects_missing_video_finalization_and_stops(
+    kind: ChildFailureKind, code: str
+) -> None:
     async def scenario() -> None:
         claim = _claim()
         worker = _Worker(claim)
@@ -444,7 +590,7 @@ def test_stale_authority_rejects_missing_video_finalization_and_stops() -> None:
             ParentFailure(
                 "VideoNotFoundError",
                 "Analysis could not be completed.",
-                ChildFailureKind.VIDEO_UNAVAILABLE,
+                kind,
             )
         )
         finalizer = _Finalizer(worker)
@@ -459,7 +605,7 @@ def test_stale_authority_rejects_missing_video_finalization_and_stops() -> None:
         )
         with pytest.raises(CoordinatorOwnershipLost):
             await coordinator.run_one()
-        assert worker.failure_calls == [(claim.authority, AttemptFailureCode("video_unavailable"))]
+        assert worker.failure_calls == [(claim.authority, AttemptFailureCode(code))]
         assert finalizer.calls == []
         assert coordinator.stopped
         assert not coordinator.outstanding_tasks
@@ -520,7 +666,10 @@ def test_completed_unavailable_ratings_remain_successful() -> None:
     asyncio.run(scenario())
 
 
-def test_ambiguous_missing_video_finalization_keeps_slot_unusable() -> None:
+@pytest.mark.parametrize(
+    "kind", (ChildFailureKind.VIDEO_UNAVAILABLE, ChildFailureKind.VIDEO_INVALID)
+)
+def test_ambiguous_missing_video_finalization_keeps_slot_unusable(kind: ChildFailureKind) -> None:
     class HeldTerminalWorker(_Worker):
         def __init__(self, claim: WorkerClaim) -> None:
             super().__init__(claim)
@@ -543,7 +692,7 @@ def test_ambiguous_missing_video_finalization_keeps_slot_unusable() -> None:
             ParentFailure(
                 "VideoNotFoundError",
                 "Analysis could not be completed.",
-                ChildFailureKind.VIDEO_UNAVAILABLE,
+                kind,
             )
         )
         coordinator = AnalysisJobCoordinator(

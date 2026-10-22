@@ -49,11 +49,13 @@ _FOUNDATION_REVISION = "sprint2_slice1_foundation"
 _ANALYSIS_JOB_REVISION = "sprint2_slice2_analysis_job"
 _WORKER_ATTEMPT_REVISION = "sprint2_slice3_worker_attempt"
 _RESULT_OUTBOX_REVISION = "sprint2_slice4_result_outbox"
+_VIDEO_INTEGRITY_REVISION = "sprint2_slice5_video_integrity"
 _CATALOG = (
     _FOUNDATION_REVISION,
     _ANALYSIS_JOB_REVISION,
     _WORKER_ATTEMPT_REVISION,
     _RESULT_OUTBOX_REVISION,
+    _VIDEO_INTEGRITY_REVISION,
 )
 _SLICE2_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs"})
 _SLICE3_APPLICATION_RELATIONS = frozenset({"public.analysis_jobs", "public.analysis_job_attempts"})
@@ -150,12 +152,21 @@ def _runner(settings: DatabaseSettings) -> MigrationRunner:
     return MigrationRunner(YoyoMigrationBackend(settings, (_MIGRATION_SOURCE,)))
 
 
+def _slice4_runner(settings: DatabaseSettings) -> MigrationRunner:
+    """Keep the historical Slice 2-4 upgrade and rollback evidence scoped."""
+    return MigrationRunner(
+        YoyoMigrationBackend(
+            settings, (_MIGRATION_SOURCE,), migration_reader=lambda *s: read_migrations(*s)[:4]
+        )
+    )
+
+
 def _catalog() -> tuple[str, ...]:
     return tuple(str(migration.id) for migration in read_migrations(_MIGRATION_SOURCE))
 
 
 def _current_settings(settings: DatabaseSettings) -> DatabaseSettings:
-    return replace(settings, required_schema_version=_RESULT_OUTBOX_REVISION)
+    return replace(settings, required_schema_version=_VIDEO_INTEGRITY_REVISION)
 
 
 def _grant_runtime_admission_privileges(
@@ -497,13 +508,18 @@ def _prepare_database(database: _DisposablePostgresSession) -> MigrationRunner:
     assert database.application_relations() == frozenset()
     assert _catalog() == _CATALOG
     runner.apply_pending()
-    assert runner.current_version() == _RESULT_OUTBOX_REVISION
+    assert runner.current_version() == _VIDEO_INTEGRITY_REVISION
     assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
     return runner
 
 
 def _prepare_slice2_database(database: _DisposablePostgresSession) -> MigrationRunner:
-    runner = _prepare_database(database)
+    runner = _slice4_runner(database.migration_settings)
+    assert runner.current_version() is None
+    assert database.application_relations() == frozenset()
+    runner.apply_pending()
+    assert runner.current_version() == _RESULT_OUTBOX_REVISION
+    assert database.application_relations() == _CURRENT_APPLICATION_RELATIONS
     runner.rollback_last()
     assert runner.current_version() == _WORKER_ATTEMPT_REVISION
     assert database.application_relations() == _SLICE3_APPLICATION_RELATIONS

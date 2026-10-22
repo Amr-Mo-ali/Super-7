@@ -999,6 +999,7 @@ def test_canonical_migration_resource_is_source_discoverable_and_unique() -> Non
         _EXPECTED_ANALYSIS_JOB_REVISION,
         _EXPECTED_WORKER_ATTEMPT_REVISION,
         _EXPECTED_RESULT_OUTBOX_REVISION,
+        "sprint2_slice5_video_integrity",
     ]
     assert resource.is_file()
     assert not _STALE_MIGRATION.exists()

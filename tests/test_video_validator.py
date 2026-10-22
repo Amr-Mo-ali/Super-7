@@ -1,5 +1,6 @@
 """Unit tests for OpenCV-backed video validation."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -28,8 +29,33 @@ def test_validator_rejects_non_video_content_with_video_suffix(tmp_path: Path) -
     invalid_path = tmp_path / "invalid.avi"
     invalid_path.write_bytes(b"not a video")
 
-    with pytest.raises(InvalidVideoError, match="decodable"):
+    with pytest.raises(InvalidVideoError, match="decodable") as captured:
         VideoValidator(Settings()).validate(invalid_path)
+    assert not captured.value.confirmed_input_violation
+
+
+@pytest.mark.parametrize(
+    ("max_duration", "min_width", "min_fps"),
+    (
+        (0.2, 64, 1.0),
+        (900.0, 65, 1.0),
+        (900.0, 64, 11.0),
+    ),
+)
+def test_decoded_video_rejected_by_configured_rule_has_confirmed_evidence(
+    tmp_path: Path, max_duration: float, min_width: int, min_fps: float
+) -> None:
+    video_path = _create_video(tmp_path / "sample.avi")
+    with pytest.raises(InvalidVideoError) as captured:
+        VideoValidator(
+            replace(
+                Settings(),
+                max_duration_seconds=max_duration,
+                min_width=min_width,
+                min_fps=min_fps,
+            )
+        ).validate(video_path)
+    assert captured.value.confirmed_input_violation
 
 
 def _create_video(path: Path) -> Path:

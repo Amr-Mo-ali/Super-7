@@ -22,6 +22,7 @@ import durable_worker_main
 from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnavailable
 from adapters.psycopg_callback_dispatch_ownership import PsycopgCallbackDispatchOwnership
 from core.config import Settings
+from domain.video_integrity import VideoIntegrity
 from services.analysis_job_coordinator import AnalysisJobCoordinator
 from services.callback_service import CallbackService
 from services.durable_api_runtime import DurableApiRuntime
@@ -66,6 +67,7 @@ class _Admission:
         player_id: str,
         video_reference: str,
         callback_url: HttpUrl,
+        video_integrity: VideoIntegrity | None = None,
     ) -> SimpleNamespace:
         assert (key, video_id, player_id, video_reference, str(callback_url)) == (
             "key-1",
@@ -74,6 +76,7 @@ class _Admission:
             "sample.mp4",
             "https://callback.example/result",
         )
+        assert video_integrity is None
         if self.outcome == "full":
             raise DurableAdmissionFull("Analysis queue is full.")
         if self.outcome == "conflict":

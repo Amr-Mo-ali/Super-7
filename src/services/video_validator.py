@@ -52,11 +52,20 @@ class VideoValidator:
             raise InvalidVideoError("Video has no decodable frames or valid FPS.")
         duration_seconds = frame_count / fps
         if duration_seconds > self._settings.max_duration_seconds:
-            raise InvalidVideoError("Video duration exceeds the configured limit.")
+            raise InvalidVideoError(
+                "Video duration exceeds the configured limit.",
+                confirmed_input_violation=width > 0 and height > 0,
+            )
         if width < self._settings.min_width or height < self._settings.min_height:
-            raise InvalidVideoError("Video resolution is below the configured minimum.")
+            raise InvalidVideoError(
+                "Video resolution is below the configured minimum.",
+                confirmed_input_violation=width > 0 and height > 0,
+            )
         if fps < self._settings.min_fps:
-            raise InvalidVideoError("Video FPS is below the configured minimum.")
+            raise InvalidVideoError(
+                "Video FPS is below the configured minimum.",
+                confirmed_input_violation=True,
+            )
         return VideoMetadata(
             format=path.suffix.removeprefix(".").lower(),
             file_size_bytes=path.stat().st_size,

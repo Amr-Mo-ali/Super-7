@@ -526,17 +526,29 @@ def test_one_real_video_commits_one_result_and_replays_once(
 
 
 @pytest.mark.integration
-def test_missing_video_terminalizes_and_same_worker_completes_next_job(
-    request: pytest.FixtureRequest, tmp_path: Path
+@pytest.mark.parametrize("first_failure", ("missing", "invalid"))
+def test_typed_input_failure_terminalizes_and_same_worker_completes_next_job(
+    request: pytest.FixtureRequest, tmp_path: Path, first_failure: str
 ) -> None:
     """Default-off real repository/loop boundary; child outcomes stay deterministic."""
     factory = _disposable_factory(request)
     video_root = tmp_path / "videos"
     video_root.mkdir()
     (video_root / "available.mp4").write_bytes(b"deterministic fixture")
+    # This child is deterministic: its typed rule evidence is exercised by the
+    # real validator and spawned-child tests, not inferred from these bytes.
+    (video_root / "rule_rejected.mp4").write_bytes(b"deterministic fixture")
     resolver = VideoPathResolver(video_root)
     resolver.validate_reference("missing.mp4")
+    resolver.validate_reference("rule_rejected.mp4")
     resolver.validate_reference("available.mp4")
+    rejected_reference = "missing.mp4" if first_failure == "missing" else "rule_rejected.mp4"
+    failure_kind = (
+        ChildFailureKind.VIDEO_UNAVAILABLE
+        if first_failure == "missing"
+        else ChildFailureKind.VIDEO_INVALID
+    )
+    safe_code = "video_unavailable" if first_failure == "missing" else "invalid_video"
 
     class ControlledChild:
         def __init__(self) -> None:
@@ -546,23 +558,24 @@ def test_missing_video_terminalizes_and_same_worker_completes_next_job(
             self, child_request: ChildAnalysisRequest
         ) -> ValidatedChildSuccess | ParentFailure:
             self.requests.append(child_request)
-            if child_request.video_reference == "missing.mp4":
-                try:
+            if child_request.video_reference == rejected_reference:
+                if first_failure == "missing":
+                    with pytest.raises(VideoNotFoundError):
+                        resolver.resolve(child_request.video_reference)
+                else:
                     resolver.resolve(child_request.video_reference)
-                except VideoNotFoundError:
-                    raw = ChildAnalysisFailure(
-                        child_request.analysis_id,
-                        "VideoNotFoundError",
-                        "Analysis could not be completed.",
-                        0,
-                        failure_kind=ChildFailureKind.VIDEO_UNAVAILABLE,
-                    )
-                    parent = validate_child_result(
-                        child_request.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, raw
-                    )
-                    assert isinstance(parent, ParentFailure)
-                    return parent
-                raise AssertionError("The missing fixture unexpectedly resolved.")
+                raw = ChildAnalysisFailure(
+                    child_request.analysis_id,
+                    "VideoNotFoundError" if first_failure == "missing" else "InvalidVideoError",
+                    "Analysis could not be completed.",
+                    0,
+                    failure_kind=failure_kind,
+                )
+                parent = validate_child_result(
+                    child_request.analysis_id, CHILD_ANALYSIS_SCHEMA_VERSION, raw
+                )
+                assert isinstance(parent, ParentFailure)
+                return parent
             assert child_request.video_reference == "available.mp4"
             resolver.resolve(child_request.video_reference)
             response = _response("completed").model_copy(
@@ -619,7 +632,7 @@ def test_missing_video_terminalizes_and_same_worker_completes_next_job(
                         attempt_limit=attempt_limit,
                     )
 
-                missing = candidate(900_001, "missing.mp4", 3)
+                missing = candidate(900_001, rejected_reference, 3)
                 valid = candidate(900_002, "available.mp4", 2)
                 first = await admission.accept_or_get(missing, max_queue_size=2)
                 second = await admission.accept_or_get(valid, max_queue_size=2)
@@ -674,7 +687,7 @@ def test_missing_video_terminalizes_and_same_worker_completes_next_job(
                 ]
                 assert len(terminal_calls) == 1
                 failure_authority, failure_code = terminal_calls[0]
-                assert failure_code == AttemptFailureCode("video_unavailable")
+                assert failure_code == AttemptFailureCode(safe_code)
                 assert finalizer.input is not None
                 success_authority, _ = finalizer.input
 
@@ -703,11 +716,11 @@ def test_missing_video_terminalizes_and_same_worker_completes_next_job(
                     failure_authority.worker_slot_id.value,
                     failure_authority.lease_id.value,
                     "TERMINAL_FAILURE",
-                    "video_unavailable",
+                    safe_code,
                 )
                 assert failure_authority.job_id == missing.job_id
                 assert failure_authority.worker_slot_id == slot
-                assert failed[9:13] == ("FAILED", "video_unavailable", "CLASSIFIED_TERMINAL", None)
+                assert failed[9:13] == ("FAILED", safe_code, "CLASSIFIED_TERMINAL", None)
                 assert isinstance(failed[13], UUID)
                 assert failed[14:16] == ("PENDING", "analysis_callback_snapshot_v1")
                 assert failed[16] == json.loads(
@@ -715,7 +728,7 @@ def test_missing_video_terminalizes_and_same_worker_completes_next_job(
                         job_id=missing.job_id,
                         video_id=missing.video_id,
                         player_id=missing.player_id,
-                        safe_code="video_unavailable",
+                        safe_code=safe_code,
                     )
                 )
                 assert await _fetch_all(

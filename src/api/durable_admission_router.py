@@ -8,7 +8,7 @@ from fastapi.routing import APIRoute
 
 from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnavailable
 from core.exceptions import AnalysisError
-from schemas.analysis import AnalyzeQueuedResponse, AnalyzeRequest
+from schemas.analysis import AnalyzeQueuedResponse, DurableAnalyzeRequest
 from services.callback_service import CallbackService
 from services.durable_local_admission import (
     DurableAdmissionConflict,
@@ -47,7 +47,7 @@ def create_durable_admission_router(
         response_model=AnalyzeQueuedResponse,
         status_code=status.HTTP_202_ACCEPTED,
     )
-    async def analyze(payload: AnalyzeRequest, request: Request) -> AnalyzeQueuedResponse:
+    async def analyze(payload: DurableAnalyzeRequest, request: Request) -> AnalyzeQueuedResponse:
         try:
             idempotency_key = admission.key(request.headers.getlist("idempotency-key"))
         except DurableAdmissionInvalidKey as error:
@@ -64,6 +64,7 @@ def create_durable_admission_router(
                 player_id=payload.player_id,
                 video_reference=payload.video_url,
                 callback_url=payload.callback_url,
+                video_integrity=payload.expected_integrity(),
             )
         except DurableAdmissionConflict as error:
             raise HTTPException(status_code=409, detail={"error": str(error)}) from None

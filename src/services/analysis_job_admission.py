@@ -19,9 +19,12 @@ from domain.analysis_job import (
     _validate_policy,
     _validate_request_identifiers,
     _validate_uuid,
+    _validate_video_integrity,
 )
+from domain.video_integrity import VideoIntegrity
 
 _FINGERPRINT_VERSION: Final = "super7.analysis-job-fingerprint.v1"
+_VERIFIED_FINGERPRINT_VERSION: Final = "super7.analysis-job-fingerprint.v2"
 _CALLBACK_URL_ADAPTER: Final = TypeAdapter(HttpUrl)
 _AnalysisJobAdmissionOutcome = (
     AnalysisJobAccepted
@@ -68,22 +71,33 @@ def fingerprint_analysis_request(
     player_id: str,
     video_reference: str,
     callback_url: str,
+    video_integrity: VideoIntegrity | None = None,
 ) -> bytes:
     """Return the frozen binary SHA-256 fingerprint for one canonical request."""
     values = (caller_scope, video_id, player_id, video_reference, callback_url)
     if any(type(value) is not str for value in values):
         raise TypeError("Fingerprint inputs must be strings.")
+    _validate_video_integrity(video_integrity)
 
     validated_callback = _validated_callback_url(callback_url)
     canonical_callback = str(canonicalize_callback_url(validated_callback))
-    ordered_value = {
-        "fingerprintVersion": _FINGERPRINT_VERSION,
+    ordered_value: dict[str, object] = {
+        "fingerprintVersion": (
+            _FINGERPRINT_VERSION if video_integrity is None else _VERIFIED_FINGERPRINT_VERSION
+        ),
         "callerScope": caller_scope,
         "videoId": video_id,
         "playerId": player_id,
         "videoReference": video_reference,
         "callbackUrl": canonical_callback,
     }
+    if video_integrity is not None:
+        ordered_value.update(
+            videoKey=f"videos/{video_reference}",
+            videoSizeBytes=video_integrity.size_bytes,
+            videoSha256=video_integrity.sha256,
+            hashAlgorithm="sha256",
+        )
     serialized = json.dumps(
         ordered_value,
         ensure_ascii=False,
@@ -133,6 +147,7 @@ async def admit_analysis_job(
     analysis_version: str,
     attempt_limit: int,
     max_queue_size: int,
+    video_integrity: VideoIntegrity | None = None,
 ) -> _AnalysisJobAdmissionOutcome:
     """Build a protected candidate and delegate one atomic admission operation."""
     if type(max_queue_size) is not int:
@@ -162,6 +177,7 @@ async def admit_analysis_job(
         player_id=player_id,
         video_reference=video_reference,
         callback_url=canonical_callback,
+        video_integrity=video_integrity,
     )
     candidate = NewAnalysisJob(
         job_id=job_id,
@@ -173,6 +189,7 @@ async def admit_analysis_job(
         callback_url=canonical_callback,
         analysis_version=analysis_version,
         attempt_limit=attempt_limit,
+        video_integrity=video_integrity,
     )
     return await repository.accept_or_get(candidate, max_queue_size=max_queue_size)
 

@@ -29,6 +29,7 @@ from domain.analysis_job_attempt import (
     WorkerSlotId,
     _instant_key,
 )
+from domain.video_integrity import VideoIntegrity
 from services._analysis_result_v1_fields import _result_fields, _validate_retained_result_fields
 from services.analysis_job_finalization import (
     _CALLBACK_FIELDS,
@@ -50,7 +51,7 @@ _CLOCK = "SELECT clock_timestamp()"
 
 _J = (
     "job_id, video_id, player_id, video_reference, callback_url, analysis_version, "
-    "state, attempt_limit, attempt_count, accepted_at"
+    "state, attempt_limit, attempt_count, accepted_at, video_size_bytes, video_sha256"
 )
 
 _A = (
@@ -368,7 +369,7 @@ def _timestamp(value: object) -> datetime:
 
 
 def _decode_job(row: tuple[object, ...]) -> _Job:
-    if len(row) != 10:
+    if len(row) != 12:
         _invalid()
     job_id = _uuid(row[0])
     version = _text(row[5])
@@ -381,9 +382,19 @@ def _decode_job(row: tuple[object, ...]) -> _Job:
     payload: ClaimableAnalysisJob | None = None
     video, player, reference, callback = (_text(row[i]) for i in (1, 2, 3, 4))
     accepted = _timestamp(row[9])
+    integrity: VideoIntegrity | None = None
+    if row[10] is not None or row[11] is not None:
+        if (
+            type(row[10]) is not int
+            or row[10] <= 0
+            or type(row[11]) is not bytes
+            or len(row[11]) != 32
+        ):
+            _invalid()
+        integrity = VideoIntegrity(row[10], row[11].hex())
     try:
         payload = ClaimableAnalysisJob(
-            job_id, video, player, reference, callback, version, limit, accepted
+            job_id, video, player, reference, callback, version, limit, accepted, integrity
         )
     except (TypeError, ValueError):
         pass

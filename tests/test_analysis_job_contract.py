@@ -1290,6 +1290,7 @@ def test_valid_admission_orchestrates_in_order_and_returns_exact_outcome(
         "analysis_version",
         "attempt_limit",
         "max_queue_size",
+        "video_integrity",
     )
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY for parameter in parameters.values()

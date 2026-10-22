@@ -30,6 +30,7 @@ import pytest
 from pydantic import HttpUrl
 
 from domain import analysis_job as durable
+from domain.video_integrity import VideoIntegrity
 from services import analysis_job_admission as admission
 from services.process_contracts import ChildAnalysisRequest
 
@@ -497,6 +498,7 @@ _SHAPES = {
         ("analysis_version", "str"),
         ("attempt_limit", "int"),
         ("accepted_at", "datetime"),
+        ("video_integrity", "VideoIntegrity | None"),
     ),
     "WorkerClaim": (
         ("authority", "AttemptAuthority"),
@@ -540,6 +542,7 @@ def test_public_value_fields_annotations_and_immutability(name: str) -> None:
         "datetime": datetime,
         "int": int,
         "str": str,
+        "VideoIntegrity | None": VideoIntegrity | None,
     }
     expected = {
         field: builtin_types[type_name] if type_name in builtin_types else _symbol(type_name)
@@ -551,7 +554,13 @@ def test_public_value_fields_annotations_and_immutability(name: str) -> None:
     assert get_type_hints(cls) == expected
     assert tuple(inspect.signature(cls).parameters) == tuple(expected)
     assert all(
-        p.default is inspect.Parameter.empty for p in inspect.signature(cls).parameters.values()
+        p.default
+        is (
+            None
+            if name == "ClaimableAnalysisJob" and field == "video_integrity"
+            else inspect.Parameter.empty
+        )
+        for field, p in inspect.signature(cls).parameters.items()
     )
     assert not hasattr(value, "__dict__")
     assert tuple(cls.__slots__) == tuple(expected)
@@ -651,6 +660,7 @@ def test_red_h_domain_shape_requires_exact_policy_snapshots(name: str) -> None:
     expected.update(attempt_limit=int)
     if name == "AnalysisJob":
         expected.update(accepted_at=datetime)
+    expected.update(video_integrity=VideoIntegrity | None)
     assert tuple(item.name for item in fields(value)) == tuple(expected)
     assert get_type_hints(cls) == expected
     assert tuple(inspect.signature(cls).parameters) == tuple(expected)

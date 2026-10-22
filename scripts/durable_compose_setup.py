@@ -45,11 +45,12 @@ DISPATCHER_ENV = SECRET_DIR / "dispatcher.env"
 CONTAINER_CONFIG = Path("/run/secrets/bootstrap_config")
 CONTAINER_POSTGRES_PASSWORD = Path("/run/secrets/postgres_password")
 MIGRATIONS = "package:adapters:migrations/postgres"
-REVISION = "sprint2_slice4_result_outbox"
+REVISION = "sprint2_slice5_video_integrity"
 CATALOG = (
     "sprint2_slice1_foundation",
     "sprint2_slice2_analysis_job",
     "sprint2_slice3_worker_attempt",
+    "sprint2_slice4_result_outbox",
     REVISION,
 )
 CONFIG_KEYS = (
@@ -458,7 +459,7 @@ def bootstrap() -> None:
     config = _container_config()
     catalog = tuple(str(item.id) for item in read_migrations(MIGRATIONS))
     if catalog != CATALOG:
-        raise TrialSetupError("The trial migration catalog does not match Slice 1-4.")
+        raise TrialSetupError("The trial migration catalog does not match Slice 1-5.")
     with _connect(config, role="bootstrap", database="postgres") as connection:
         role_names = (config["migration_user"], config["runtime_user"])
         if (
@@ -512,7 +513,7 @@ def bootstrap() -> None:
     runner = YoyoMigrationBackend(_migration_settings(config), (MIGRATIONS,))
     runner.apply_pending()
     if runner.current_version() != REVISION:
-        raise TrialSetupError("The trial schema did not reach Slice 4.")
+        raise TrialSetupError("The trial schema did not reach Slice 5.")
     with _connect(config, role="bootstrap", database=config["database"]) as connection:
         runtime = sql.Identifier(config["runtime_user"])
         for table in ("analysis_jobs", "analysis_job_attempts"):
@@ -579,7 +580,7 @@ def bootstrap() -> None:
         False,
     ):
         raise TrialSetupError("The trial runtime role does not have the approved grants.")
-    print("Trial PostgreSQL reached Slice 4 with restricted runtime grants.")
+    print("Trial PostgreSQL reached Slice 5 with restricted runtime grants.")
 
 
 def inspect(job_id: UUID) -> None:

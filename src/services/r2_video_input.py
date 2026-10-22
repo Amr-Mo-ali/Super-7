@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import re
 import shutil
 import sys
 import tempfile
@@ -21,6 +24,7 @@ from botocore.config import Config  # type: ignore[import-untyped]
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 from core.config import Settings
+from domain.video_integrity import VideoIntegrity
 from services.process_analysis_pool import ValidatedChildSuccess
 from services.process_contracts import (
     ChildAnalysisRequest,
@@ -32,6 +36,7 @@ from services.video_path_resolver import VideoPathResolver
 
 _BUCKET = "4goats-media-dev"
 _PREFIX = "videos/"
+_ACCOUNT_HOST = re.compile(r"[0-9a-f]{32}\.r2\.cloudflarestorage\.com")
 
 
 class R2DownloadError(RuntimeError):
@@ -40,6 +45,10 @@ class R2DownloadError(RuntimeError):
 
 class R2VideoUnavailable(R2DownloadError):
     """Typed missing-object evidence for durable terminal failure."""
+
+
+class R2InvalidVideo(R2DownloadError):
+    """A complete R2 object cannot match the requested video input."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +65,7 @@ class R2VideoSettings:
         if (
             url.scheme != "https"
             or not url.hostname
-            or not url.hostname.endswith(".r2.cloudflarestorage.com")
+            or not _ACCOUNT_HOST.fullmatch(url.hostname)
             or url.username
             or url.password
             or url.port
@@ -98,6 +107,7 @@ class R2VideoExecutor:
     """Keep a unique staged file until its submitted child has settled."""
 
     abort_on_lease_loss = True
+    verifies_video_integrity = True
 
     def __init__(self, child: _ChildExecutor, settings: R2VideoSettings) -> None:
         self._child = child
@@ -116,18 +126,26 @@ class R2VideoExecutor:
         ) as directory:
             destination = Path(directory) / request.video_reference
             transfer = asyncio.create_task(
-                asyncio.to_thread(self._download, request.video_reference, destination)
+                asyncio.to_thread(
+                    self._download, request.video_reference, destination, request.video_integrity
+                )
             )
             try:
                 await asyncio.shield(transfer)
             except asyncio.CancelledError:
-                await transfer
+                await _settle_after_cancellation(transfer)
                 raise
             except R2VideoUnavailable:
                 return ParentFailure(
                     "VideoNotFoundError",
                     "Analysis could not be completed.",
                     ChildFailureKind.VIDEO_UNAVAILABLE,
+                )
+            except R2InvalidVideo:
+                return ParentFailure(
+                    "InvalidVideoError",
+                    "Analysis could not be completed.",
+                    ChildFailureKind.VIDEO_INVALID,
                 )
             if before_child is not None:
                 await before_child()
@@ -138,6 +156,7 @@ class R2VideoExecutor:
                 request.video_reference,
                 analysis_version=request.analysis_version,
                 staged_video_path=str(destination),
+                video_integrity=request.video_integrity,
             )
             # The coordinator tracks this task. A lost lease leaves it outstanding;
             # its directory is removed only after the submitted child returns.
@@ -145,10 +164,10 @@ class R2VideoExecutor:
             try:
                 return await asyncio.shield(child)
             except asyncio.CancelledError:
-                await child
+                await _settle_after_cancellation(child)
                 raise
 
-    def _download(self, filename: str, destination: Path) -> None:
+    def _download(self, filename: str, destination: Path, integrity: VideoIntegrity | None) -> None:
         settings = self._settings
         if shutil.disk_usage(destination.parent).free < settings.max_bytes:
             raise R2DownloadError("Insufficient temporary disk capacity for R2 video.")
@@ -162,7 +181,12 @@ class R2VideoExecutor:
                 region_name="auto",
                 aws_access_key_id=settings.access_key_id,
                 aws_secret_access_key=settings.secret_access_key,
-                config=Config(connect_timeout=5, read_timeout=5, retries={"total_max_attempts": 1}),
+                config=Config(
+                    connect_timeout=5,
+                    read_timeout=5,
+                    retries={"total_max_attempts": 1},
+                    s3={"addressing_style": "virtual"},
+                ),
             )
             response = client.get_object(Bucket=_BUCKET, Key=key)
             body = response["Body"]
@@ -171,6 +195,7 @@ class R2VideoExecutor:
                 if type(length) is not int or length < 0 or length > settings.max_bytes:
                     raise R2DownloadError("R2 object size is unavailable or exceeds the limit.")
                 received = 0
+                digest = hashlib.sha256() if integrity is not None else None
                 with destination.open("xb") as output:
                     while True:
                         if monotonic() >= deadline:
@@ -181,9 +206,19 @@ class R2VideoExecutor:
                         received += len(chunk)
                         if received > settings.max_bytes:
                             raise R2DownloadError("R2 object exceeds the byte limit.")
+                        if digest is not None:
+                            digest.update(chunk)
                         output.write(chunk)
                 if received != length:
                     raise R2DownloadError("R2 transfer ended before its declared length.")
+                if received == 0:
+                    raise R2InvalidVideo("Requested R2 video is empty.")
+                if integrity is not None and (
+                    received != integrity.size_bytes
+                    or digest is None
+                    or not hmac.compare_digest(digest.hexdigest(), integrity.sha256)
+                ):
+                    raise R2InvalidVideo("R2 video integrity check failed.")
             finally:
                 body.close()
         except ClientError as error:
@@ -203,3 +238,17 @@ class R2VideoExecutor:
                 except Exception:
                     if primary is None:
                         raise R2DownloadError("R2 connection cleanup failed.") from None
+
+
+async def _settle_after_cancellation(task: asyncio.Task[object]) -> None:
+    """Keep the staged directory owned until blocking I/O or the child settles."""
+    while True:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return
+        except Exception:
+            return
+        else:
+            return

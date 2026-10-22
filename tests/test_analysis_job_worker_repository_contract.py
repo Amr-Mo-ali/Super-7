@@ -92,6 +92,8 @@ _J_COLUMNS = (
     "attempt_limit",
     "attempt_count",
     "accepted_at",
+    "video_size_bytes",
+    "video_sha256",
 )
 _A_COLUMNS = (
     "job_id",
@@ -132,6 +134,8 @@ def _j(**changes: object) -> tuple[object, ...]:
         attempt_limit=3,
         attempt_count=2,
         accepted_at=_NOW + timedelta(days=1),
+        video_size_bytes=None,
+        video_sha256=None,
     )
     values.update(changes)
     return tuple(values[name] for name in _J_COLUMNS)
