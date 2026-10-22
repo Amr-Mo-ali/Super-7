@@ -2,7 +2,7 @@
 
 The caller owns the process pool and must observe ``outstanding_tasks`` after a
 fail-stop outcome. This module does not poll or send callbacks. Only typed
-missing-video evidence has a durable failure mapping.
+missing-video and invalid-video evidence has a durable failure mapping.
 """
 
 from __future__ import annotations
@@ -230,12 +230,17 @@ class AnalysisJobCoordinator:
             child_outcome = await child
             stop_heartbeat.set()
             await heartbeat  # Settle any renewal before the first finalizer.
-            if (
-                isinstance(child_outcome, ParentFailure)
-                and child_outcome.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
-            ):
+            if isinstance(child_outcome, ParentFailure):
+                if child_outcome.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE:
+                    failure_code = AttemptFailureCode("video_unavailable")
+                elif child_outcome.failure_kind is ChildFailureKind.VIDEO_INVALID:
+                    failure_code = AttemptFailureCode("invalid_video")
+                else:
+                    raise CoordinatorUnclassifiedFailure(
+                        "Child outcome has no approved durable code."
+                    )
                 await self._renew(claim.authority)
-                return await self._finalize_missing_video(claim)
+                return await self._finalize_input_failure(claim, failure_code)
             if not isinstance(child_outcome, ValidatedChildSuccess):
                 raise CoordinatorUnclassifiedFailure("Child outcome has no approved durable code.")
             frozen = self._result_projector(
@@ -282,10 +287,9 @@ class AnalysisJobCoordinator:
             raise CoordinatorUnresolved("Renewal returned after its conservative lease window.")
         self._lease_deadline = deadline
 
-    async def _finalize_missing_video(
-        self, claim: WorkerClaim
+    async def _finalize_input_failure(
+        self, claim: WorkerClaim, code: AttemptFailureCode
     ) -> AttemptFailed | AttemptResolutionAlreadyApplied:
-        code = AttemptFailureCode("video_unavailable")
         outcome = await self._observe(
             finalize_terminal_failure(
                 repository=self._worker_repository,

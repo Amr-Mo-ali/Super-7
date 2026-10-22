@@ -20,6 +20,7 @@ _RESPONSE_ADAPTER: TypeAdapter[AnalyzeResponse] = TypeAdapter(AnalyzeResponse)
 
 class ChildFailureKind(StrEnum):
     VIDEO_UNAVAILABLE = "VIDEO_UNAVAILABLE"
+    VIDEO_INVALID = "VIDEO_INVALID"
 
 
 @dataclass(frozen=True, slots=True)

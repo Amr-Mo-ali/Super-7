@@ -47,6 +47,10 @@ class R2VideoUnavailable(R2DownloadError):
     """Typed missing-object evidence for durable terminal failure."""
 
 
+class R2InvalidVideo(R2DownloadError):
+    """A complete R2 object cannot match the requested video input."""
+
+
 @dataclass(frozen=True, slots=True)
 class R2VideoSettings:
     endpoint: str
@@ -137,6 +141,12 @@ class R2VideoExecutor:
                     "Analysis could not be completed.",
                     ChildFailureKind.VIDEO_UNAVAILABLE,
                 )
+            except R2InvalidVideo:
+                return ParentFailure(
+                    "InvalidVideoError",
+                    "Analysis could not be completed.",
+                    ChildFailureKind.VIDEO_INVALID,
+                )
             if before_child is not None:
                 await before_child()
             staged = ChildAnalysisRequest(
@@ -184,8 +194,6 @@ class R2VideoExecutor:
                 length = response.get("ContentLength")
                 if type(length) is not int or length < 0 or length > settings.max_bytes:
                     raise R2DownloadError("R2 object size is unavailable or exceeds the limit.")
-                if integrity is not None and length != integrity.size_bytes:
-                    raise R2DownloadError("R2 video integrity check failed.")
                 received = 0
                 digest = hashlib.sha256() if integrity is not None else None
                 with destination.open("xb") as output:
@@ -198,19 +206,19 @@ class R2VideoExecutor:
                         received += len(chunk)
                         if received > settings.max_bytes:
                             raise R2DownloadError("R2 object exceeds the byte limit.")
-                        if integrity is not None and received > integrity.size_bytes:
-                            raise R2DownloadError("R2 video integrity check failed.")
                         if digest is not None:
                             digest.update(chunk)
                         output.write(chunk)
                 if received != length:
                     raise R2DownloadError("R2 transfer ended before its declared length.")
+                if received == 0:
+                    raise R2InvalidVideo("Requested R2 video is empty.")
                 if integrity is not None and (
                     received != integrity.size_bytes
                     or digest is None
                     or not hmac.compare_digest(digest.hexdigest(), integrity.sha256)
                 ):
-                    raise R2DownloadError("R2 video integrity check failed.")
+                    raise R2InvalidVideo("R2 video integrity check failed.")
             finally:
                 body.close()
         except ClientError as error:

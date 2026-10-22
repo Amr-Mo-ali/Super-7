@@ -11,7 +11,7 @@ from time import perf_counter
 from concurrency.cancellation import CancellationManager
 from concurrency.exceptions import AnalysisCancelled
 from core.config import Settings
-from core.exceptions import VideoNotFoundError
+from core.exceptions import InvalidVideoError, VideoNotFoundError
 from core.logging import configure_logging, get_logger
 from diagnostics.analysis_stage_timing import _log_analysis_stage_timing
 from diagnostics.artifacts import ArtifactManager
@@ -99,33 +99,39 @@ def run_child_analysis(request: ChildAnalysisRequest) -> ChildAnalysisResult:
                 staged = Path(request.staged_video_path)
                 video_path = VideoPathResolver(staged.parent).resolve(request.video_reference)
         except VideoNotFoundError:
-            failure_kind = ChildFailureKind.VIDEO_UNAVAILABLE
+            if request.staged_video_path is None:
+                failure_kind = ChildFailureKind.VIDEO_UNAVAILABLE
             raise
         artifacts = runtime.artifact_manager.create_session(request.analysis_id)
         cancellation = CancellationManager(request.analysis_id)
         components = runtime.components
-        result = _analyze_uploaded(
-            runtime.settings,
-            components.validator,
-            components.tracker,
-            components.selector,
-            components.extractor,
-            components.ball_proximity_analyzer,
-            components.movement_analyzer,
-            components.interaction_analyzer,
-            components.technical_event_analyzer,
-            components.pass_detector,
-            components.shot_detector,
-            runtime.logger,
-            components.physical_scorer,
-            request.analysis_id,
-            started,
-            started,
-            video_path,
-            cancellation,
-            artifacts,
-            {},
-        )
+        try:
+            result = _analyze_uploaded(
+                runtime.settings,
+                components.validator,
+                components.tracker,
+                components.selector,
+                components.extractor,
+                components.ball_proximity_analyzer,
+                components.movement_analyzer,
+                components.interaction_analyzer,
+                components.technical_event_analyzer,
+                components.pass_detector,
+                components.shot_detector,
+                runtime.logger,
+                components.physical_scorer,
+                request.analysis_id,
+                started,
+                started,
+                video_path,
+                cancellation,
+                artifacts,
+                {},
+            )
+        except InvalidVideoError as error:
+            if request.staged_video_path is not None and error.confirmed_input_violation:
+                failure_kind = ChildFailureKind.VIDEO_INVALID
+            raise
         serialization_started = perf_counter()
         try:
             serialized_result = result.model_dump_json()

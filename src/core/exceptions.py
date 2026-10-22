@@ -12,6 +12,10 @@ class UploadTooLargeError(AnalysisError):
 class InvalidVideoError(AnalysisError):
     """Raised when a video cannot satisfy the validation contract."""
 
+    def __init__(self, message: str, *, confirmed_input_violation: bool = False) -> None:
+        super().__init__(message)
+        self.confirmed_input_violation = confirmed_input_violation
+
 
 class InvalidTargetBoxError(AnalysisError):
     """Raised when optional target-box fields are incomplete or invalid."""

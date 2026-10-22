@@ -37,7 +37,7 @@ injected for an isolated experiment, not adopted as production defaults.
 ## Child-failure policy amendment (2026-10-17)
 
 This supersedes the earlier deferred retryable `video_unavailable` policy.
-When the requested video file is positively absent at child path resolution,
+When a requested non-staged local video file is positively absent at child path resolution,
 the child carries typed `VIDEO_UNAVAILABLE` evidence. After child work and
 renewal settle, the coordinator calls the existing fenced terminal-failure
 operation with `AttemptFailureCode("video_unavailable")`. The terminal
@@ -64,6 +64,28 @@ lease/recovery behavior.
 Normal durable HTTP admission rejects unsupported filename suffixes before
 persistence. The owner-approved `UNSUPPORTED_VIDEO_FORMAT` terminal
 mapping is therefore defensive for this composition and is not wired.
+
+## Deterministic R2 input amendment (2026-10-22)
+
+The local durable worker also terminalizes typed `VIDEO_INVALID` evidence as
+`AttemptFailureCode("invalid_video")`. This evidence is limited to an empty R2
+object, a complete object whose size or digest disagrees with optional
+persisted integrity metadata, or a confirmed configured duration, positive
+resolution, or FPS rule violation after successful decode of a worker-staged
+file. A generic `InvalidVideoError` is insufficient evidence: a staged file
+missing at path resolution or materialization and inconclusive decoder failures
+remain operational. The fenced terminal transaction creates the FAILED job,
+terminal record, and failure outbox together; the worker may then discover
+another job. The existing v1 failure callback fields and fixed safe message
+remain unchanged. `invalid_video` is a new safe `error.code` value; Apex
+agreement on the backend integrity policy remains a cutover gate.
+
+An incomplete transfer, timeout, access/configuration failure, capacity
+failure, interrupted decode, model/environment failure, or unknown exception
+does not acquire this typed evidence. These retain the existing bounded
+lease/recovery and stop-on-uncertainty behavior. A lost lease or ambiguous
+terminal write never permits this worker incarnation to infer success or
+reuse its slot.
 
 The opt-in Python composition requires validated `DatabaseSettings` (the
 existing `POSTGRES_*` names), `Settings` for video/model paths, a bearer secret,

@@ -8,6 +8,7 @@ import io
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from botocore.config import Config  # type: ignore[import-untyped]
@@ -79,13 +80,15 @@ def _verified_request(data: bytes, *, digest: str | None = None) -> ChildAnalysi
     )
 
 
-@pytest.mark.parametrize("corruption", ("digest", "size", "truncated"))
+@pytest.mark.parametrize("corruption", ("digest", "size", "truncated", "size_and_truncated"))
 def test_verified_r2_rejects_corrupt_bytes_before_child_and_cleans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corruption: str
 ) -> None:
     data = b"expected video"
     body = b"wrong bytes!!!" if corruption == "digest" else data
-    declared = len(data) + 1 if corruption == "size" else len(data)
+    if corruption == "size":
+        body += b"!"
+    declared = len(data) + 1 if corruption in ("size", "size_and_truncated") else len(data)
     if corruption == "truncated":
         body = data[:-1]
     monkeypatch.setattr(
@@ -93,11 +96,32 @@ def test_verified_r2_rejects_corrupt_bytes_before_child_and_cleans(
         lambda *a, **k: _Client(io.BytesIO(body), declared),
     )
     child = _Child()
-    with pytest.raises(R2DownloadError):
-        asyncio.run(
-            R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_verified_request(data))
-        )
+    operation = R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(
+        _verified_request(data)
+    )
+    if corruption in ("truncated", "size_and_truncated"):
+        with pytest.raises(R2DownloadError, match="declared length"):
+            asyncio.run(operation)
+    else:
+        result = asyncio.run(operation)
+        assert isinstance(result, ParentFailure)
+        assert result.failure_kind is ChildFailureKind.VIDEO_INVALID
+        assert result.public_message == "Analysis could not be completed."
     assert child.bytes_seen == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_empty_r2_object_never_reaches_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _Client(io.BytesIO(b""), 0)
+    monkeypatch.setattr("services.r2_video_input.boto3.client", lambda *a, **k: client)
+    child = _Child()
+    result = asyncio.run(R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_request()))
+    assert isinstance(result, ParentFailure)
+    assert result.failure_kind is ChildFailureKind.VIDEO_INVALID
+    assert child.bytes_seen == []
+    assert client.closed
     assert list(tmp_path.iterdir()) == []
 
 
@@ -214,6 +238,41 @@ def test_missing_object_returns_typed_unavailable_without_key_or_sdk_text(
     assert isinstance(result, ParentFailure)
     assert result.failure_kind is ChildFailureKind.VIDEO_UNAVAILABLE
     assert "private" not in str(result)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_access_failure_remains_operational(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Denied:
+        def get_object(self, **kwargs: str) -> None:
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "private credential detail"}},
+                "GetObject",
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("services.r2_video_input.boto3.client", lambda *a, **k: Denied())
+    child = _Child()
+    with pytest.raises(R2DownloadError, match="download failed") as captured:
+        asyncio.run(R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_request()))
+    assert "private" not in str(captured.value)
+    assert child.bytes_seen == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_disk_capacity_failure_remains_operational_before_download(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "services.r2_video_input.shutil.disk_usage", lambda _: SimpleNamespace(free=0)
+    )
+    child = _Child()
+    with pytest.raises(R2DownloadError, match="disk capacity"):
+        asyncio.run(R2VideoExecutor(child, _settings(tmp_path)).execute_enveloped(_request()))
+    assert child.bytes_seen == []
     assert list(tmp_path.iterdir()) == []
 
 
