@@ -7,9 +7,13 @@ services:
     # exits before opening a port when no role command is supplied.
     env_file:
       - .env
+    environment:
+      SUPER7_VIDEO_SOURCE: r2
+      SUPER7_R2_ENDPOINT: ${SUPER7_R2_ENDPOINT:?Set the R2 endpoint}
+      SUPER7_R2_ACCESS_KEY_ID: ${SUPER7_R2_ACCESS_KEY_ID:?Set the R2 read-only access key}
+      SUPER7_R2_SECRET_ACCESS_KEY: ${SUPER7_R2_SECRET_ACCESS_KEY:?Set the R2 read-only secret key}
     volumes:
       - ./models:/models:ro
-      - /var/www/apex-backend/uploads/videos:/videos:ro
     restart: unless-stopped
     init: true
     healthcheck:
