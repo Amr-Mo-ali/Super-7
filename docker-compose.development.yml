@@ -1,0 +1,86 @@
+name: super7-development
+
+x-database-environment: &database-environment
+  POSTGRES_HOST: super7-postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DATABASE: super7
+  POSTGRES_USER: super7_runtime
+  POSTGRES_CONNECT_TIMEOUT_SECONDS: "2"
+  POSTGRES_POOL_MIN_SIZE: "0"
+  POSTGRES_POOL_MAX_SIZE: "4"
+  POSTGRES_POOL_ACQUIRE_TIMEOUT_SECONDS: "5"
+  POSTGRES_POOL_MAX_WAITERS: "8"
+  POSTGRES_POOL_OPEN_TIMEOUT_SECONDS: "10"
+  POSTGRES_POOL_CLOSE_TIMEOUT_SECONDS: "10"
+  POSTGRES_REQUIRED_SCHEMA_VERSION: sprint2_slice5_video_integrity
+
+services:
+  api:
+    image: ${SUPER7_DEV_IMAGE:?Set a verified Development image reference}
+    pull_policy: never
+    command: ["uvicorn", "durable_api_main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - ${SUPER7_DEV_API_ENV:?Set the external API credential file path}
+    environment:
+      <<: *database-environment
+      SUPER7_DURABLE_API_ENABLED: "1"
+      MAX_QUEUED_ANALYSES: "300"
+    ports:
+      - "127.0.0.1:18080:8000"
+    networks: [database]
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from urllib.request import urlopen; r = urlopen('http://127.0.0.1:8000/health/ready', timeout=10); assert r.status == 200\""]
+      interval: 10s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+
+  worker:
+    image: ${SUPER7_DEV_IMAGE:?Set a verified Development image reference}
+    pull_policy: never
+    working_dir: /tmp
+    command: ["python", "-m", "durable_worker_main"]
+    env_file:
+      - ${SUPER7_DEV_WORKER_ENV:?Set the external worker credential file path}
+    environment:
+      <<: *database-environment
+      SUPER7_DURABLE_WORKER_ENABLED: "1"
+      SUPER7_VIDEO_SOURCE: r2
+      MODEL_PATH: /models/yolo11n.pt
+      BALL_MODEL_PATH: /models/yolo11n.pt
+      MODEL_DEVICE: cuda:0
+      HOME: /tmp
+      YOLO_CONFIG_DIR: /tmp/ultralytics
+      DEBUG_ARTIFACTS_ENABLED: "false"
+    volumes:
+      - ./models:/models:ro
+    gpus: all
+    networks: [database]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    healthcheck:
+      disable: true
+
+  dispatcher:
+    image: ${SUPER7_DEV_IMAGE:?Set a verified Development image reference}
+    pull_policy: never
+    command: ["python", "-m", "durable_dispatcher_main"]
+    env_file:
+      - ${SUPER7_DEV_DISPATCHER_ENV:?Set the external dispatcher credential file path}
+    environment:
+      <<: *database-environment
+      SUPER7_DURABLE_DISPATCHER_ENABLED: "1"
+    networks: [database]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      disable: true
+
+networks:
+  database:
+    external: true
+    name: super7-net
