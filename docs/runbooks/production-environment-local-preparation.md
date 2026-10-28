@@ -28,11 +28,14 @@ local-trial Compose files.
   that the Production backend uploads to `videos/` in this bucket before worker
   activation. R2 video objects are shared, not environment-isolated.
 - The worker and dispatcher have opt-in Compose profiles. Do not activate them
-  until the storage, callback, and GPU checks are complete. Drain Development
-  work and decide GPU scheduling before starting a Production worker. Concurrent
-  Development and Production workers share the A4000 and require resource and
-  latency measurement before approval. Keep one Production worker; this file
-  makes no analysis-concurrency increase.
+  until the storage, callback, and GPU checks are complete. Four single-slot
+  Production workers share one PostgreSQL queue in `super7_production`.
+  `MAX_QUEUED_ANALYSES=300` on the API limits `QUEUED` jobs globally, excluding
+  `RUNNING` jobs; it is not a per-worker limit. Before starting Production
+  workers, pause Development submissions, drain its queued and running jobs,
+  and stop and verify all four Development workers have exited. Both fleets
+  share the A4000; never automatically run two four-worker fleets. Any overlap
+  requires a separate resource allocation and latency decision.
 - The worker alone has GPU access and the read-only `/models` mount. It has no
   local video mount or fallback. The API and dispatcher have neither. The
   chosen Production model ID must match the reviewed mounted weights. Verify
@@ -104,17 +107,24 @@ by the Compose file.
    external network attachment, database permission gate, Production model
    weights, the backend upload destination and Production read-only R2 access,
    caller routing and callback contract, plus GPU capacity and Development
-   work drainage. Keep Domain/Nginx/TLS changes for the final deployment
-   step. Use dummy values first to render the effective manifest with
-   `docker compose --env-file /private/compose.env -f docker-compose.production.yml --profile processing --profile delivery config --quiet`.
+   work drainage. Keep the existing DNS/HTTPS and Nginx 503 state unchanged
+   during this preparation. Use dummy values first to render the effective manifest with
+   `sudo docker compose --env-file /private/compose.env -f docker-compose.production.yml --profile processing --profile delivery config --quiet`.
    Review the rendered role environments securely; never paste their values
    into logs or review artifacts.
-2. After separate deployment approval, start `api` explicitly with the same
-   Compose arguments and `up -d --no-deps api`. Confirm loopback readiness on
-   port 18081 and database identity before routing Production callers. Start
-   `worker` and `dispatcher` by explicit service name only after their gates
-   pass. Confirm exactly one of each, inspect exits and role-ready events,
-   and verify no Development port or container is replaced.
+2. After separate deployment approval, pause Development submissions, drain
+   its queued and running jobs, then stop and verify its four workers. Start
+   Production `api` explicitly with the same Compose arguments and
+   `up -d --no-deps api`. Confirm loopback readiness on port 18081 and database
+   identity while public Production admission remains gated; the current
+   Nginx 503 must remain until controlled verification is approved.
+   From the verified Production checkout, explicitly start the processing and
+   delivery profiles with
+   `sudo docker compose --env-file /private/compose.env -f docker-compose.production.yml --profile processing --profile delivery up -d --no-deps --scale worker=4 worker dispatcher`.
+   Confirm exactly four single-slot Production workers and one dispatcher,
+   inspect exits and role-ready events, and verify no Development port or
+   container is replaced. Keep public Production admission gated until
+   controlled job, callback, database, and GPU verification passes.
 3. For an upgrade, pause Production admission/callers, inspect queued and
    running jobs plus pending callbacks using an approved read-only database
    procedure, and drain before replacing roles. Record the old image ID and
@@ -123,10 +133,11 @@ by the Compose file.
    rollback plan. Restart one role at a time and check readiness, outbox,
    image identity, and resource use before resuming callers.
 4. For rollback, pause Production callers, drain or explicitly account for
-   jobs and callbacks, stop Production API, dispatcher, and worker, and
+   jobs and callbacks, stop Production API, dispatcher, and all four workers, and
    restore the recorded image/configuration only if it is schema-compatible.
-   Verify all role exits before starting a replacement; never overlap two
-   dispatchers for this database. Preserve both databases and the shared
+   Verify all role exits before starting a replacement or restarting Development
+   workers; never overlap the two four-worker fleets or two dispatchers for the
+   same database. Preserve both databases and the shared
    volume. If a migration is not backward-compatible, use its reviewed data
    recovery plan rather than automatically reversing it.
 
