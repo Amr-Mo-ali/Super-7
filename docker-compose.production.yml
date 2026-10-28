@@ -24,6 +24,7 @@ services:
     environment:
       <<: *database-environment
       SUPER7_DURABLE_API_ENABLED: "1"
+      MAX_QUEUED_ANALYSES: "300"
       SUPER7_DURABLE_ATTEMPT_LIMIT: "3"
       SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS: "5000"
       SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS: "1000"
