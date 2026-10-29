@@ -34,6 +34,19 @@ def test_valid_frame_maps_person_detection() -> None:
     assert result[0].frame_index == 4 and result[0].bounding_box.x2 == 10.0
 
 
+def test_player_inference_event_is_debug(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("tests.player_inference_level")
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        YOLOPlayerDetector(Settings(), logger, _Model()).detect(
+            np.zeros((8, 8, 3), dtype=np.uint8), 4, 0.2
+        )
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("player_inference ")
+    ] == [logging.DEBUG]
+
+
 def test_empty_or_invalid_frame_raises_explicit_error() -> None:
     detector = YOLOPlayerDetector(Settings(), logging.getLogger("test"), _Model())
     with pytest.raises(InvalidFrameError):

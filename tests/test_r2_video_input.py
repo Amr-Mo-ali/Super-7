@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 import threading
 import time
 from pathlib import Path
@@ -261,6 +262,78 @@ def test_access_failure_remains_operational(
     assert "private" not in str(captured.value)
     assert child.bytes_seen == []
     assert list(tmp_path.iterdir()) == []
+
+
+def test_r2_failure_log_uses_only_allowlisted_sdk_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+) -> None:
+    logger = logging.getLogger("football_analysis.r2_video_input")
+    logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logger.removeHandler(caplog.handler))
+    secret = "token-signed-url-and-private-key"
+
+    class Denied:
+        def get_object(self, **kwargs: str) -> None:
+            raise ClientError(
+                {
+                    "Error": {"Code": "AccessDenied", "Message": secret, "Key": secret},
+                    "ResponseMetadata": {"HTTPStatusCode": 403, "RequestId": secret},
+                },
+                "GetObject",
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("services.r2_video_input.boto3.client", lambda *a, **k: Denied())
+    with pytest.raises(R2DownloadError, match="download failed"):
+        asyncio.run(
+            R2VideoExecutor(_Child(), _settings(tmp_path)).execute_enveloped(
+                _request(), attempt_number=2
+            )
+        )
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "r2_transfer_failed analysis_id=job_1 attempt=2 phase=get-object"
+        " error_type=ClientError http_status=403 s3_code=AccessDenied" in message
+        for message in messages
+    )
+    assert all(secret not in message and "clip.mp4" not in message for message in messages)
+
+
+def test_r2_failure_log_rejects_untrusted_status_and_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+) -> None:
+    logger = logging.getLogger("football_analysis.r2_video_input")
+    logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logger.removeHandler(caplog.handler))
+    secret = "Bearer synthetic-secret"
+
+    class Denied:
+        def get_object(self, **kwargs: str) -> None:
+            raise ClientError(
+                {
+                    "Error": {"Code": secret, "Message": secret},
+                    "ResponseMetadata": {"HTTPStatusCode": "403"},
+                },
+                "GetObject",
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("services.r2_video_input.boto3.client", lambda *a, **k: Denied())
+    with pytest.raises(R2DownloadError, match="download failed"):
+        asyncio.run(R2VideoExecutor(_Child(), _settings(tmp_path)).execute_enveloped(_request()))
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("http_status=unavailable s3_code=unavailable" in message for message in messages)
+    assert all(secret not in message for message in messages)
 
 
 def test_disk_capacity_failure_remains_operational_before_download(

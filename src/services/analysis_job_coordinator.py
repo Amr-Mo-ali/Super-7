@@ -67,6 +67,7 @@ class _GuardedChildExecutor(Protocol):
         request: ChildAnalysisRequest,
         *,
         before_child: Callable[[], Awaitable[None]],
+        attempt_number: int,
     ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled: ...
 
 
@@ -213,7 +214,9 @@ class AnalysisJobCoordinator:
             )
             if getattr(self._child_executor, "abort_on_lease_loss", False):
                 operation = cast(_GuardedChildExecutor, self._child_executor).execute_enveloped(
-                    request, before_child=lambda: self._renew(claim.authority)
+                    request,
+                    before_child=lambda: self._renew(claim.authority),
+                    attempt_number=claim.authority.attempt_number,
                 )
             else:
                 operation = self._child_executor.execute_enveloped(request)

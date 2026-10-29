@@ -61,6 +61,19 @@ def test_ball_adapter_maps_valid_detection_and_filters_invalid_box() -> None:
     assert len(output) == 1 and output[0].center_point == (3.0, 4.0)
 
 
+def test_ball_inference_event_is_debug(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("tests.ball_inference_level")
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        YOLOBallDetector(Settings(), logger, _Model([], [])).detect(
+            np.zeros((8, 8, 3), dtype=np.uint8), 4, 0.4
+        )
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage().startswith("ball_inference ")
+    ] == [logging.DEBUG]
+
+
 @pytest.mark.parametrize("device", ["cpu", "cuda:0"])
 def test_ball_adapter_passes_configured_device_without_gpu(device: str) -> None:
     class RecordingModel(_Model):

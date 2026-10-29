@@ -1,5 +1,12 @@
 # Development durable roles on the existing PostgreSQL database
 
+The Compose API, worker, and dispatcher use Docker `json-file` logs capped at
+three 5 MB files per container. Apply a logging-option change only after
+draining queued/running work and pending callbacks, then recreate the affected
+containers under the existing preservation checks. Editing Compose does not
+change logging on already-created containers. Logging alone does not alert
+operators; alert routing needs a separately approved destination.
+
 This is a reviewed cutover procedure, not an instruction to deploy from this
 checkout. Use `docker-compose.development.yml` alone from a verified
 Development checkout. It creates one API, four

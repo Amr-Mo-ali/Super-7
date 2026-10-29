@@ -161,6 +161,55 @@ def test_capacity_rejection_is_visible() -> None:
     asyncio.run(scenario())
 
 
+def test_queue_full_route_logs_fixed_rejection_reason(
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+) -> None:
+    logger = logging.getLogger("football_analysis.admission")
+    logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logger.removeHandler(caplog.handler))
+
+    async def scenario() -> None:
+        repository = _Repository()
+        repository.force_full = True
+        runtime = cast(DurableLocalRuntime, SimpleNamespace(admission=_admission(repository)))
+        app = create_app(
+            Settings(video_storage_root="E:/super7/dataset/raw/social_media"),
+            callback_service=_LocalCallbackValidator(),
+            durable_runtime=runtime,
+        )
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/analyze",
+                    headers={
+                        "Authorization": "Bearer ephemeral-test-secret",
+                        "Idempotency-Key": "opaque-key",
+                    },
+                    json={
+                        "videoId": "video",
+                        "playerId": "player",
+                        "videoUrl": "video.mp4",
+                        "callbackUrl": "http://127.0.0.1:8765/callback",
+                    },
+                )
+                assert response.status_code == 503
+                assert response.json() == {"detail": {"error": "Analysis queue is full."}}
+        finally:
+            await app.state.request_lifecycle.shutdown()
+
+    asyncio.run(scenario())
+    messages = [record.getMessage() for record in caplog.records]
+    assert "analysis_admission_rejected reason=queue_full" in messages
+    assert not any("analysis_admission_persistence_unavailable" in message for message in messages)
+    assert all(
+        "opaque-key" not in message and "ephemeral-test-secret" not in message
+        for message in messages
+    )
+
+
 class _LocalCallbackValidator(CallbackService):
     def __init__(self) -> None:
         super().__init__(10, logging.getLogger("football_analysis.tests.durable_admission"))

@@ -7,6 +7,13 @@ worker, and dispatcher entry points. Use `docker-compose.production.yml` alone,
 with project name `super7-production`; never combine it with the Development or
 local-trial Compose files.
 
+The Compose API, worker, and dispatcher use Docker `json-file` logs capped at
+three 5 MB files per container. Applying this logging change requires draining
+queued/running work and pending callbacks, then recreating the affected
+containers under an approved rollout. Existing containers do not pick up new
+logging options from an edited Compose file. Logging alone does not alert
+operators; alert routing needs a separately approved destination.
+
 ## Boundaries and decisions
 
 - Production uses `super7_production`, with new `super7_production_migration`
