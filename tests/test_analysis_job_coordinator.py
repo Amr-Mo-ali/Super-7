@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import timedelta
 from uuid import UUID
@@ -178,6 +179,47 @@ def _success(claim: WorkerClaim, kind: str = "noncompleted") -> ValidatedChildSu
         17,
     )
     return ValidatedChildSuccess(child, response)
+
+
+def test_guarded_executor_receives_claimed_attempt_without_changing_other_callers() -> None:
+    async def scenario() -> None:
+        claim = _claim()
+        worker = _Worker(claim)
+        finalizer = _Finalizer(worker)
+
+        class GuardedChild:
+            abort_on_lease_loss = True
+            observed_attempt: int | None = None
+
+            async def execute_enveloped(
+                self,
+                request: ChildAnalysisRequest,
+                *,
+                before_child: Callable[[], Awaitable[None]] | None = None,
+                attempt_number: int | None = None,
+            ) -> ValidatedChildSuccess:
+                assert request.analysis_id == str(claim.authority.job_id)
+                self.observed_attempt = attempt_number
+                assert before_child is not None
+                await before_child()
+                return _success(claim)
+
+        child = GuardedChild()
+        coordinator = AnalysisJobCoordinator(
+            worker_repository=worker,
+            finalization_repository=finalizer,
+            child_executor=child,
+            result_projector=convert_child_success,
+            worker_slot_id=claim.authority.worker_slot_id,
+            model_catalog={_RAW_MODEL: _SAFE_MODEL},
+            timing=_timing(),
+        )
+
+        assert isinstance(await coordinator.run_one(), AnalysisJobCompleted)
+        assert child.observed_attempt == claim.authority.attempt_number
+        assert len(finalizer.calls) == 1
+
+    asyncio.run(scenario())
 
 
 def test_verified_claim_cannot_reach_an_executor_without_integrity_checks() -> None:

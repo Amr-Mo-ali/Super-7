@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import logging
 import re
 import shutil
 import sys
@@ -37,6 +38,18 @@ from services.video_path_resolver import VideoPathResolver
 _BUCKET = "4goats-media-dev"
 _PREFIX = "videos/"
 _ACCOUNT_HOST = re.compile(r"[0-9a-f]{32}\.r2\.cloudflarestorage\.com")
+_LOGGER = logging.getLogger("football_analysis.r2_video_input")
+_S3_ERROR_CODES = frozenset(
+    {
+        "NoSuchKey",
+        "404",
+        "NotFound",
+        "AccessDenied",
+        "SlowDown",
+        "InternalError",
+        "ServiceUnavailable",
+    }
+)
 
 
 class R2DownloadError(RuntimeError):
@@ -118,6 +131,7 @@ class R2VideoExecutor:
         request: ChildAnalysisRequest,
         *,
         before_child: Callable[[], Awaitable[None]] | None = None,
+        attempt_number: int | None = None,
     ) -> ValidatedChildSuccess | ParentFailure | ParentCancelled:
         VideoPathResolver._validate_filename(request.video_reference)
         self._settings.temp_root.mkdir(parents=True, exist_ok=True)
@@ -127,7 +141,12 @@ class R2VideoExecutor:
             destination = Path(directory) / request.video_reference
             transfer = asyncio.create_task(
                 asyncio.to_thread(
-                    self._download, request.video_reference, destination, request.video_integrity
+                    self._download,
+                    request.video_reference,
+                    destination,
+                    request.video_integrity,
+                    request.analysis_id,
+                    attempt_number,
                 )
             )
             try:
@@ -167,13 +186,23 @@ class R2VideoExecutor:
                 await _settle_after_cancellation(child)
                 raise
 
-    def _download(self, filename: str, destination: Path, integrity: VideoIntegrity | None) -> None:
+    def _download(
+        self,
+        filename: str,
+        destination: Path,
+        integrity: VideoIntegrity | None,
+        analysis_id: str,
+        attempt_number: int | None,
+    ) -> None:
         settings = self._settings
         if shutil.disk_usage(destination.parent).free < settings.max_bytes:
-            raise R2DownloadError("Insufficient temporary disk capacity for R2 video.")
+            failure = R2DownloadError("Insufficient temporary disk capacity for R2 video.")
+            _log_r2_failure(analysis_id, attempt_number, "capacity", failure)
+            raise failure
         key = _PREFIX + filename
         deadline = monotonic() + settings.timeout_seconds
         client = None
+        phase = "client-create"
         try:
             client = boto3.client(
                 "s3",
@@ -188,7 +217,9 @@ class R2VideoExecutor:
                     s3={"addressing_style": "virtual"},
                 ),
             )
+            phase = "get-object"
             response = client.get_object(Bucket=_BUCKET, Key=key)
+            phase = "body-read"
             body = response["Body"]
             try:
                 length = response.get("ContentLength")
@@ -211,6 +242,7 @@ class R2VideoExecutor:
                         output.write(chunk)
                 if received != length:
                     raise R2DownloadError("R2 transfer ended before its declared length.")
+                phase = "verify"
                 if received == 0:
                     raise R2InvalidVideo("Requested R2 video is empty.")
                 if integrity is not None and (
@@ -222,22 +254,67 @@ class R2VideoExecutor:
             finally:
                 body.close()
         except ClientError as error:
+            _log_r2_failure(analysis_id, attempt_number, phase, error)
             code = error.response.get("Error", {}).get("Code")
             if code in ("NoSuchKey", "404", "NotFound"):
                 raise R2VideoUnavailable("Requested R2 video is unavailable.") from None
             raise R2DownloadError("R2 video download failed.") from None
-        except R2DownloadError:
+        except R2DownloadError as error:
+            _log_r2_failure(analysis_id, attempt_number, phase, error)
             raise
-        except Exception:
+        except Exception as error:
+            _log_r2_failure(analysis_id, attempt_number, phase, error)
             raise R2DownloadError("R2 video download failed.") from None
         finally:
             if client is not None:
                 primary = sys.exception()
                 try:
                     client.close()
-                except Exception:
+                except Exception as error:
                     if primary is None:
+                        _log_r2_failure(analysis_id, attempt_number, "client-close", error)
                         raise R2DownloadError("R2 connection cleanup failed.") from None
+
+
+def _log_r2_failure(
+    analysis_id: str, attempt_number: int | None, phase: str, error: BaseException
+) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", analysis_id):
+        analysis_id = "unavailable"
+    attempt = (
+        attempt_number if type(attempt_number) is int and 0 < attempt_number <= 1_000_000 else None
+    )
+    category = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", category):
+        category = "OtherError"
+    status: int | None = None
+    code: str | None = None
+    if isinstance(error, ClientError):
+        try:
+            response = error.response
+            if isinstance(response, dict):
+                metadata = response.get("ResponseMetadata")
+                details = response.get("Error")
+                raw_status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+                raw_code = details.get("Code") if isinstance(details, dict) else None
+                if type(raw_status) is int and 100 <= raw_status <= 599:
+                    status = raw_status
+                if type(raw_code) is str and raw_code in _S3_ERROR_CODES:
+                    code = raw_code
+        except Exception:
+            pass
+    try:
+        _LOGGER.error(
+            "r2_transfer_failed analysis_id=%s attempt=%s phase=%s error_type=%s http_status=%s s3_code=%s",
+            analysis_id,
+            attempt if attempt is not None else "unavailable",
+            phase,
+            category,
+            status if status is not None else "unavailable",
+            code or "unavailable",
+        )
+    except Exception:
+        pass
 
 
 async def _settle_after_cancellation(task: asyncio.Task[object]) -> None:

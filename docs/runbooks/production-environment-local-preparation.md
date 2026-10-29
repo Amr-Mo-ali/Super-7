@@ -7,6 +7,13 @@ worker, and dispatcher entry points. Use `docker-compose.production.yml` alone,
 with project name `super7-production`; never combine it with the Development or
 local-trial Compose files.
 
+The Compose API, worker, and dispatcher use Docker `json-file` logs capped at
+three 5 MB files per container. Applying this logging change requires draining
+queued/running work and pending callbacks, then recreating the affected
+containers under an approved rollout. Existing containers do not pick up new
+logging options from an edited Compose file. Logging alone does not alert
+operators; alert routing needs a separately approved destination.
+
 ## Boundaries and decisions
 
 - Production uses `super7_production`, with new `super7_production_migration`
@@ -30,12 +37,17 @@ local-trial Compose files.
 - The worker and dispatcher have opt-in Compose profiles. Do not activate them
   until the storage, callback, and GPU checks are complete. Four single-slot
   Production workers share one PostgreSQL queue in `super7_production`.
-  `MAX_QUEUED_ANALYSES=300` on the API limits `QUEUED` jobs globally, excluding
+  `MAX_QUEUED_ANALYSES=5000` on the API limits `QUEUED` jobs globally, excluding
   `RUNNING` jobs; it is not a per-worker limit. Before starting Production
   workers, pause Development submissions, drain its queued and running jobs,
   and stop and verify all four Development workers have exited. Both fleets
   share the A4000; never automatically run two four-worker fleets. Any overlap
   requires a separate resource allocation and latency decision.
+- At the observed batch average of approximately 125 videos/hour, 5000 queued
+  jobs could take roughly 40 hours to drain under comparable conditions without
+  new arrivals. This is an estimate, not an SLA or a throughput increase. Verify
+  that backend waiting and reconciliation policies, signed callback validity,
+  and R2 object retention accommodate that wait before increasing admission.
 - The worker alone has GPU access and the read-only `/models` mount. It has no
   local video mount or fallback. The API and dispatcher have neither. The
   chosen Production model ID must match the reviewed mounted weights. Verify
@@ -128,7 +140,9 @@ by the Compose file.
 3. For an upgrade, pause Production admission/callers, inspect queued and
    running jobs plus pending callbacks using an approved read-only database
    procedure, and drain before replacing roles. Record the old image ID and
-   select and verify a new immutable image. Apply packaged migrations under
+   select and verify a new immutable image. Review the final merged Compose
+   configuration, including logging settings; recreate the API to load a changed
+   `MAX_QUEUED_ANALYSES` environment value. Apply packaged migrations under
    the migration role only when required, with a reviewed compatibility and
    rollback plan. Restart one role at a time and check readiness, outbox,
    image identity, and resource use before resuming callers.

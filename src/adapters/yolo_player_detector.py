@@ -71,7 +71,7 @@ class YOLOPlayerDetector(PlayerDetectorProtocol):
                     result.boxes.xyxy.cpu().tolist(), result.boxes.conf.cpu().tolist(), strict=True
                 )
             )
-            self._logger.info(
+            self._logger.debug(
                 "player_inference frame=%d detections=%d elapsed_ms=%d",
                 frame_index,
                 len(detections),

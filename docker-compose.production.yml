@@ -14,8 +14,15 @@ x-database-environment: &database-environment
   POSTGRES_POOL_CLOSE_TIMEOUT_SECONDS: "10"
   POSTGRES_REQUIRED_SCHEMA_VERSION: sprint2_slice5_video_integrity
 
+x-bounded-logging: &bounded-logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "3"
+
 services:
   api:
+    logging: *bounded-logging
     image: ${SUPER7_PROD_IMAGE:?Set a reviewed, immutable Production image reference}
     pull_policy: never
     command: ["uvicorn", "durable_api_main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
@@ -24,7 +31,7 @@ services:
     environment:
       <<: *database-environment
       SUPER7_DURABLE_API_ENABLED: "1"
-      MAX_QUEUED_ANALYSES: "300"
+      MAX_QUEUED_ANALYSES: "5000"
       SUPER7_DURABLE_ATTEMPT_LIMIT: "3"
       SUPER7_DURABLE_DB_OPERATION_TIMEOUT_MS: "5000"
       SUPER7_DURABLE_DB_LOCK_TIMEOUT_MS: "1000"
@@ -41,6 +48,7 @@ services:
       retries: 3
 
   worker:
+    logging: *bounded-logging
     profiles: [processing]
     image: ${SUPER7_PROD_IMAGE:?Set a reviewed, immutable Production image reference}
     pull_policy: never
@@ -81,6 +89,7 @@ services:
       disable: true
 
   dispatcher:
+    logging: *bounded-logging
     profiles: [delivery]
     image: ${SUPER7_PROD_IMAGE:?Set a reviewed, immutable Production image reference}
     pull_policy: never

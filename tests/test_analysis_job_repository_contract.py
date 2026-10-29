@@ -2197,6 +2197,63 @@ def test_non_55p03_psycopg_failure_during_advisory_execution_is_unavailable(
     _assert_logs_safe(caplog.records, (_DRIVER_MARKER, *_CANDIDATE_MARKERS))
 
 
+def test_admission_failure_log_keeps_category_phase_and_valid_sqlstate(
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+) -> None:
+    logger = logging.getLogger("football_analysis.admission")
+    logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logger.removeHandler(caplog.handler))
+    secret = "password=synthetic-secret callback=https://example.test/?token=private"
+    pool = _ScriptedPool(
+        [
+            _statement_timeout(),
+            _lookup(),
+            _lock_timeout(),
+            _advisory_lock(execute_error=LockNotAvailable(secret)),
+        ]
+    )
+
+    captured = _capture(_repository(pool), _candidate())
+
+    assert isinstance(captured, _require_symbol("AnalysisJobAdmissionLockTimeout"))
+    assert str(captured) == _LOCK_TIMEOUT_MESSAGE
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "analysis_admission_persistence_unavailable phase=advisory-execute"
+        " error_type=LockNotAvailable sqlstate=55P03" in message
+        for message in messages
+    )
+    assert all(secret not in message for message in messages)
+
+
+def test_admission_failure_log_rejects_untrusted_sqlstate(
+    caplog: pytest.LogCaptureFixture,
+    request: pytest.FixtureRequest,
+) -> None:
+    logger = logging.getLogger("football_analysis.admission")
+    logger.addHandler(caplog.handler)
+    request.addfinalizer(lambda: logger.removeHandler(caplog.handler))
+    secret = "Authorization: Bearer synthetic-secret"
+
+    class UnsafeStateError(OperationalError):
+        sqlstate = secret
+
+    captured = _capture(
+        _repository(_ScriptedPool([], enter_error=UnsafeStateError(secret))), _candidate()
+    )
+
+    assert isinstance(captured, _require_symbol("AnalysisJobPersistenceUnavailable"))
+    assert str(captured) == _UNAVAILABLE_MESSAGE
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "analysis_admission_persistence_unavailable phase=connection-acquire"
+        " error_type=UnsafeStateError sqlstate=unavailable" in message
+        for message in messages
+    )
+    assert all(secret not in message for message in messages)
+
+
 def test_programming_exception_with_55p03_attribute_propagates_by_identity() -> None:
     error = _SqlstateProgrammingError("programming-sqlstate-red-c-marker")
     pool = _ScriptedPool(

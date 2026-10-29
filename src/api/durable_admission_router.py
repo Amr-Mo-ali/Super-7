@@ -8,6 +8,7 @@ from fastapi.routing import APIRoute
 
 from adapters.psycopg_analysis_job_repository import AnalysisJobPersistenceUnavailable
 from core.exceptions import AnalysisError
+from core.logging import get_logger
 from schemas.analysis import AnalyzeQueuedResponse, DurableAnalyzeRequest
 from services.callback_service import CallbackService
 from services.durable_local_admission import (
@@ -69,6 +70,12 @@ def create_durable_admission_router(
         except DurableAdmissionConflict as error:
             raise HTTPException(status_code=409, detail={"error": str(error)}) from None
         except DurableAdmissionFull as error:
+            try:
+                get_logger("football_analysis.admission").warning(
+                    "analysis_admission_rejected reason=queue_full"
+                )
+            except Exception:
+                pass
             raise HTTPException(status_code=503, detail={"error": str(error)}) from None
         except AnalysisJobPersistenceUnavailable:
             raise HTTPException(

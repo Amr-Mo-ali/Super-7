@@ -82,7 +82,7 @@ class YOLOBallDetector(BallDetector):
                         ((x1 + x2) / 2, (y1 + y2) / 2),
                     )
                 )
-            self._logger.info(
+            self._logger.debug(
                 "ball_inference frame=%d detections=%d elapsed_ms=%d",
                 frame_index,
                 len(detected),

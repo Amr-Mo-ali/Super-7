@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +40,7 @@ _ADVISORY_LOCK_RESOURCE = 1
 _UNAVAILABLE_MESSAGE = "PostgreSQL AnalysisJob persistence is unavailable."
 _INVARIANT_MESSAGE = "PostgreSQL AnalysisJob persistence invariant failed."
 _LOCK_TIMEOUT_MESSAGE = "PostgreSQL AnalysisJob admission lock timed out."
+_LOGGER = logging.getLogger("football_analysis.admission")
 
 _TIMEOUT_SQL = "SELECT set_config(%s, %s, %s)"
 _LOOKUP_SQL = """SELECT job_id, idempotency_lookup, request_fingerprint, video_id,
@@ -159,7 +162,7 @@ class PsycopgAnalysisJobAdmissionRepository:
             )
         except BaseException as error:
             primary = error
-        await _exit_context(connection_context, primary)
+        await _exit_context(connection_context, primary, phase="connection-release")
         if outcome is None:
             raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
         return outcome
@@ -183,7 +186,7 @@ class PsycopgAnalysisJobAdmissionRepository:
             )
         except BaseException as error:
             primary = error
-        await _exit_context(transaction_context, primary)
+        await _exit_context(transaction_context, primary, phase="transaction-exit")
         if outcome is None:
             raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
         return outcome
@@ -253,7 +256,7 @@ async def _enter_context[ContextValue](
     except BaseException as error:
         captured = error
     if captured is not None:
-        _raise_classified(captured)
+        _raise_classified(captured, phase="connection-acquire")
     if value is None:
         raise AnalysisJobPersistenceInvariantError(_INVARIANT_MESSAGE)
     return value
@@ -268,12 +271,14 @@ async def _enter_context_without_value(
     except BaseException as error:
         captured = error
     if captured is not None:
-        _raise_classified(captured)
+        _raise_classified(captured, phase="transaction-enter")
 
 
 async def _exit_context(
     context: AbstractAsyncContextManager[object],
     primary: BaseException | None,
+    *,
+    phase: str,
 ) -> None:
     cleanup: BaseException | None = None
     exception_type = type(primary) if primary is not None else None
@@ -282,12 +287,14 @@ async def _exit_context(
         await context.__aexit__(exception_type, primary, traceback)
     except BaseException as error:
         cleanup = error
-    _finish_cleanup(primary, cleanup)
+    _finish_cleanup(primary, cleanup, phase=phase)
 
 
 def _finish_cleanup(
     primary: BaseException | None,
     cleanup: BaseException | None,
+    *,
+    phase: str = "cursor-close",
 ) -> None:
     if cleanup is None:
         if primary is not None:
@@ -297,21 +304,23 @@ def _finish_cleanup(
         if isinstance(cleanup, Exception):
             raise primary
         raise cleanup from primary
-    _raise_classified(cleanup)
+    _raise_classified(cleanup, phase=phase)
 
 
 def _raise_classified(
     error: BaseException,
     *,
-    phase: _FailurePhase = "persistence",
+    phase: str = "persistence",
 ) -> Never:
     if (
         phase == "advisory-execute"
         and isinstance(error, LockNotAvailable)
         and error.sqlstate == "55P03"
     ):
+        _log_admission_failure(error, phase)
         raise AnalysisJobAdmissionLockTimeout(_LOCK_TIMEOUT_MESSAGE)
     if isinstance(error, (PoolTimeout, OperationalError, InterfaceError)):
+        _log_admission_failure(error, phase)
         raise AnalysisJobPersistenceUnavailable(_UNAVAILABLE_MESSAGE)
     raise error
 
@@ -358,7 +367,7 @@ async def _fetch_one(
     try:
         row = await cursor.fetchone()
     except BaseException as error:
-        primary = _classified(error)
+        primary = _classified(error, phase="fetch")
     await _close_cursor(cursor, primary)
     return row
 
@@ -375,10 +384,33 @@ async def _close_cursor(
     _finish_cleanup(primary, cleanup)
 
 
-def _classified(error: BaseException) -> BaseException:
+def _classified(error: BaseException, *, phase: str) -> BaseException:
     if isinstance(error, (PoolTimeout, OperationalError, InterfaceError)):
+        _log_admission_failure(error, phase)
         return AnalysisJobPersistenceUnavailable(_UNAVAILABLE_MESSAGE)
     return error
+
+
+def _log_admission_failure(error: BaseException, phase: str) -> None:
+    category = type(error).__name__
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", category):
+        category = "OtherError"
+    try:
+        raw_state = getattr(error, "sqlstate", None)
+    except Exception:
+        raw_state = None
+    sqlstate = (
+        raw_state if type(raw_state) is str and re.fullmatch(r"[0-9A-Z]{5}", raw_state) else None
+    )
+    try:
+        _LOGGER.error(
+            "analysis_admission_persistence_unavailable phase=%s error_type=%s sqlstate=%s",
+            phase,
+            category,
+            sqlstate or "unavailable",
+        )
+    except Exception:
+        pass
 
 
 async def _lookup(
